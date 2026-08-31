@@ -584,6 +584,31 @@ impl HostDb {
         Ok(())
     }
 
+    /* Insert an import batch under one SQLite transaction. The caller stages
+     * only new groups and hosts; foreign-key or validation failure rolls back
+     * every row, which lets the vault layer remove its staged entries safely. */
+    #[instrument(skip(self, groups, hosts), fields(group_count = groups.len(), host_count = hosts.len()))]
+    pub fn save_groups_and_hosts_transaction(
+        &self,
+        groups: &[HostGroup],
+        hosts: &[SavedHost],
+    ) -> Result<(), DbError> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        for group in groups {
+            Self::insert_group(&tx, group)?;
+        }
+        for host in hosts {
+            Self::check_proxy_jump_chain(&tx, &host.id, host.proxy_jump_host_id.as_deref())?;
+            Self::upsert_host(&tx, host)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Walk the ProxyJump chain starting at `proxy` (the proposed
     /// `proxy_jump_host_id` for `host_id`) and reject self-references, cycles, and
     /// dangling immediate targets. Operates on a single connection/transaction so
@@ -1028,6 +1053,10 @@ impl HostDb {
             .conn
             .lock()
             .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        Self::insert_group(&conn, group)
+    }
+
+    fn insert_group(conn: &Connection, group: &HostGroup) -> Result<(), DbError> {
         conn.execute(
             "INSERT INTO host_groups (id, name, color, icon, sort_order, default_username, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -2899,5 +2928,35 @@ mod tests {
             .map(|g| g.id)
             .collect::<Vec<_>>();
         assert_eq!(ids, vec!["a", "b"], "order unchanged after rollback");
+    }
+
+    #[test]
+    fn groups_and_hosts_batch_rolls_back_everything_on_a_late_db_failure() {
+        let (db, _dir) = test_db();
+        let root = HostGroup {
+            id: "batch-root".to_string(),
+            name: "Cloud".to_string(),
+            color: "#6366f1".to_string(),
+            icon: None,
+            sort_order: 0,
+            default_username: None,
+            created_at: "2026-01-01T00:00:00".to_string(),
+            updated_at: "2026-01-01T00:00:00".to_string(),
+        };
+        let child = HostGroup {
+            id: "batch-child".to_string(),
+            name: "Production".to_string(),
+            ..root.clone()
+        };
+        let mut valid_host = sample_host("batch-valid");
+        valid_host.group_id = Some(child.id.clone());
+        let mut invalid_host = sample_host("batch-invalid");
+        invalid_host.group_id = Some("missing-group".to_string());
+
+        assert!(db
+            .save_groups_and_hosts_transaction(&[root, child], &[valid_host, invalid_host])
+            .is_err());
+        assert!(db.list_groups().expect("list groups").is_empty());
+        assert!(db.list_hosts().expect("list hosts").is_empty());
     }
 }

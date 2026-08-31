@@ -88,6 +88,7 @@ rust-s3 = { version = "0.37.1", default-features = false, features = ["tokio-rus
 argon2 = "0.5"
 aes-gcm = "0.10"
 getrandom = "0.2"
+zeroize = "1"
 # Compress the backup payload before encrypting — a raw SQLite snapshot is
 # mostly zero-filled pages, so this shrinks the file ~10-50x. Pure-Rust backend.
 flate2 = "1"

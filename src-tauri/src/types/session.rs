@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use zeroize::Zeroize;
 
 /// Opaque session identifier. Wraps a UUID v4 string.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -18,7 +19,7 @@ impl fmt::Display for SessionId {
 }
 
 /// How to authenticate to the remote host.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum AuthMethod {
     /// Plaintext password (kept only in Rust memory).
@@ -36,6 +37,38 @@ pub enum AuthMethod {
         key_data: String,
         passphrase: Option<String>,
     },
+}
+
+impl fmt::Debug for AuthMethod {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let kind = match self {
+            Self::Password { .. } => "password",
+            Self::PrivateKey { .. } => "privateKey",
+            Self::PrivateKeyData { .. } => "privateKeyData",
+        };
+        formatter
+            .debug_struct("AuthMethod")
+            .field("type", &kind)
+            .finish()
+    }
+}
+
+impl Drop for AuthMethod {
+    fn drop(&mut self) {
+        /* Connection configs are Rust-only after saved-host resolution. Clear
+         * their password, private-key, and passphrase buffers when released. */
+        match self {
+            Self::Password { password } => password.zeroize(),
+            Self::PrivateKey { passphrase, .. } | Self::PrivateKeyData { passphrase, .. } => {
+                if let Some(passphrase) = passphrase {
+                    passphrase.zeroize();
+                }
+                if let Self::PrivateKeyData { key_data, .. } = self {
+                    key_data.zeroize();
+                }
+            }
+        }
+    }
 }
 
 /// Everything needed to open an SSH connection.

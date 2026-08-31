@@ -136,6 +136,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "xsalsa20poly1305",
+ "zeroize",
 ]
 
 [[package]]

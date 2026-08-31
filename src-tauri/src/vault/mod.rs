@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use tracing::instrument;
+use zeroize::Zeroize;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -51,13 +53,51 @@ impl Serialize for VaultError {
 
 /// The kind of secret stored for a host.  Serialised as a tagged JSON object
 /// so additional variants can be added without a breaking schema change.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum StoredCredential {
     /// SSH password credential.
     Password { password: String },
     /// Passphrase that unlocks an encrypted SSH private key.
     KeyPassphrase { passphrase: String },
+    /* Keep imported raw key material paired with its optional passphrase in
+     * one vault record so callers never need a second secret-bearing entry. */
+    PrivateKeyData {
+        key_data: String,
+        passphrase: Option<String>,
+    },
+}
+
+impl fmt::Debug for StoredCredential {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let kind = match self {
+            Self::Password { .. } => "password",
+            Self::KeyPassphrase { .. } => "key_passphrase",
+            Self::PrivateKeyData { .. } => "private_key_data",
+        };
+        formatter
+            .debug_struct("StoredCredential")
+            .field("type", &kind)
+            .finish()
+    }
+}
+
+impl Drop for StoredCredential {
+    fn drop(&mut self) {
+        match self {
+            Self::Password { password } => password.zeroize(),
+            Self::KeyPassphrase { passphrase } => passphrase.zeroize(),
+            Self::PrivateKeyData {
+                key_data,
+                passphrase,
+            } => {
+                key_data.zeroize();
+                if let Some(passphrase) = passphrase {
+                    passphrase.zeroize();
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -78,12 +118,14 @@ pub fn save_credential(host_id: &str, credential: &StoredCredential) -> Result<(
     let entry = keyring::Entry::new(SERVICE_NAME, host_id)
         .map_err(|e| VaultError::Keychain(e.to_string()))?;
 
-    let json =
+    let mut json =
         serde_json::to_string(credential).map_err(|e| VaultError::InvalidData(e.to_string()))?;
 
-    entry
+    let result = entry
         .set_password(&json)
-        .map_err(|e| VaultError::Keychain(e.to_string()))?;
+        .map_err(|e| VaultError::Keychain(e.to_string()));
+    json.zeroize();
+    result?;
 
     tracing::debug!(host_id = %host_id, "credential saved to keychain");
     Ok(())
@@ -97,12 +139,14 @@ pub fn get_credential(host_id: &str) -> Result<StoredCredential, VaultError> {
     let entry = keyring::Entry::new(SERVICE_NAME, host_id)
         .map_err(|e| VaultError::Keychain(e.to_string()))?;
 
-    let json = entry.get_password().map_err(|e| match e {
+    let mut json = entry.get_password().map_err(|e| match e {
         keyring::Error::NoEntry => VaultError::NotFound(host_id.to_string()),
         other => VaultError::Keychain(other.to_string()),
     })?;
 
-    serde_json::from_str(&json).map_err(|e| VaultError::InvalidData(e.to_string()))
+    let result = serde_json::from_str(&json).map_err(|e| VaultError::InvalidData(e.to_string()));
+    json.zeroize();
+    result
 }
 
 /// Remove the credential for `host_id` from the OS keychain.
@@ -127,9 +171,14 @@ pub fn delete_credential(host_id: &str) -> Result<(), VaultError> {
 /// Return `true` when a credential exists for `host_id`, without retrieving
 /// the secret value.
 pub fn has_credential(host_id: &str) -> bool {
-    keyring::Entry::new(SERVICE_NAME, host_id)
-        .and_then(|e| e.get_password())
-        .is_ok()
+    let Ok(entry) = keyring::Entry::new(SERVICE_NAME, host_id) else {
+        return false;
+    };
+    let Ok(mut value) = entry.get_password() else {
+        return false;
+    };
+    value.zeroize();
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -298,7 +347,7 @@ mod tests {
         save_credential(&id, &cred).expect("save");
 
         let retrieved = get_credential(&id).expect("get");
-        match retrieved {
+        match &retrieved {
             StoredCredential::Password { password } => assert_eq!(password, "hunter2"),
             other => panic!("unexpected variant: {other:?}"),
         }
@@ -316,9 +365,34 @@ mod tests {
         save_credential(&id, &cred).expect("save");
 
         let retrieved = get_credential(&id).expect("get");
-        match retrieved {
+        match &retrieved {
             StoredCredential::KeyPassphrase { passphrase } => {
                 assert_eq!(passphrase, "super-secret")
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn round_trip_private_key_data_credential() {
+        init_mock_keystore();
+        let id = unique_id("private-key-data");
+        let _guard = KeychainGuard(id.clone());
+
+        let cred = StoredCredential::PrivateKeyData {
+            key_data: "-----BEGIN OPENSSH PRIVATE KEY-----".to_string(),
+            passphrase: Some("key-passphrase".to_string()),
+        };
+        save_credential(&id, &cred).expect("save");
+
+        let retrieved = get_credential(&id).expect("get");
+        match &retrieved {
+            StoredCredential::PrivateKeyData {
+                key_data,
+                passphrase,
+            } => {
+                assert_eq!(key_data, "-----BEGIN OPENSSH PRIVATE KEY-----");
+                assert_eq!(passphrase.as_deref(), Some("key-passphrase"));
             }
             other => panic!("unexpected variant: {other:?}"),
         }
@@ -408,7 +482,8 @@ mod tests {
         )
         .expect("second save");
 
-        match get_credential(&id).expect("get") {
+        let retrieved = get_credential(&id).expect("get");
+        match &retrieved {
             StoredCredential::Password { password } => assert_eq!(password, "new"),
             other => panic!("unexpected variant: {other:?}"),
         }

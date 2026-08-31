@@ -527,4 +527,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir1);
         let _ = std::fs::remove_dir_all(&dir2);
     }
+
+    #[test]
+    fn credential_payload_round_trips_private_key_data() {
+        /* Backup credentials share the vault's tagged representation; this
+         * guards the encrypted payload's compatibility without exposing key
+         * material outside Rust test memory. */
+        let mut credentials = BTreeMap::new();
+        credentials.insert(
+            "host-id".to_string(),
+            StoredCredential::PrivateKeyData {
+                key_data: "private-key-data".to_string(),
+                passphrase: Some("passphrase".to_string()),
+            },
+        );
+        let encoded = serde_json::to_vec(&credentials).expect("encode credentials");
+        let decoded: BTreeMap<String, StoredCredential> =
+            serde_json::from_slice(&encoded).expect("decode credentials");
+        assert!(matches!(
+            decoded.get("host-id"),
+            Some(StoredCredential::PrivateKeyData {
+                key_data,
+                passphrase: Some(passphrase),
+            }) if key_data == "private-key-data" && passphrase == "passphrase"
+        ));
+    }
 }

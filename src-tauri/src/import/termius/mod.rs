@@ -28,6 +28,14 @@ pub mod running;
 pub mod source;
 #[allow(dead_code)]
 pub mod v8;
+#[allow(dead_code)]
+pub mod workflow;
+#[allow(unused_imports)]
+pub use workflow::{
+    import_commit_termius, import_preview_termius, TermiusCommitRequest, TermiusCommitResponse,
+    TermiusGroupPreview, TermiusHostPreview, TermiusImportError, TermiusImportState,
+    TermiusPreviewCounts, TermiusPreviewRequest, TermiusPreviewResponse,
+};
 
 #[allow(unused_imports)]
 pub use comparator::{IdbComparator, IDB_COMPARATOR_NAME};

@@ -6,6 +6,7 @@
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use thiserror::Error;
+use zeroize::Zeroize;
 
 const MAX_LOCAL_KEY_BASE64_LEN: usize = 44;
 const LOCAL_KEY_CANDIDATES: [(&str, &str); 4] = [
@@ -26,10 +27,20 @@ pub fn decode_local_key(value: &str) -> Result<[u8; 32], LocalKeyError> {
     if value.len() > MAX_LOCAL_KEY_BASE64_LEN {
         return Err(LocalKeyError::NotFound);
     }
-    let bytes = STANDARD
+    /* Decode into a temporary only long enough to validate its exact size and
+     * copy the key into the fixed-size return value. The heap buffer is then
+     * cleared on both valid and invalid length paths. */
+    let mut bytes = STANDARD
         .decode(value)
         .map_err(|_| LocalKeyError::NotFound)?;
-    bytes.try_into().map_err(|_| LocalKeyError::NotFound)
+    if bytes.len() != 32 {
+        bytes.zeroize();
+        return Err(LocalKeyError::NotFound);
+    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&bytes);
+    bytes.zeroize();
+    Ok(key)
 }
 
 pub fn find_local_key(validate: impl Fn(&[u8; 32]) -> bool) -> Result<[u8; 32], LocalKeyError> {
@@ -37,15 +48,20 @@ pub fn find_local_key(validate: impl Fn(&[u8; 32]) -> bool) -> Result<[u8; 32], 
         let Ok(entry) = keyring::Entry::new(service, account) else {
             continue;
         };
-        let Ok(encoded) = entry.get_password() else {
+        let Ok(mut encoded) = entry.get_password() else {
             continue;
         };
-        let Ok(key) = decode_local_key(&encoded) else {
+        /* Keychain strings and rejected candidate keys are short-lived secret
+         * buffers; clear them before trying the next candidate or returning. */
+        let decoded = decode_local_key(&encoded);
+        encoded.zeroize();
+        let Ok(mut key) = decoded else {
             continue;
         };
         if validate(&key) {
             return Ok(key);
         }
+        key.zeroize();
     }
     Err(LocalKeyError::NotFound)
 }
