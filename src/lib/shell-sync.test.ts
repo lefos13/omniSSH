@@ -63,6 +63,12 @@ describe("shell-sync helpers", () => {
       expect(SHELL_SYNC_SNIPPETS.fish).toContain("]7;file://");
       expect(SHELL_SYNC_SNIPPETS.oneshot).toContain("]7;file://");
     });
+
+    it("guarantees idempotency across shell hooks", () => {
+      expect(SHELL_SYNC_SNIPPETS.bash).toContain("case \"$PROMPT_COMMAND\" in *__anyscp_osc7*)");
+      expect(SHELL_SYNC_SNIPPETS.zsh).toContain("add-zsh-hook -d chpwd __anyscp_osc7");
+      expect(SHELL_SYNC_SNIPPETS.fish).toContain("functions -e __anyscp_osc7 2>/dev/null;");
+    });
   });
 
   describe("sendCdToTerminal", () => {

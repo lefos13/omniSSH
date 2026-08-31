@@ -2,7 +2,7 @@
  * Component tests for LinkedExplorerPanel.
  * Tests connection lifecycle, SFTP/SCP fallback, OSC 7 sync status indicator,
  * session-local shell integration triggers, "cd here" dispatch, followPath toggle,
- * and rebinding on active pane changes.
+ * focus restoration, Escape menu navigation, and active-only rebinding.
  */
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
@@ -24,6 +24,13 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(),
 }));
 
+const termFocus = vi.fn();
+vi.mock("../../../stores/terminal-instances", () => ({
+  getTerminal: () => ({
+    term: { focus: termFocus },
+  }),
+}));
+
 import { LinkedExplorerPanel } from "../LinkedExplorerPanel";
 import { useSessionStore } from "../../../stores/session-store";
 import { useLinkedExplorerStore } from "../../../stores/linked-explorer-store";
@@ -40,6 +47,7 @@ const dummyHost: HostConfig = {
 describe("LinkedExplorerPanel", () => {
   beforeEach(() => {
     invoke.mockReset();
+    termFocus.mockReset();
     invoke.mockImplementation(async (cmd) => {
       if (cmd === "sftp_open") return "sftp-sess-1";
       if (cmd === "sftp_list_dir") return [];
@@ -91,9 +99,8 @@ describe("LinkedExplorerPanel", () => {
   });
 
   it("renders connecting state and establishes SFTP session on mount", async () => {
-    render(<LinkedExplorerPanel tabId="tab-1" />);
+    render(<LinkedExplorerPanel tabId="tab-1" isActive={true} />);
 
-    // Once ensureConnected resolves, status is connected and ExplorerView is rendered
     await act(async () => {
       await Promise.resolve();
     });
@@ -109,7 +116,7 @@ describe("LinkedExplorerPanel", () => {
       return undefined;
     });
 
-    render(<LinkedExplorerPanel tabId="tab-1" />);
+    render(<LinkedExplorerPanel tabId="tab-1" isActive={true} />);
 
     await act(async () => {
       await Promise.resolve();
@@ -140,7 +147,7 @@ describe("LinkedExplorerPanel", () => {
   });
 
   it("shows inactive sync status when cwdSyncActive is false", async () => {
-    render(<LinkedExplorerPanel tabId="tab-1" />);
+    render(<LinkedExplorerPanel tabId="tab-1" isActive={true} />);
 
     await act(async () => {
       await Promise.resolve();
@@ -153,7 +160,7 @@ describe("LinkedExplorerPanel", () => {
   it("shows active sync status when cwdSyncActive is true", async () => {
     useSessionStore.getState().setRemoteCwd("ssh-1", "/var/log");
 
-    render(<LinkedExplorerPanel tabId="tab-1" />);
+    render(<LinkedExplorerPanel tabId="tab-1" isActive={true} />);
 
     await act(async () => {
       await Promise.resolve();
@@ -164,7 +171,7 @@ describe("LinkedExplorerPanel", () => {
   });
 
   it("opens sync menu on status button click and triggers shell sync commands", async () => {
-    render(<LinkedExplorerPanel tabId="tab-1" />);
+    render(<LinkedExplorerPanel tabId="tab-1" isActive={true} />);
 
     await act(async () => {
       await Promise.resolve();
@@ -187,8 +194,25 @@ describe("LinkedExplorerPanel", () => {
     );
   });
 
+  it("closes sync menu on Escape and returns focus to status trigger button", async () => {
+    render(<LinkedExplorerPanel tabId="tab-1" isActive={true} />);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const statusBtn = screen.getByTestId("linked-explorer-sync-status");
+    fireEvent.click(statusBtn);
+
+    expect(screen.getByTestId("linked-explorer-sync-menu")).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(screen.queryByTestId("linked-explorer-sync-menu")).not.toBeInTheDocument();
+  });
+
   it("triggers one-shot sync on clicking 'Trigger sync once'", async () => {
-    render(<LinkedExplorerPanel tabId="tab-1" />);
+    render(<LinkedExplorerPanel tabId="tab-1" isActive={true} />);
 
     await act(async () => {
       await Promise.resolve();
@@ -209,11 +233,14 @@ describe("LinkedExplorerPanel", () => {
   });
 
   it("dispatches explicit 'cd here' to terminal when cd button is clicked", async () => {
-    render(<LinkedExplorerPanel tabId="tab-1" />);
+    render(<LinkedExplorerPanel tabId="tab-1" isActive={true} />);
 
     await act(async () => {
       await Promise.resolve();
     });
+
+    // Set current path in sftp session
+    useSftpStore.getState().setEntries("sftp-sess-1", "/var/www/html", []);
 
     const cdBtn = screen.getByTestId("linked-explorer-cd-terminal");
     fireEvent.click(cdBtn);
@@ -225,7 +252,7 @@ describe("LinkedExplorerPanel", () => {
   });
 
   it("toggles followPath preference when follow button is clicked", async () => {
-    render(<LinkedExplorerPanel tabId="tab-1" />);
+    render(<LinkedExplorerPanel tabId="tab-1" isActive={true} />);
 
     await act(async () => {
       await Promise.resolve();
@@ -241,8 +268,8 @@ describe("LinkedExplorerPanel", () => {
     expect(useLinkedExplorerStore.getState().followPath).toBe(true);
   });
 
-  it("closes linked explorer panel without affecting terminal session", async () => {
-    render(<LinkedExplorerPanel tabId="tab-1" />);
+  it("closes linked explorer panel and restores focus to active terminal", async () => {
+    render(<LinkedExplorerPanel tabId="tab-1" isActive={true} />);
 
     await act(async () => {
       await Promise.resolve();
@@ -252,13 +279,12 @@ describe("LinkedExplorerPanel", () => {
     fireEvent.click(closeBtn);
 
     expect(useLinkedExplorerStore.getState().openTabIds.has("tab-1")).toBe(false);
-    // Terminal session must remain connected and intact
     expect(useSessionStore.getState().sessions.has("ssh-1")).toBe(true);
+    expect(termFocus).toHaveBeenCalledTimes(1);
   });
 
-  it("rebinds when active pane changes in a split terminal tab", async () => {
-    // Add second session to a split layout
-    useSessionStore.getState().addSession("ssh-2", {
+  it("does not connect or rebind while inactive, and rebinds when becoming active", async () => {
+    useSessionStore.getState().addSession("ssh-split-2", {
       ...dummyHost,
       host: "10.0.0.2",
     });
@@ -274,7 +300,7 @@ describe("LinkedExplorerPanel", () => {
               ratio: 0.5,
               children: [
                 { type: "pane", sessionId: "ssh-1" },
-                { type: "pane", sessionId: "ssh-2" },
+                { type: "pane", sessionId: "ssh-split-2" },
               ],
             },
             label: "split-tab",
@@ -284,35 +310,24 @@ describe("LinkedExplorerPanel", () => {
       activeSessionId: "ssh-1",
     });
 
-    invoke.mockImplementation(async (cmd, args) => {
-      if (cmd === "sftp_open") {
-        if (args && typeof args === "object" && "sessionId" in args && args.sessionId === "ssh-2") {
-          return "sftp-sess-2";
-        }
-        return "sftp-sess-1";
-      }
-      if (cmd === "sftp_list_dir") return [];
-      if (cmd === "sftp_home_dir") return "/home/alice";
-      return undefined;
-    });
-
-    render(<LinkedExplorerPanel tabId="tab-1" />);
+    // Render as hidden/inactive (e.g. another tab is active)
+    const { rerender } = render(<LinkedExplorerPanel tabId="tab-1" isActive={false} />);
 
     await act(async () => {
       await Promise.resolve();
     });
 
+    // When inactive, ensureConnected must not be called
+    expect(invoke).not.toHaveBeenCalledWith("sftp_open", expect.anything());
+
+    // Re-render as active
+    rerender(<LinkedExplorerPanel tabId="tab-1" isActive={true} />);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Now it connects for active pane ssh-1
     expect(invoke).toHaveBeenCalledWith("sftp_open", { sessionId: "ssh-1" });
-
-    // Switch active pane to ssh-2
-    act(() => {
-      useSessionStore.getState().setActiveSession("ssh-2");
-    });
-
-    await act(async () => {
-      await Promise.resolve();
-    });
-
-    expect(invoke).toHaveBeenCalledWith("sftp_open", { sessionId: "ssh-2" });
   });
 });

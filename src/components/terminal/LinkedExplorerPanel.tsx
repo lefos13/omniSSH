@@ -2,7 +2,8 @@
  * Linked terminal explorer panel.
  * Displays a side panel bound to the active terminal pane's SSH session,
  * rendering the remote filesystem via ExplorerView with live OSC 7 working-directory
- * synchronization, shell integration shortcuts, and explicit terminal directory navigation.
+ * synchronization, session-local shell integration shortcuts, and explicit terminal
+ * directory navigation. Only connects and rebinds while the owning tab is active.
  */
 
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
@@ -22,6 +23,7 @@ import { useSessionStore } from "../../stores/session-store";
 import type { LayoutNode } from "../../types";
 import { useLinkedExplorerStore } from "../../stores/linked-explorer-store";
 import { useSftpStore } from "../../stores/sftp-store";
+import { getTerminal } from "../../stores/terminal-instances";
 import { ExplorerView } from "../sftp/ExplorerView";
 import { sendCdToTerminal, enableShellSync, type SupportedShell } from "../../lib/shell-sync";
 
@@ -43,15 +45,30 @@ export function LinkedExplorerPanel({ tabId, isActive = true }: LinkedExplorerPa
   const termTab = useSessionStore((s) => s.tabs.get(tabId));
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
 
+  // Retain the active pane for this tab so switching away to another tab
+  // doesn't cause a hidden tab to reset or rebind its pane unexpectedly.
+  const [retainedPaneId, setRetainedPaneId] = useState<string | null>(null);
+
+  const tabSessionIds = useMemo(() => {
+    return termTab ? collectSessionIds(termTab.layout) : [];
+  }, [termTab]);
+
+  useEffect(() => {
+    if (isActive && activeSessionId && tabSessionIds.includes(activeSessionId)) {
+      setRetainedPaneId(activeSessionId);
+    }
+  }, [isActive, activeSessionId, tabSessionIds]);
+
   // Find the active pane in this tab
   const activePaneSessionId = useMemo(() => {
-    if (!termTab) return null;
-    const tabSessionIds = collectSessionIds(termTab.layout);
-    if (activeSessionId && tabSessionIds.includes(activeSessionId)) {
+    if (isActive && activeSessionId && tabSessionIds.includes(activeSessionId)) {
       return activeSessionId;
     }
+    if (retainedPaneId && tabSessionIds.includes(retainedPaneId)) {
+      return retainedPaneId;
+    }
     return tabSessionIds[0] ?? null;
-  }, [termTab, activeSessionId]);
+  }, [isActive, activeSessionId, retainedPaneId, tabSessionIds]);
 
   const session = useSessionStore((s) =>
     activePaneSessionId ? s.sessions.get(activePaneSessionId) : null,
@@ -68,12 +85,13 @@ export function LinkedExplorerPanel({ tabId, isActive = true }: LinkedExplorerPa
   );
   const currentPath = sftpSession?.currentPath ?? "/";
 
-  // Rebind / connect whenever active pane session changes
+  // Rebind / connect whenever active pane session changes ONLY if this tab is active
   useEffect(() => {
+    if (!isActive) return;
     if (activePaneSessionId && session?.status === "Connected") {
       void ensureConnected(tabId, activePaneSessionId);
     }
-  }, [tabId, activePaneSessionId, session?.status, ensureConnected]);
+  }, [isActive, tabId, activePaneSessionId, session?.status, ensureConnected]);
 
   // ─── Debounced OSC 7 remoteCwd follow ────────────────────────────────────
 
@@ -93,25 +111,39 @@ export function LinkedExplorerPanel({ tabId, isActive = true }: LinkedExplorerPa
     return () => clearTimeout(timer);
   }, [remoteCwd, followPath]);
 
-  // ─── Sync menu state & click-away ────────────────────────────────────────
+  // ─── Sync menu state & click-away / Escape navigation ────────────────────
 
   const [syncMenuOpen, setSyncMenuOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const syncMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!syncMenuOpen) return;
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        setSyncMenuOpen(false);
+        triggerRef.current?.focus();
+      }
+    }
     function handlePointerDown(e: MouseEvent) {
       if (syncMenuRef.current && !syncMenuRef.current.contains(e.target as Node)) {
         setSyncMenuOpen(false);
       }
     }
+    document.addEventListener("keydown", handleKeyDown);
     document.addEventListener("pointerdown", handlePointerDown);
-    return () => document.removeEventListener("pointerdown", handlePointerDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
   }, [syncMenuOpen]);
 
   const handleShellEnable = useCallback(
     async (shell: SupportedShell) => {
       setSyncMenuOpen(false);
+      triggerRef.current?.focus();
       if (!activePaneSessionId) return;
       try {
         await enableShellSync(activePaneSessionId, shell);
@@ -129,6 +161,14 @@ export function LinkedExplorerPanel({ tabId, isActive = true }: LinkedExplorerPa
     },
     [activePaneSessionId],
   );
+
+  const handleClose = useCallback(() => {
+    closeLinkedExplorer(tabId);
+    if (activePaneSessionId) {
+      const term = getTerminal(activePaneSessionId);
+      term?.term.focus();
+    }
+  }, [closeLinkedExplorer, tabId, activePaneSessionId]);
 
   const isCwdSynced = session?.cwdSyncActive ?? false;
 
@@ -161,6 +201,7 @@ export function LinkedExplorerPanel({ tabId, isActive = true }: LinkedExplorerPa
         {/* Sync status button / dropdown trigger */}
         <div className="relative" ref={syncMenuRef}>
           <button
+            ref={triggerRef}
             type="button"
             data-testid="linked-explorer-sync-status"
             onClick={() => setSyncMenuOpen((v) => !v)}
@@ -290,7 +331,7 @@ export function LinkedExplorerPanel({ tabId, isActive = true }: LinkedExplorerPa
         <button
           type="button"
           data-testid="linked-explorer-close"
-          onClick={() => closeLinkedExplorer(tabId)}
+          onClick={handleClose}
           title="Close file explorer"
           aria-label="Close file explorer"
           className={btnClass}

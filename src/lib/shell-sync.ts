@@ -16,7 +16,7 @@ export type SupportedShell = "bash" | "zsh" | "fish" | "oneshot";
 export const SHELL_SYNC_SNIPPETS: Record<SupportedShell, string> = {
   bash: `__anyscp_osc7() { printf '\\e]7;file://%s%s\\e\\\\' "\${HOSTNAME:-localhost}" "$PWD"; }; case "$PROMPT_COMMAND" in *__anyscp_osc7*) ;; *) PROMPT_COMMAND="__anyscp_osc7\${PROMPT_COMMAND:+;\$PROMPT_COMMAND}";; esac; __anyscp_osc7`,
   zsh: `__anyscp_osc7() { printf '\\e]7;file://%s%s\\e\\\\' "\${HOST:-localhost}" "$PWD"; }; autoload -Uz add-zsh-hook 2>/dev/null; add-zsh-hook -d chpwd __anyscp_osc7 2>/dev/null; add-zsh-hook chpwd __anyscp_osc7 2>/dev/null || { chpwd_functions=(\${chpwd_functions:#__anyscp_osc7}); chpwd_functions+=(__anyscp_osc7); }; __anyscp_osc7`,
-  fish: `function __anyscp_osc7 --on-variable PWD; printf '\\e]7;file://%s%s\\e\\\\' (hostname) $PWD; end; __anyscp_osc7`,
+  fish: `functions -e __anyscp_osc7 2>/dev/null; function __anyscp_osc7 --on-variable PWD; printf '\\e]7;file://%s%s\\e\\\\' (hostname) $PWD; end; __anyscp_osc7`,
   oneshot: `printf '\\e]7;file://%s%s\\e\\\\' "\${HOSTNAME:-\${HOST:-localhost}}" "$PWD"`,
 };
 

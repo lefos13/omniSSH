@@ -2,9 +2,9 @@
  * Linked terminal explorer state management.
  * Manages per-terminal-tab linked explorer panel visibility, retained panel
  * width, CWD auto-follow preferences, and tab-scoped SSH-to-SFTP/SCP session bindings.
- * Automatically cleans up linked file sessions when the owning terminal session
- * disconnects or the panel is closed / rebound, while closing the explorer never
- * disconnects the terminal SSH session.
+ * Automatically cleans up linked file sessions and open panel states when the owning
+ * terminal tab or session disconnects, while closing the explorer never disconnects
+ * the terminal SSH session.
  */
 
 import { create } from "zustand";
@@ -39,7 +39,7 @@ interface LinkedExplorerState {
   setFollowPath: (enabled: boolean) => void;
   setBinding: (tabId: string, binding: LinkedExplorerBinding) => void;
   removeBinding: (tabId: string) => void;
-  ensureConnected: (tabIdOrSshId: string, sshSessionId?: string) => Promise<LinkedExplorerBinding | null>;
+  ensureConnected: (tabId: string, sshSessionId: string) => Promise<LinkedExplorerBinding | null>;
   disconnectBinding: (tabId: string) => Promise<void>;
 }
 
@@ -92,7 +92,7 @@ export const useLinkedExplorerStore = create<LinkedExplorerState>((set, get) => 
 
   closeLinkedExplorer: (tabId) => {
     // Invalidate any in-flight connection for this tab
-    tabGenerations.set(tabId, (tabGenerations.get(tabId) ?? 0) + 1);
+    tabGenerations.delete(tabId);
 
     set((state) => {
       const next = new Set(state.openTabIds);
@@ -133,11 +133,7 @@ export const useLinkedExplorerStore = create<LinkedExplorerState>((set, get) => 
       return { bindings: next };
     }),
 
-  ensureConnected: async (tabIdOrSshId, sshSessionIdParam) => {
-    // Support either ensureConnected(tabId, sshSessionId) or ensureConnected(sshSessionId)
-    const tabId = sshSessionIdParam ? tabIdOrSshId : tabIdOrSshId;
-    const sshSessionId = sshSessionIdParam ? sshSessionIdParam : tabIdOrSshId;
-
+  ensureConnected: async (tabId, sshSessionId) => {
     const state = get();
     const existing = state.bindings.get(tabId);
 
@@ -272,6 +268,8 @@ export const useLinkedExplorerStore = create<LinkedExplorerState>((set, get) => 
     const binding = get().bindings.get(tabId);
     if (!binding) return;
 
+    tabGenerations.delete(tabId);
+
     // Synchronously remove from store so UI updates immediately
     get().removeBinding(tabId);
 
@@ -292,14 +290,24 @@ export const useLinkedExplorerStore = create<LinkedExplorerState>((set, get) => 
 }));
 
 /*
- * Subscribe to session-store to clean up linked SFTP/SCP sessions when the
- * terminal SSH session disconnects or is removed from the session store.
+ * Subscribe to session-store to clean up linked SFTP/SCP sessions and openTabIds
+ * when the owning terminal tab or SSH session is closed/removed.
  */
 useSessionStore.subscribe((sessionState) => {
   const currentSessions = sessionState.sessions;
+  const currentTabs = sessionState.tabs;
   const store = useLinkedExplorerStore.getState();
+
+  // Clean up openTabIds for any terminal tab that no longer exists
+  for (const tabId of store.openTabIds) {
+    if (!currentTabs.has(tabId)) {
+      store.closeLinkedExplorer(tabId);
+    }
+  }
+
+  // Clean up bindings where the owning tab or SSH session no longer exists
   for (const [tabId, binding] of store.bindings.entries()) {
-    if (!currentSessions.has(binding.sshSessionId)) {
+    if (!currentTabs.has(tabId) || !currentSessions.has(binding.sshSessionId)) {
       void store.disconnectBinding(tabId);
     }
   }

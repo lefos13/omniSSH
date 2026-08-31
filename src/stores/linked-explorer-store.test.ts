@@ -289,4 +289,16 @@ describe("linked-explorer-store", () => {
     expect(useSftpStore.getState().sessions.has("sftp-auto")).toBe(false);
     expect(invoke).toHaveBeenCalledWith("sftp_close", { sftpSessionId: "sftp-auto" });
   });
+
+  it("cleans up openTabIds when a terminal tab is removed (even with no binding established)", () => {
+    useSessionStore.getState().addSession("ssh-open-only", dummyHost);
+    useLinkedExplorerStore.getState().openLinkedExplorer("ssh-open-only");
+    expect(useLinkedExplorerStore.getState().openTabIds.has("ssh-open-only")).toBe(true);
+
+    // Remove session/tab
+    useSessionStore.getState().removeSession("ssh-open-only");
+
+    // openTabIds must be cleaned up
+    expect(useLinkedExplorerStore.getState().openTabIds.has("ssh-open-only")).toBe(false);
+  });
 });
