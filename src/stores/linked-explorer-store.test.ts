@@ -380,19 +380,27 @@ describe("linked-explorer-store", () => {
     expect(useLinkedExplorerStore.getState().openTabIds.has("ssh-open-only")).toBe(false);
   });
 
-  it("clears a pre-binding panel on SSH disconnect without closing another session", async () => {
-    useSessionStore.getState().addSession("ssh-open-only", dummyHost);
+  it("clears only the split owner panel before a linked binding exists", async () => {
+    useSessionStore.getState().addSession("ssh-split-owner", dummyHost);
+    useSessionStore.getState().splitPane(
+      "horizontal",
+      "ssh-split-owner",
+      "ssh-dropped-pane",
+    );
     useSessionStore.getState().addSession("ssh-other", dummyHost);
-    useLinkedExplorerStore.getState().openLinkedExplorer("ssh-open-only");
+    useLinkedExplorerStore.getState().openLinkedExplorer("ssh-split-owner");
     useLinkedExplorerStore.getState().openLinkedExplorer("ssh-other");
 
-    await useLinkedExplorerStore.getState().disconnectBindingsForSshSession("ssh-open-only");
+    await useLinkedExplorerStore
+      .getState()
+      .disconnectBindingsForSshSession("ssh-dropped-pane");
 
     expect(useLinkedExplorerStore.getState().openTabIds).toEqual(new Set(["ssh-other"]));
     expect(useLinkedExplorerStore.getState().bindings.size).toBe(0);
     expect(invoke).not.toHaveBeenCalled();
-    expect(useSessionStore.getState().sessions.has("ssh-open-only")).toBe(true);
-    expect(useSessionStore.getState().sessions.get("ssh-open-only")?.status).not.toBe("Disconnected");
+    expect(useSessionStore.getState().sessions.has("ssh-dropped-pane")).toBe(true);
+    expect(useSessionStore.getState().sessions.has("ssh-split-owner")).toBe(true);
+    expect(useSessionStore.getState().sessions.has("ssh-other")).toBe(true);
   });
 
   it("prunes generation entries when a terminal tab is removed after its panel was closed", async () => {

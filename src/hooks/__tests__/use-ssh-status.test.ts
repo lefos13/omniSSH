@@ -185,27 +185,41 @@ describe("useSshStatus", () => {
     expect(invoke).not.toHaveBeenCalledWith("ssh_disconnect", expect.anything());
   });
 
-  it("clears a pre-binding linked panel on remote disconnect without closing a protocol session", async () => {
-    useSessionStore.getState().addSession("ssh-pre-binding", {
+  it("clears only the split owner panel before a linked binding exists", async () => {
+    useSessionStore.getState().addSession("ssh-split-owner", {
       host: "10.0.0.2",
       port: 22,
       username: "root",
       auth_method: { type: "password", password: "pwd" },
     });
-    useLinkedExplorerStore.getState().openLinkedExplorer("ssh-pre-binding");
+    useSessionStore.getState().splitPane(
+      "horizontal",
+      "ssh-split-owner",
+      "ssh-pre-binding-pane",
+    );
+    useSessionStore.getState().addSession("ssh-unrelated", {
+      host: "10.0.0.3",
+      port: 22,
+      username: "root",
+      auth_method: { type: "password", password: "pwd" },
+    });
+    useLinkedExplorerStore.getState().openLinkedExplorer("ssh-split-owner");
+    useLinkedExplorerStore.getState().openLinkedExplorer("ssh-unrelated");
 
     renderHook(() => useSshStatus());
     await vi.waitFor(() => expect(statusListener).toBeDefined());
 
     await act(async () => {
-      emitStatus("ssh-pre-binding", "Disconnected");
+      emitStatus("ssh-pre-binding-pane", "Disconnected");
       await vi.waitFor(() =>
-        expect(useLinkedExplorerStore.getState().openTabIds.has("ssh-pre-binding")).toBe(false),
+        expect(useLinkedExplorerStore.getState().openTabIds).toEqual(new Set(["ssh-unrelated"])),
       );
     });
 
-    expect(useSessionStore.getState().sessions.has("ssh-pre-binding")).toBe(true);
-    expect(useSessionStore.getState().sessions.get("ssh-pre-binding")?.status).toBe("Disconnected");
+    expect(useSessionStore.getState().sessions.has("ssh-pre-binding-pane")).toBe(true);
+    expect(useSessionStore.getState().sessions.get("ssh-pre-binding-pane")?.status).toBe("Disconnected");
+    expect(useSessionStore.getState().sessions.has("ssh-split-owner")).toBe(true);
+    expect(useSessionStore.getState().sessions.has("ssh-unrelated")).toBe(true);
     expect(useSftpStore.getState().sessions.size).toBe(0);
     expect(invoke).not.toHaveBeenCalled();
     expect(invoke).not.toHaveBeenCalledWith("ssh_disconnect", expect.anything());
