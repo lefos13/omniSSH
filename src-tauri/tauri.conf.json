@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "anySCP",
+  "productName": "OmniSSH",
   "version": "0.0.0-dev",
-  "identifier": "com.macnev2013.anyscp",
+  "identifier": "com.omnissh.app",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -20,8 +20,8 @@
     "targets": "all",
     "copyright": "© 2026 Nevil Macwan",
     "category": "DeveloperTool",
-    "shortDescription": "A modern desktop client for SSH, SFTP, and S3",
-    "longDescription": "anySCP is a free, open-source desktop application that combines an SSH terminal, SFTP file explorer, and S3-compatible cloud storage browser into a single, fast, privacy-first tool. Built with Tauri v2, it runs natively on macOS, Windows, and Linux.",
+    "shortDescription": "A modern desktop client for SSH, SFTP/SCP, and S3",
+    "longDescription": "OmniSSH is a free, open-source desktop application that combines an SSH terminal, SFTP/SCP file explorer, and S3-compatible cloud storage browser into a single, fast, privacy-first tool. Built with Tauri v2, it runs natively on macOS, Windows, and Linux.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -35,7 +35,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDExMjY1REUyNkY0RDVDQjUKUldTMVhFMXY0bDBtRWM5d2Q1OHY3RWc1aHl4c0tYaFJjOGtGY1pSd2hrK0FRNkJzNkFzNi9GbEYK",
       "endpoints": [
-        "https://github.com/macnev2013/anySCP/releases/latest/download/latest.json"
+        "https://github.com/lefos13/anySCP/releases/latest/download/latest.json"
       ]
     }
   }
