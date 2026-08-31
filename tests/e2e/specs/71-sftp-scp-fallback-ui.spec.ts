@@ -1,7 +1,7 @@
 /*
  * E2E tests for SFTP to SCP fallback UI flow.
  * Verifies that connecting to an SSH target with SFTP disabled automatically falls back
- * to SCP transport, rendering the directory listing and updating UI indicators.
+ * to SCP transport, rendering the directory listing and setting data-explorer-transport='scp'.
  */
 
 import { expect } from "chai";
@@ -27,7 +27,7 @@ describe("SFTP to SCP fallback UI", () => {
         await waitForDashboard();
     });
 
-    it("falls back to SCP transport and renders directory listing for SFTP-disabled host", async () => {
+    it("falls back to SCP transport and sets data-explorer-transport='scp'", async () => {
         // Save host pointing to sshd-scp target
         await openNewHostModal();
         await fillPasswordHostForm({
@@ -55,7 +55,15 @@ describe("SFTP to SCP fallback UI", () => {
             { timeout: 30_000, timeoutMsg: "SCP-fallback explorer tab never opened" },
         );
 
-        // Verify directory rows render via SCP fallback
+        // Explicitly assert that the explorer view has transport='scp' attribute
+        const explorerContainer = await $("[data-explorer-transport='scp']");
+        await explorerContainer.waitForDisplayed({
+            timeout: 20_000,
+            timeoutMsg: "data-explorer-transport='scp' attribute not found on container",
+        });
+        expect(await explorerContainer.isDisplayed()).to.equal(true);
+
+        // Verify directory rows render under SCP fallback
         await browser.waitUntil(
             async () => (await $$("[data-entry-row='true']")).length > 0,
             { timeout: 20_000, timeoutMsg: "no entries rendered under SCP fallback" },

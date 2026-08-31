@@ -8,7 +8,6 @@ import { expect } from "chai";
 import { resetApp } from "../helpers/reset.js";
 import { waitForDashboard } from "../helpers/dashboard.js";
 import {
-    clickConnect,
     clickSave,
     fillPasswordHostForm,
     findHostCardByLabel,
@@ -64,6 +63,7 @@ describe("linked and standalone explorer coexistence", () => {
 
         // 4. Switch back to Hosts dashboard and open a standalone Explorer tab
         const hostsTab = await $("[data-tab-label='Hosts']");
+        await hostsTab.waitForClickable({ timeout: 5_000 });
         await hostsTab.click();
         await waitForDashboard();
 
@@ -79,12 +79,16 @@ describe("linked and standalone explorer coexistence", () => {
 
         // 6. Switch back to Terminal tab and verify linked panel is still open
         const terminalTab = await $("[data-tab-type='terminal']");
+        await terminalTab.waitForClickable({ timeout: 5_000 });
         await terminalTab.click();
-        await resizeHandle.waitForDisplayed({ timeout: 10_000 });
-        expect(await resizeHandle.isDisplayed()).to.equal(true);
+
+        const activeResizeHandle = await $("[data-testid='linked-explorer-resize-handle']");
+        await activeResizeHandle.waitForDisplayed({ timeout: 10_000 });
+        expect(await activeResizeHandle.isDisplayed()).to.equal(true);
 
         // 7. Switch to Standalone Explorer tab and verify it renders
         const sftpTab = await $("[data-tab-type='sftp']");
+        await sftpTab.waitForClickable({ timeout: 5_000 });
         await sftpTab.click();
         await waitForExplorer();
     });

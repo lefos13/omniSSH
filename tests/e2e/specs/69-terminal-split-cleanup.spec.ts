@@ -54,8 +54,7 @@ describe("terminal split and tab cleanup", () => {
             { timeout: 10_000, timeoutMsg: "split pane did not appear" },
         );
 
-        const splitContainer = await $("[data-testid='split-container']");
-        expect(await splitContainer.isExisting()).to.equal(true);
+        expect((await $$("[data-testid='split-container']")).length).to.equal(1);
 
         // Close one split pane via Cmd+W
         await cmd("w");
@@ -65,7 +64,7 @@ describe("terminal split and tab cleanup", () => {
             async () => (await $$("[data-testid^='terminal-']")).length === 1,
             { timeout: 10_000, timeoutMsg: "split pane was not cleaned up" },
         );
-        expect(await splitContainer.isExisting()).to.equal(false);
+        expect((await $$("[data-testid='split-container']")).length).to.equal(0);
 
         // Close the remaining terminal pane via Cmd+W
         await cmd("w");

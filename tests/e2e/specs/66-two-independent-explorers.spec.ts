@@ -71,14 +71,15 @@ describe("two independent explorer connections", () => {
         await waitForTabCount(3);
         expect(await tabCountOfType("sftp")).to.equal(2);
 
-        // Verify switching between both explorer tabs works cleanly
-        const sftpTabs = await $$("[data-tab-type='sftp']");
-        expect(sftpTabs.length).to.equal(2);
-
-        await sftpTabs[0].click();
+        // Verify switching between both explorer tabs works cleanly without stale references
+        const tab1 = await $(`[data-tab-label='host-explorer-1']`);
+        await tab1.waitForClickable({ timeout: 5_000 });
+        await tab1.click();
         await waitForExplorer();
 
-        await sftpTabs[1].click();
+        const tab2 = await $(`[data-tab-label='host-explorer-2']`);
+        await tab2.waitForClickable({ timeout: 5_000 });
+        await tab2.click();
         await waitForExplorer();
     });
 });

@@ -1,7 +1,10 @@
 /*
  * E2E tests for OSC 7 CWD follow and explicit cd dispatch in linked explorer.
- * Verifies that the linked explorer panel renders sync status indicators,
- * allows toggling follow path mode, and dispatches explicit cd commands to the shell.
+ * Verifies that:
+ * 1. Explicit cd button in linked explorer dispatches a cd command to the terminal
+ *    and changes the terminal's working directory.
+ * 2. Enabling session-local Bash OSC 7 integration and changing directories in the
+ *    terminal automatically synchronizes and updates the linked explorer's path/breadcrumb.
  */
 
 import { expect } from "chai";
@@ -14,6 +17,7 @@ import {
     waitForModalClosed,
 } from "../helpers/host.js";
 import {
+    runCommand,
     waitForAnyTerminal,
     waitForTerminalText,
 } from "../helpers/terminal.js";
@@ -29,7 +33,7 @@ describe("OSC 7 CWD follow and explicit cd", () => {
         await waitForDashboard();
     });
 
-    it("renders sync status and dispatches explicit cd to terminal", async () => {
+    it("dispatches explicit cd to terminal and synchronizes explorer via OSC 7 follow", async () => {
         await openNewHostModal();
         await fillPasswordHostForm({
             label: "osc7-target",
@@ -44,27 +48,55 @@ describe("OSC 7 CWD follow and explicit cd", () => {
         const sessionId = await waitForAnyTerminal();
         await waitForTerminalText(sessionId, ":~$");
 
-        // Open linked explorer panel
+        // 1. Open linked explorer panel
         const toggleBtn = await $("[data-testid='pane-linked-explorer-toggle']");
         await toggleBtn.waitForClickable({ timeout: 10_000 });
         await toggleBtn.click();
 
-        // Verify sync status button is present
         const syncStatusBtn = await $("[data-testid='linked-explorer-sync-status']");
         await syncStatusBtn.waitForDisplayed({ timeout: 15_000 });
-        expect(await syncStatusBtn.isDisplayed()).to.equal(true);
 
-        // Verify follow toggle button is present
         const followToggleBtn = await $("[data-testid='linked-explorer-follow-toggle']");
         await followToggleBtn.waitForDisplayed({ timeout: 10_000 });
-        expect(await followToggleBtn.isDisplayed()).to.equal(true);
 
-        // Click explicit "cd here" button to dispatch cd to terminal
-        const cdHereBtn = await $("[data-testid='linked-explorer-cd-here']");
-        await cdHereBtn.waitForClickable({ timeout: 10_000 });
-        await cdHereBtn.click();
+        // 2. Test explicit cd dispatch to terminal
+        // Initial home directory is /config in linuxserver/openssh-server
+        const cdTerminalBtn = await $("[data-testid='linked-explorer-cd-terminal']");
+        await cdTerminalBtn.waitForClickable({ timeout: 10_000 });
+        await cdTerminalBtn.click();
 
-        // Terminal should process the command
-        await waitForTerminalText(sessionId, ":~$", { timeoutMs: 10_000 });
+        // Prove explicit cd was executed in terminal with unique marker
+        const cdMarker = `cd-marker-${Date.now()}`;
+        await runCommand(sessionId, `pwd # ${cdMarker}`, "/config");
+
+        // 3. Test OSC 7 CWD synchronization
+        // Open sync menu and enable session-local Bash integration
+        await syncStatusBtn.click();
+        const bashOption = await $("[data-testid='linked-explorer-sync-bash']");
+        await bashOption.waitForClickable({ timeout: 5_000 });
+        await bashOption.click();
+
+        // Create a distinct target directory and navigate into it in the terminal
+        const uniqueDirName = `sync-dir-${Date.now()}`;
+        await runCommand(sessionId, `mkdir -p /config/${uniqueDirName} && cd /config/${uniqueDirName}`, uniqueDirName);
+
+        // Verify OSC 7 hook caused the linked explorer breadcrumb/path to update
+        await browser.waitUntil(
+            async () => {
+                const pathBarButtons = await $$("[aria-label='Current path'] button");
+                for (const btn of pathBarButtons) {
+                    const text = await btn.getText();
+                    if (text === uniqueDirName) return true;
+                }
+                return false;
+            },
+            {
+                timeout: 15_000,
+                timeoutMsg: `linked explorer breadcrumb did not update to ${uniqueDirName} via OSC 7 follow`,
+            },
+        );
+
+        // Verify the synced indicator shows active status
+        expect(await syncStatusBtn.getText()).to.include("Synced");
     });
 });

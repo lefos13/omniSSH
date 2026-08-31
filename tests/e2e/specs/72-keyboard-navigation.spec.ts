@@ -46,6 +46,6 @@ describe("keyboard shortcuts and focus navigation", () => {
         // Dismiss with Escape key
         await browser.keys(["Escape"]);
         await waitForModalClosed();
-        expect(await modal.isExisting()).to.equal(false);
+        expect((await $$("[data-testid='host-modal']")).length).to.equal(0);
     });
 });
