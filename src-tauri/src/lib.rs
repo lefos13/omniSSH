@@ -310,6 +310,8 @@ pub fn run() {
             // SSH config import
             import::commands::import_parse_ssh_config,
             import::commands::import_save_ssh_hosts,
+            import::commands::import_parse_mobaxterm,
+            import::commands::import_save_mobaxterm_hosts,
             // Port forwarding
             portforward::commands::pf_create_rule,
             portforward::commands::pf_update_rule,

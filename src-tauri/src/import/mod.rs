@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod mobaxterm;
 
 use serde::{Deserialize, Serialize};
 use ssh2_config::{ParseRule, SshConfig};
@@ -10,6 +11,9 @@ use crate::types::SshError;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
+/* The preview shape is shared by OpenSSH and MobaXterm so the persistence
+ * command can keep metadata handling in one place while source parsers stay
+ * isolated. */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SshConfigEntry {
     pub host_alias: String,
@@ -21,7 +25,17 @@ pub struct SshConfigEntry {
     pub keep_alive_interval: Option<u32>,
     pub is_pattern: bool,
     pub already_exists: bool,
+    #[serde(default)]
+    pub group_path: Option<String>,
+    #[serde(default)]
+    pub startup_command: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
+
+pub type MobaXtermEntry = SshConfigEntry;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SshConfigImportEntry {
@@ -49,6 +63,8 @@ pub struct ImportResult {
     pub skipped: u32,
     pub errors: Vec<String>,
 }
+
+pub use mobaxterm::parse_mobaxterm;
 
 // ─── Parsing ─────────────────────────────────────────────────────────────────
 
@@ -81,11 +97,9 @@ pub fn parse_ssh_config(
     // Pre-scan for Host block names
     let host_aliases = extract_host_aliases(&config_path)?;
 
-    info!(
-        path = %config_path.display(),
-        hosts = host_aliases.len(),
-        "Parsed SSH config"
-    );
+    /* Keep import telemetry useful without exposing the user-selected config
+     * path, which can contain usernames or other machine-specific details. */
+    info!(hosts = host_aliases.len(), "Parsed SSH config");
 
     let home = home_dir();
     let mut entries = Vec::new();
@@ -145,6 +159,10 @@ pub fn parse_ssh_config(
             keep_alive_interval,
             is_pattern,
             already_exists,
+            group_path: None,
+            startup_command: None,
+            notes: None,
+            warnings: Vec::new(),
         });
     }
 
@@ -218,4 +236,61 @@ fn resolve_key_path(path: &Path, home: &str) -> String {
 
     // Relative path — resolve relative to ~/.ssh/
     format!("{}/.ssh/{}", home, path_str)
+}
+
+/* Capture the importer diagnostic at the tracing boundary so the host-count
+ * signal remains covered without allowing a selected config path to return. */
+#[cfg(test)]
+mod tests {
+    use super::parse_ssh_config;
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for SharedWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .expect("capture lock")
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn ssh_parse_log_contains_count_without_config_path() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let config_path = directory.path().join("security-audit-config-marker");
+        std::fs::write(&config_path, "Host imported\n  HostName example.com\n")
+            .expect("write SSH config");
+
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer = {
+            let output = Arc::clone(&output);
+            move || SharedWriter(Arc::clone(&output))
+        };
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(writer)
+            .finish();
+
+        let result = tracing::subscriber::with_default(subscriber, || {
+            parse_ssh_config(config_path.to_str(), &[])
+        });
+        assert!(result.is_ok());
+
+        let logged = String::from_utf8(output.lock().expect("capture lock").clone())
+            .expect("UTF-8 log output");
+        assert!(logged.contains("Parsed SSH config"));
+        assert!(logged.contains("hosts=1"));
+        assert!(!logged.contains("security-audit-config-marker"));
+    }
 }

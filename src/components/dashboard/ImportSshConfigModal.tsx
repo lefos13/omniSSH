@@ -1,26 +1,57 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2, AlertCircle, Check, FileText } from "lucide-react";
 import { ModalShell, BTN_GHOST, BTN_PRIMARY } from "../shared/ModalShell";
-import type { SshConfigEntry, ImportResult } from "../../types";
+import type {
+  ImportResult,
+  MobaXtermEntry,
+  SshConfigEntry,
+  SshConfigImportEntry,
+} from "../../types";
+
+/* The modal keeps the existing OpenSSH flow and adds MobaXterm as a source
+ * selection. Both sources use the same preview and save payload shape, while
+ * the native dialog and file parsing remain behind source-specific Rust IPC. */
+export type ImportSource = "ssh" | "mobaxterm";
 
 interface ImportSshConfigModalProps {
   onClose: () => void;
   onImported: () => void;
+  initialSource?: ImportSource;
 }
 
-export function ImportSshConfigModal({ onClose, onImported }: ImportSshConfigModalProps) {
+export function toImportEntry(entry: SshConfigEntry): SshConfigImportEntry {
+  return {
+    host_alias: entry.host_alias,
+    hostname: entry.hostname || entry.host_alias,
+    user: entry.user || "root",
+    port: entry.port ?? 22,
+    identity_file: entry.identity_file,
+    proxy_jump: entry.proxy_jump,
+    keep_alive_interval: entry.keep_alive_interval,
+    group_path: entry.group_path ?? entry.groupPath ?? null,
+    startup_command: entry.startup_command ?? entry.startupCommand ?? null,
+    notes: entry.notes ?? null,
+  };
+}
+
+/* Preview order is immutable until the next scan, so the row index is a
+ * unique identity even when MobaXterm repeats a bookmark label in folders. */
+type ImportRowId = number;
+
+export function ImportSshConfigModal({
+  onClose,
+  onImported,
+  initialSource = "ssh",
+}: ImportSshConfigModalProps) {
+  const [source, setSource] = useState<ImportSource>(initialSource);
   const [entries, setEntries] = useState<SshConfigEntry[]>([]);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [scanning, setScanning] = useState(true);
+  const [selected, setSelected] = useState<Set<ImportRowId>>(new Set());
+  const [scanning, setScanning] = useState(initialSource === "ssh");
   const [importing, setImporting] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [configPath, setConfigPath] = useState<string | null>(null);
-
-  // Scan on mount
-  useEffect(() => {
-    void scan(null);
-  }, []);
+  const scanRequest = useRef(0);
 
   // Close on Escape
   useEffect(() => {
@@ -31,45 +62,74 @@ export function ImportSshConfigModal({ onClose, onImported }: ImportSshConfigMod
     return () => document.removeEventListener("keydown", handler);
   }, [onClose, importing]);
 
-  const scan = async (path: string | null) => {
+  const scan = async (nextSource: ImportSource, path: string | null) => {
+    if (nextSource === "mobaxterm" && !path) {
+      setScanning(false);
+      return;
+    }
+
+    const requestId = ++scanRequest.current;
     setScanning(true);
     setScanError(null);
     setEntries([]);
     setSelected(new Set());
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const results = await invoke<SshConfigEntry[]>("import_parse_ssh_config", {
-        path,
-      });
+      const results = nextSource === "ssh"
+        ? await invoke<SshConfigEntry[]>("import_parse_ssh_config", { path })
+        : await invoke<MobaXtermEntry[]>("import_parse_mobaxterm", { path });
+      if (requestId !== scanRequest.current) return;
       setEntries(results);
       // Auto-select non-pattern, non-duplicate entries
-      const autoSelected = new Set<string>();
-      for (const e of results) {
+      const autoSelected = new Set<ImportRowId>();
+      for (const [index, e] of results.entries()) {
         if (!e.is_pattern && !e.already_exists) {
-          autoSelected.add(e.host_alias);
+          autoSelected.add(index);
         }
       }
       setSelected(autoSelected);
     } catch (err) {
+      if (requestId !== scanRequest.current) return;
       const msg = err && typeof err === "object" && "message" in err
         ? String((err as { message: string }).message)
-        : "Failed to parse SSH config";
+        : nextSource === "ssh" ? "Failed to parse SSH config" : "Failed to parse MobaXterm file";
       setScanError(msg);
     } finally {
-      setScanning(false);
+      if (requestId === scanRequest.current) setScanning(false);
     }
+  };
+
+  // Scan the default OpenSSH config on mount; MobaXterm waits for a file pick.
+  useEffect(() => {
+    if (initialSource === "ssh") void scan("ssh", null);
+  }, []);
+
+  const handleSourceChange = (nextSource: ImportSource) => {
+    if (nextSource === source) return;
+    scanRequest.current += 1;
+    setSource(nextSource);
+    setConfigPath(null);
+    setEntries([]);
+    setSelected(new Set());
+    setScanError(null);
+    setResult(null);
+    setScanning(nextSource === "ssh");
+    if (nextSource === "ssh") void scan("ssh", null);
   };
 
   const handleBrowse = async () => {
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const path = await open({
-        title: "Select SSH config file",
+        title: source === "ssh" ? "Select SSH config file" : "Select MobaXterm file",
         multiple: false,
+        ...(source === "mobaxterm" && {
+          filters: [{ name: "MobaXterm files", extensions: ["mxtsessions", "ini"] }],
+        }),
       });
       if (path && typeof path === "string") {
         setConfigPath(path);
-        await scan(path);
+        await scan(source, path);
       }
     } catch { /* cancelled */ }
   };
@@ -79,18 +139,11 @@ export function ImportSshConfigModal({ onClose, onImported }: ImportSshConfigMod
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const toImport = entries
-        .filter((e) => selected.has(e.host_alias) && !e.is_pattern)
-        .map((e) => ({
-          host_alias: e.host_alias,
-          hostname: e.hostname || e.host_alias,
-          user: e.user || "root",
-          port: e.port ?? 22,
-          identity_file: e.identity_file,
-          proxy_jump: e.proxy_jump,
-          keep_alive_interval: e.keep_alive_interval,
-        }));
+        .filter((e, index) => selected.has(index) && !e.is_pattern)
+        .map(toImportEntry);
 
-      const importResult = await invoke<ImportResult>("import_save_ssh_hosts", {
+      const command = source === "ssh" ? "import_save_ssh_hosts" : "import_save_mobaxterm_hosts";
+      const importResult = await invoke<ImportResult>(command, {
         entries: toImport,
       });
       setResult(importResult);
@@ -105,32 +158,33 @@ export function ImportSshConfigModal({ onClose, onImported }: ImportSshConfigMod
     }
   };
 
-  const toggleSelect = (alias: string) => {
+  const toggleSelect = (rowId: ImportRowId) => {
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(alias)) next.delete(alias);
-      else next.add(alias);
+      if (next.has(rowId)) next.delete(rowId);
+      else next.add(rowId);
       return next;
     });
   };
 
   const selectAll = () => {
-    const all = new Set<string>();
-    for (const e of entries) {
-      if (!e.is_pattern) all.add(e.host_alias);
+    const all = new Set<ImportRowId>();
+    for (const [index, e] of entries.entries()) {
+      if (!e.is_pattern) all.add(index);
     }
     setSelected(all);
   };
 
   const selectNone = () => setSelected(new Set());
 
-  const importableCount = entries.filter((e) => selected.has(e.host_alias) && !e.is_pattern).length;
+  const importableCount = entries.filter((e, index) => selected.has(index) && !e.is_pattern).length;
+  const warnings = [...new Set(entries.flatMap((entry) => entry.warnings ?? []))];
 
   return (
     <ModalShell
       open
       onClose={onClose}
-      title="Import SSH Config"
+      title={source === "ssh" ? "Import SSH Config" : "Import MobaXterm"}
       maxWidth="lg"
       scrollable
       busy={importing}
@@ -142,7 +196,7 @@ export function ImportSshConfigModal({ onClose, onImported }: ImportSshConfigMod
             <button type="button" onClick={onClose} disabled={importing} className={BTN_GHOST}>Cancel</button>
             <button
               type="button"
-              data-testid="import-ssh-config-submit"
+              data-testid={source === "ssh" ? "import-ssh-config-submit" : "import-mobaxterm-submit"}
               onClick={() => void handleImport()}
               disabled={importing || importableCount === 0}
               className={BTN_PRIMARY}
@@ -154,6 +208,35 @@ export function ImportSshConfigModal({ onClose, onImported }: ImportSshConfigMod
       }
     >
         <div>
+          {/* Source selection preserves the existing OpenSSH entry point while
+              making MobaXterm a first-class path through the same preview. */}
+          <div className="flex items-center gap-1 p-1 mb-4 rounded-lg bg-bg-base border border-border/60" role="group" aria-label="Import source">
+            <button
+              type="button"
+              data-testid="import-ssh-config-source"
+              aria-pressed={source === "ssh"}
+              onClick={() => handleSourceChange("ssh")}
+              className={[
+                "flex-1 px-3 py-1.5 rounded-md text-[length:var(--text-xs)] font-medium transition-colors",
+                source === "ssh" ? "bg-bg-overlay text-text-primary shadow-sm" : "text-text-muted hover:text-text-primary",
+              ].join(" ")}
+            >
+              OpenSSH
+            </button>
+            <button
+              type="button"
+              data-testid="import-mobaxterm-source"
+              aria-pressed={source === "mobaxterm"}
+              onClick={() => handleSourceChange("mobaxterm")}
+              className={[
+                "flex-1 px-3 py-1.5 rounded-md text-[length:var(--text-xs)] font-medium transition-colors",
+                source === "mobaxterm" ? "bg-bg-overlay text-text-primary shadow-sm" : "text-text-muted hover:text-text-primary",
+              ].join(" ")}
+            >
+              MobaXterm
+            </button>
+          </div>
+
           {/* Result view */}
           {result ? (
             <div className="flex flex-col items-center gap-4 py-8">
@@ -181,28 +264,32 @@ export function ImportSshConfigModal({ onClose, onImported }: ImportSshConfigMod
           ) : scanning ? (
             <div className="flex flex-col items-center gap-4 py-12">
               <Loader2 size={26} strokeWidth={2} className="text-accent motion-safe:animate-spin" />
-              <p className="text-[length:var(--text-sm)] text-text-muted">Scanning SSH config...</p>
+              <p className="text-[length:var(--text-sm)] text-text-muted">
+                Scanning {source === "ssh" ? "SSH config" : "MobaXterm file"}...
+              </p>
             </div>
           ) : scanError ? (
             <div className="flex flex-col items-center gap-4 py-8">
               <AlertCircle size={26} strokeWidth={1.8} className="text-status-error" />
               <p className="text-[length:var(--text-sm)] text-status-error text-center">{scanError}</p>
               <button
-                onClick={handleBrowse}
+                onClick={() => void handleBrowse()}
                 className="px-4 py-2 text-[length:var(--text-sm)] font-medium text-text-inverse bg-accent hover:bg-accent-hover rounded-lg transition-colors duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
-                Browse for config file
+                {source === "ssh" ? "Browse for config file" : "Browse for MobaXterm file"}
               </button>
             </div>
           ) : entries.length === 0 ? (
             <div className="flex flex-col items-center gap-4 py-8">
               <FileText size={26} strokeWidth={1.5} className="text-text-muted/40" />
-              <p className="text-[length:var(--text-sm)] text-text-muted">No hosts found in SSH config</p>
+              <p className="text-[length:var(--text-sm)] text-text-muted">
+                No hosts found in {source === "ssh" ? "SSH config" : "MobaXterm file"}
+              </p>
               <button
-                onClick={handleBrowse}
+                onClick={() => void handleBrowse()}
                 className="px-3 py-1.5 text-[length:var(--text-xs)] font-medium text-text-muted border border-border rounded-lg hover:text-text-primary hover:bg-bg-overlay transition-all duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
-                Try a different file
+                {source === "ssh" ? "Try a different file" : "Browse for MobaXterm file"}
               </button>
             </div>
           ) : (
@@ -210,15 +297,29 @@ export function ImportSshConfigModal({ onClose, onImported }: ImportSshConfigMod
               {/* Config path + browse */}
               <div className="flex items-center gap-2 mb-4">
                 <span className="text-[length:var(--text-2xs)] font-mono text-text-muted truncate flex-1">
-                  {configPath ?? "~/.ssh/config"}
+                  {configPath ?? (source === "ssh" ? "~/.ssh/config" : "Choose a MobaXterm file")}
                 </span>
                 <button
                   onClick={() => void handleBrowse()}
                   className="text-[length:var(--text-2xs)] text-accent hover:text-accent-hover transition-colors duration-[var(--duration-fast)] shrink-0"
                 >
-                  Change
+                  {source === "ssh" ? "Change" : "Browse"}
                 </button>
               </div>
+
+              {warnings.length > 0 && (
+                <div
+                  data-testid="import-mobaxterm-warnings"
+                  role="status"
+                  className="mb-4 rounded-lg border border-status-connecting/30 bg-status-connecting/10 px-3 py-2"
+                >
+                  {warnings.map((warning) => (
+                    <p key={warning} className="text-[length:var(--text-xs)] text-status-connecting">
+                      {warning}
+                    </p>
+                  ))}
+                </div>
+              )}
 
               {/* Select all / none */}
               <div className="flex items-center gap-3 mb-3">
@@ -231,13 +332,13 @@ export function ImportSshConfigModal({ onClose, onImported }: ImportSshConfigMod
 
               {/* Host list */}
               <div className="rounded-lg bg-bg-base border border-border/60 divide-y divide-border/30 overflow-hidden">
-                {entries.map((entry) => {
-                  const isChecked = selected.has(entry.host_alias);
+                {entries.map((entry, index) => {
+                  const isChecked = selected.has(index);
                   const disabled = entry.is_pattern;
 
                   return (
                     <label
-                      key={entry.host_alias}
+                      key={`import-row-${index}`}
                       className={[
                         "flex items-center gap-3 px-3 py-2 cursor-pointer",
                         "hover:bg-bg-overlay/40 transition-colors duration-[var(--duration-fast)]",
@@ -248,7 +349,7 @@ export function ImportSshConfigModal({ onClose, onImported }: ImportSshConfigMod
                         type="checkbox"
                         checked={isChecked}
                         disabled={disabled}
-                        onChange={() => !disabled && toggleSelect(entry.host_alias)}
+                        onChange={() => !disabled && toggleSelect(index)}
                         className="w-3.5 h-3.5 rounded border-border text-accent focus:ring-ring shrink-0"
                       />
 

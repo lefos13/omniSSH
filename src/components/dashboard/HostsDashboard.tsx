@@ -22,7 +22,7 @@ import {
   arrayMove,
   sortableKeyboardCoordinates,
 } from "@dnd-kit/sortable";
-import { ImportSshConfigModal } from "./ImportSshConfigModal";
+import { ImportSshConfigModal, type ImportSource } from "./ImportSshConfigModal";
 import { S3ConnectDialog } from "../s3/S3ConnectDialog";
 import { useHostsStore } from "../../stores/hosts-store";
 import { useGroupsStore } from "../../stores/groups-store";
@@ -68,6 +68,7 @@ export function HostsDashboard() {
   // Group modal state
   const [groupModalOpen, setGroupModalOpen] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
+  const [importSource, setImportSource] = useState<ImportSource>("ssh");
   const [s3DialogOpen, setS3DialogOpen] = useState(false);
 
   // Group delete dialog state
@@ -645,7 +646,10 @@ export function HostsDashboard() {
 
             <button
               data-testid="import-ssh-config-button"
-              onClick={() => setImportModalOpen(true)}
+              onClick={() => {
+                setImportSource("ssh");
+                setImportModalOpen(true);
+              }}
               className={[
                 "flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium uppercase tracking-wide",
                 "bg-bg-surface border border-border text-text-secondary",
@@ -657,6 +661,27 @@ export function HostsDashboard() {
             >
               <Import size={14} strokeWidth={2} aria-hidden="true" />
               Import
+            </button>
+
+            {/* Keep MobaXterm discoverable from the existing connections
+                toolbar while leaving the established OpenSSH test id intact. */}
+            <button
+              data-testid="import-mobaxterm-button"
+              onClick={() => {
+                setImportSource("mobaxterm");
+                setImportModalOpen(true);
+              }}
+              className={[
+                "flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium uppercase tracking-wide",
+                "bg-bg-surface border border-border text-text-secondary",
+                "hover:border-border-focus hover:text-text-primary hover:bg-bg-overlay",
+                "transition-all duration-[var(--duration-fast)]",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              ].join(" ")}
+              title="Import from MobaXterm"
+            >
+              <Import size={14} strokeWidth={2} aria-hidden="true" />
+              MobaXterm
             </button>
           </div>
 
@@ -829,6 +854,7 @@ export function HostsDashboard() {
         <ImportSshConfigModal
           onClose={() => setImportModalOpen(false)}
           onImported={() => void loadHosts()}
+          initialSource={importSource}
         />
       )}
 

@@ -122,6 +122,8 @@ export interface HostHealthCheckResult {
   latencyMs: number | null;
 }
 
+/* OpenSSH and MobaXterm previews share one additive contract so the React
+ * importer can preserve metadata while Rust remains the only file parser. */
 // ─── SSH Config Import ────────────────────────────────────────────────────────
 
 export interface SshConfigEntry {
@@ -139,7 +141,10 @@ export interface SshConfigEntry {
   startupCommand?: string | null;
   startup_command?: string | null;
   notes?: string | null;
+  warnings?: string[];
 }
+
+export type MobaXtermEntry = SshConfigEntry;
 
 export interface SshConfigImportEntry {
   host_alias: string;
