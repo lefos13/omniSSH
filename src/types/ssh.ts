@@ -134,6 +134,26 @@ export interface SshConfigEntry {
   keep_alive_interval: number | null;
   is_pattern: boolean;
   already_exists: boolean;
+  groupPath?: string | null;
+  group_path?: string | null;
+  startupCommand?: string | null;
+  startup_command?: string | null;
+  notes?: string | null;
+}
+
+export interface SshConfigImportEntry {
+  host_alias: string;
+  hostname: string;
+  user: string;
+  port: number;
+  identity_file?: string | null;
+  proxy_jump?: string | null;
+  keep_alive_interval?: number | null;
+  groupPath?: string | null;
+  group_path?: string | null;
+  startupCommand?: string | null;
+  startup_command?: string | null;
+  notes?: string | null;
 }
 
 export interface ImportResult {

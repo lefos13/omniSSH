@@ -29,9 +29,18 @@ pub struct SshConfigImportEntry {
     pub hostname: String,
     pub user: String,
     pub port: u16,
+    #[serde(default, alias = "identityFile")]
     pub identity_file: Option<String>,
+    #[serde(default, alias = "proxyJump")]
     pub proxy_jump: Option<String>,
+    #[serde(default, alias = "keepAliveInterval")]
     pub keep_alive_interval: Option<u32>,
+    #[serde(default, alias = "groupPath")]
+    pub group_path: Option<String>,
+    #[serde(default, alias = "startupCommand")]
+    pub startup_command: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
