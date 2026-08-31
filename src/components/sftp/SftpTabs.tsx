@@ -1,5 +1,7 @@
 import { X } from "lucide-react";
 import { useSftpStore } from "../../stores/sftp-store";
+import { useTabStore } from "../../stores/tab-store";
+import { closeExplorerSession, resolveExplorerTransport } from "../../lib/explorer-transport";
 
 export function SftpTabs() {
   const sessions = useSftpStore((s) => s.sessions);
@@ -14,8 +16,11 @@ export function SftpTabs() {
   const handleClose = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("sftp_close", { sftpSessionId: id });
+      const session = useSftpStore.getState().sessions.get(id);
+      const tab = useTabStore.getState().tabs.get(id);
+      const tabTransport = tab?.type === "sftp" ? tab.transport : undefined;
+      const transport = resolveExplorerTransport(session, tabTransport) ?? "sftp";
+      await closeExplorerSession(transport, id);
     } catch {
       // Already closed
     }

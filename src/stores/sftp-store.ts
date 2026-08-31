@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { SftpEntry, SftpClipboard } from "../types";
+import type { Transport } from "../lib/explorer-transport";
 
 // ─── Session shape ────────────────────────────────────────────────────────────
 
@@ -18,6 +19,7 @@ export interface SftpSession {
   error: string | null;
   sortBy: "name" | "size" | "modified";
   sortAsc: boolean;
+  transport?: Transport;
 }
 
 // ─── Store shape ──────────────────────────────────────────────────────────────
@@ -27,7 +29,7 @@ interface SftpState {
   activeSftpSessionId: string | null;
   clipboard: SftpClipboard | null;
 
-  openSession: (sftpSessionId: string, sshSessionId: string, label: string, username?: string, sudoMode?: boolean, startDirectory?: string) => void;
+  openSession: (sftpSessionId: string, sshSessionId: string, label: string, username?: string, sudoMode?: boolean, startDirectory?: string, transport?: Transport) => void;
   closeSession: (sftpSessionId: string) => void;
   /** Replace an existing session's ID in-place (used by sudo toggle). */
   swapSession: (oldId: string, newId: string, sudoMode: boolean) => void;
@@ -50,7 +52,7 @@ export const useSftpStore = create<SftpState>((set) => ({
   activeSftpSessionId: null,
   clipboard: null,
 
-  openSession: (sftpSessionId, sshSessionId, label, username, sudoMode, startDirectory) =>
+  openSession: (sftpSessionId, sshSessionId, label, username, sudoMode, startDirectory, transport) =>
     set((state) => {
       const next = new Map(state.sessions);
       next.set(sftpSessionId, {
@@ -66,6 +68,7 @@ export const useSftpStore = create<SftpState>((set) => ({
         error: null,
         sortBy: "name",
         sortAsc: true,
+        transport,
       });
       return { sessions: next, activeSftpSessionId: sftpSessionId };
     }),

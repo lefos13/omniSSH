@@ -41,6 +41,7 @@ import { GroupModal } from "./GroupModal";
 import { ConnectionDialog } from "./ConnectionDialog";
 import { RecentConnections } from "./RecentConnections";
 import { toast } from "../../stores/toast-store";
+import { closeExplorerSession } from "../../lib/explorer-transport";
 
 // Abort an in-flight SSH connection attempt on the Rust side. Best-effort:
 // the attempt may already have settled, in which case the backend reports it
@@ -348,13 +349,12 @@ export function HostsDashboard() {
         if (cancelled) {
           // Cancel landed while the explorer channel was opening — drop the
           // explorer session and the connection beneath it; no tab was added.
-          if (transport === "sftp") void invoke("sftp_close", { sftpSessionId: explorerSessionId });
-          else void invoke("scp_close", { scpSessionId: explorerSessionId });
+          void closeExplorerSession(transport, explorerSessionId);
           void invoke("ssh_disconnect", { sessionId });
           return;
         }
 
-        useSftpStore.getState().openSession(explorerSessionId, sessionId, label, host.username, false, host.start_directory ?? undefined);
+        useSftpStore.getState().openSession(explorerSessionId, sessionId, label, host.username, false, host.start_directory ?? undefined, transport);
 
         setConnectingHost(null);
         useTabStore.getState().addTab({ type: "sftp", id: explorerSessionId, label, transport });

@@ -11,6 +11,19 @@
 
 export type Transport = "sftp" | "scp";
 
+/*
+ * Session metadata is optional until the linked-explorer store carries its
+ * transport field. Prefer that metadata when present, then let a unified tab
+ * supply the current standalone fallback.
+ */
+export function resolveExplorerTransport(
+  session: { transport?: unknown } | undefined,
+  fallback?: Transport,
+): Transport | undefined {
+  const transport = session?.transport;
+  return transport === "sftp" || transport === "scp" ? transport : fallback;
+}
+
 /** The Tauri event channel that carries transfer progress for a transport. */
 export function transferEventName(transport: Transport): string {
   return `${transport}:transfer`;
@@ -37,4 +50,12 @@ export async function explorerInvoke<T>(
     [sessionKey(transport)]: sessionId,
     ...extra,
   });
+}
+
+/** Close an SFTP/SCP session using the transport-specific command contract. */
+export function closeExplorerSession(
+  transport: Transport,
+  sessionId: string,
+): Promise<void> {
+  return explorerInvoke<void>(transport, "close", sessionId);
 }

@@ -42,6 +42,8 @@ async fn close_dependent_protocol_sessions(
     sftp_manager: &Arc<SftpManager>,
     scp_manager: &Arc<ScpManager>,
 ) {
+    ssh_manager.mark_protocol_disconnecting(session_id);
+
     for session in sftp_manager.remove_sessions_for_ssh(session_id) {
         let sftp = session.sftp.lock().await;
         if let Err(error) = sftp.close().await {

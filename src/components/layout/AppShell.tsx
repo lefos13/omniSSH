@@ -26,6 +26,7 @@ import { TransfersPage } from "../transfers";
 import { usePortForwardEvents } from "../../hooks/use-port-forward-events";
 import { UpdateDialog } from "../updater/UpdateDialog";
 import { Toaster } from "../shared/Toaster";
+import { closeExplorerSession, resolveExplorerTransport } from "../../lib/explorer-transport";
 
 export function AppShell() {
   const themeMode = useSettingsStore((s) => s.themeMode);
@@ -124,13 +125,16 @@ export function AppShell() {
             void (async () => {
               const { invoke } = await import("@tauri-apps/api/core");
               if (tab.type === "sftp") {
+                const { useSftpStore } =
+                  await import("../../stores/sftp-store");
+                const session = useSftpStore.getState().sessions.get(activeTabId);
+                const transport =
+                  resolveExplorerTransport(session, tab.transport) ?? "sftp";
                 try {
-                  await invoke("sftp_close", { sftpSessionId: activeTabId });
+                  await closeExplorerSession(transport, activeTabId);
                 } catch {
                   /* ok */
                 }
-                const { useSftpStore } =
-                  await import("../../stores/sftp-store");
                 useSftpStore.getState().closeSession(activeTabId);
               } else if (tab.type === "s3") {
                 try {

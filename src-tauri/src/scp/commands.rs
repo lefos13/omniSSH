@@ -39,6 +39,10 @@ pub async fn scp_open(
     ssh_manager: State<'_, SshManager>,
     scp_manager: State<'_, Arc<ScpManager>>,
 ) -> Result<String, ScpError> {
+    let _protocol_open = ssh_manager
+        .begin_protocol_open(&session_id)
+        .ok_or_else(|| ScpError::ChannelError("SSH session is disconnecting".to_string()))?;
+
     let handle = ssh_manager
         .get_handle(&session_id)
         .map_err(|e| ScpError::SshSessionNotFound(e.to_string()))?;
@@ -61,21 +65,34 @@ pub async fn scp_open(
         .unwrap_or(super::listing::Flavor::Posix);
 
     let scp_id = uuid::Uuid::new_v4().to_string();
-    let ssh_session_id = session_id.clone();
-    scp_manager.insert_session(
-        scp_id.clone(),
-        ScpSessionWrapper {
-            ssh_session_id: session_id,
-            ssh_handle: handle,
-            flavor,
-        },
-    );
-    ssh_manager.register_protocol_session(
+    let wrapper = ScpSessionWrapper {
+        ssh_session_id: session_id,
+        ssh_handle: handle,
+        flavor,
+    };
+    let wrapper_ssh_session_id = wrapper.ssh_session_id.clone();
+    let registration = ssh_manager.publish_protocol_session(
         ProtocolSessionKind::Scp,
         scp_id.clone(),
-        ssh_session_id,
+        wrapper_ssh_session_id,
         owns_ssh,
+        || scp_manager.insert_session(scp_id.clone(), wrapper),
+        || scp_manager.remove_session(&scp_id),
     );
+    match registration {
+        Ok(()) => {}
+        Err(Some(wrapper)) => {
+            drop(wrapper);
+            return Err(ScpError::ChannelError(
+                "SSH session is disconnecting".to_string(),
+            ));
+        }
+        Err(None) => {
+            return Err(ScpError::ChannelError(
+                "SSH session is disconnecting".to_string(),
+            ));
+        }
+    }
 
     tracing::info!(scp_session_id = %scp_id, flavor = %flavor.as_str(), "SCP session opened");
     crate::telemetry::capture(

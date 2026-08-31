@@ -2,16 +2,8 @@ import { useEffect } from "react";
 import { useSessionStore } from "../stores/session-store";
 import { useSftpStore } from "../stores/sftp-store";
 import { useTabStore } from "../stores/tab-store";
-import type { SftpSession } from "../stores/sftp-store";
 import type { SshStatusPayload } from "../types";
-
-type ExplorerTransport = "sftp" | "scp";
-
-function sessionTransport(session: SftpSession): ExplorerTransport | undefined {
-  /* The linked-explorer branch will add this narrow field to SftpSession. */
-  const transport = (session as SftpSession & { transport?: unknown }).transport;
-  return transport === "sftp" || transport === "scp" ? transport : undefined;
-}
+import { closeExplorerSession, resolveExplorerTransport } from "../lib/explorer-transport";
 
 /*
  * A lost SSH transport invalidates every explorer channel attached to it.
@@ -24,30 +16,20 @@ async function cleanupDisconnectedSftpSessions(sshSessionId: string): Promise<vo
     .filter((session) => session.sshSessionId === sshSessionId)
     .map((session) => {
       const tab = useTabStore.getState().tabs.get(session.sftpSessionId);
-      const transport = sessionTransport(session)
-        ?? (tab?.type === "sftp" ? tab.transport : undefined)
-        ?? "sftp";
+      const transport = resolveExplorerTransport(
+        session,
+        tab?.type === "sftp" ? tab.transport : undefined,
+      ) ?? "sftp";
       return {
         sftpSessionId: session.sftpSessionId,
-        closeCommand: transport === "scp" ? "scp_close" : "sftp_close",
-      } as const;
+        transport,
+      };
     });
   if (sessions.length === 0) return;
 
-  let core: typeof import("@tauri-apps/api/core") | null = null;
-  try {
-    core = await import("@tauri-apps/api/core");
-  } catch {
-    // Continue with local cleanup when Tauri is unavailable.
-  }
-
-  for (const { sftpSessionId, closeCommand } of sessions) {
-    const closeArgs = closeCommand === "scp_close"
-      ? { scpSessionId: sftpSessionId }
-      : { sftpSessionId };
-
+  for (const { sftpSessionId, transport } of sessions) {
     try {
-      await core?.invoke(closeCommand, closeArgs);
+      await closeExplorerSession(transport, sftpSessionId);
     } catch {
       // The SSH transport is already gone; local cleanup is still required.
     }

@@ -83,12 +83,12 @@ describe("useSshStatus", () => {
   });
 
   it("closes SCP fallback sessions through the SCP command", async () => {
-    useSftpStore.getState().openSession("scp-1", "ssh-1", "host-1");
+    useSftpStore.getState().openSession("scp-1", "ssh-1", "host-1", undefined, false, undefined, "scp");
     useTabStore.getState().addTab({
       type: "sftp",
       id: "scp-1",
       label: "host-1",
-      transport: "scp",
+      transport: "sftp",
     });
 
     renderHook(() => useSshStatus());

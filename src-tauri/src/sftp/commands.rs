@@ -102,6 +102,10 @@ pub async fn sftp_open(
     ssh_manager: State<'_, SshManager>,
     sftp_manager: State<'_, Arc<SftpManager>>,
 ) -> Result<String, SftpError> {
+    let _protocol_open = ssh_manager
+        .begin_protocol_open(&session_id)
+        .ok_or_else(|| SftpError::ChannelError("SSH session is disconnecting".to_string()))?;
+
     // 1. Obtain the shared Handle from the live SSH session.
     let handle_arc = ssh_manager
         .get_handle(&session_id)
@@ -187,22 +191,40 @@ pub async fn sftp_open(
         .await
         .map_err(|e| SftpError::ProtocolError(e.to_string()))?;
 
-    // 5. Store and return a fresh ID.
+    // 5. Store a fresh ID before registering it with the SSH lifecycle.
     let sftp_id = uuid::Uuid::new_v4().to_string();
-    let ssh_session_id = session_id.clone();
-    sftp_manager.insert_session(
-        sftp_id.clone(),
-        SftpSessionWrapper {
-            sftp: Arc::new(tokio::sync::Mutex::new(sftp)),
-            ssh_session_id: session_id,
-        },
-    );
-    ssh_manager.register_protocol_session(
+    let sftp_arc = Arc::new(tokio::sync::Mutex::new(sftp));
+    let registration = ssh_manager.publish_protocol_session(
         ProtocolSessionKind::Sftp,
         sftp_id.clone(),
-        ssh_session_id,
+        session_id.clone(),
         owns_ssh,
+        || {
+            sftp_manager.insert_session(
+                sftp_id.clone(),
+                SftpSessionWrapper {
+                    sftp: sftp_arc,
+                    ssh_session_id: session_id.clone(),
+                },
+            );
+        },
+        || sftp_manager.remove_session(&sftp_id),
     );
+    match registration {
+        Ok(()) => {}
+        Err(Some(session)) => {
+            let sftp = session.sftp.lock().await;
+            let _ = sftp.close().await;
+            return Err(SftpError::ChannelError(
+                "SSH session is disconnecting".to_string(),
+            ));
+        }
+        Err(None) => {
+            return Err(SftpError::ChannelError(
+                "SSH session is disconnecting".to_string(),
+            ));
+        }
+    }
 
     let sudo = use_sudo.unwrap_or(false);
     tracing::info!(sftp_session_id = %sftp_id, sudo, "SFTP session opened");
