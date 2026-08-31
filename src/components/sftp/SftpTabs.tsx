@@ -27,17 +27,16 @@ export function SftpTabs() {
     closeSession(id);
   };
 
-  const handleTabKeyDown = (id: string, e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (e.target !== e.currentTarget) return;
+  const handleTabKeyDown = (id: string, e: React.KeyboardEvent<HTMLButtonElement>) => {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       setActiveSftpSession(id);
     }
   };
 
-  /* Tabs use a non-button container so the close action can remain a native
-   * button without invalid nested markup; explicit keyboard handling preserves
-   * the activation behavior that the original outer button provided. */
+  /* Each item keeps the tab and close actions as sibling native controls under
+   * a neutral wrapper, avoiding an interactive descendant inside role="tab";
+   * the active tab alone remains in the normal keyboard tab sequence. */
   return (
     <div className="flex items-end h-[var(--tabbar-height)] bg-bg-surface border-b border-border no-select px-1.5">
       <div
@@ -51,13 +50,6 @@ export function SftpTabs() {
           return (
             <div
               key={session.sftpSessionId}
-              role="tab"
-              tabIndex={0}
-              aria-selected={isActive}
-              data-testid={`sftp-tab-${session.sftpSessionId}`}
-              onClick={() => setActiveSftpSession(session.sftpSessionId)}
-              onKeyDown={(e) => handleTabKeyDown(session.sftpSessionId, e)}
-              title={session.label}
               className={[
                 "group relative flex items-center gap-2 px-3.5 h-[34px] shrink-0 max-w-[220px]",
                 "text-[length:var(--text-sm)] leading-none rounded-t-lg cursor-pointer",
@@ -68,9 +60,21 @@ export function SftpTabs() {
                   : "text-text-secondary hover:text-text-primary hover:bg-bg-base/30",
               ].join(" ")}
             >
-              <span className={`truncate ${isActive ? "font-medium" : ""}`}>
-                {session.label}
-              </span>
+              <button
+                type="button"
+                role="tab"
+                tabIndex={isActive ? 0 : -1}
+                aria-selected={isActive}
+                data-testid={`sftp-tab-${session.sftpSessionId}`}
+                onClick={() => setActiveSftpSession(session.sftpSessionId)}
+                onKeyDown={(e) => handleTabKeyDown(session.sftpSessionId, e)}
+                title={session.label}
+                className="min-w-0 flex-1 h-full truncate text-left text-inherit focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+              >
+                <span className={`truncate ${isActive ? "font-medium" : ""}`}>
+                  {session.label}
+                </span>
+              </button>
 
               <button
                 type="button"

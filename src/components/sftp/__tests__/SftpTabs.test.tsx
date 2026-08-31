@@ -75,13 +75,21 @@ describe("SftpTabs transport-aware close", () => {
 
     const { container } = render(<SftpTabs />);
     const secondTab = screen.getByTestId("sftp-tab-session-2");
+    const firstTab = screen.getByTestId("sftp-tab-session-1");
+    const secondClose = screen.getByTestId("sftp-tab-session-2-close");
+
+    expect(firstTab).toHaveAttribute("tabindex", "0");
+    expect(secondTab).toHaveAttribute("tabindex", "-1");
+    expect(secondClose.closest('[role="tab"]')).toBeNull();
 
     fireEvent.click(secondTab);
     expect(useSftpStore.getState().activeSftpSessionId).toBe("session-2");
+    expect(firstTab).toHaveAttribute("tabindex", "-1");
+    expect(secondTab).toHaveAttribute("tabindex", "0");
 
     fireEvent.keyDown(secondTab, { key: "Enter" });
     expect(useSftpStore.getState().activeSftpSessionId).toBe("session-2");
-    fireEvent.keyDown(screen.getByTestId("sftp-tab-session-1"), { key: " " });
+    fireEvent.keyDown(firstTab, { key: " " });
     expect(useSftpStore.getState().activeSftpSessionId).toBe("session-1");
 
     expect(container.querySelectorAll("button button")).toHaveLength(0);
