@@ -27,20 +27,40 @@ export function SftpTabs() {
     closeSession(id);
   };
 
+  const handleTabKeyDown = (id: string, e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget) return;
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      setActiveSftpSession(id);
+    }
+  };
+
+  /* Tabs use a non-button container so the close action can remain a native
+   * button without invalid nested markup; explicit keyboard handling preserves
+   * the activation behavior that the original outer button provided. */
   return (
     <div className="flex items-end h-[var(--tabbar-height)] bg-bg-surface border-b border-border no-select px-1.5">
-      <div className="flex items-end gap-1 overflow-x-auto flex-1 min-w-0 pb-0">
+      <div
+        className="flex items-end gap-1 overflow-x-auto flex-1 min-w-0 pb-0"
+        role="tablist"
+        aria-label="Open SFTP sessions"
+      >
         {sessionList.map((session) => {
           const isActive = session.sftpSessionId === activeSftpSessionId;
 
           return (
-            <button
+            <div
               key={session.sftpSessionId}
+              role="tab"
+              tabIndex={0}
+              aria-selected={isActive}
+              data-testid={`sftp-tab-${session.sftpSessionId}`}
               onClick={() => setActiveSftpSession(session.sftpSessionId)}
+              onKeyDown={(e) => handleTabKeyDown(session.sftpSessionId, e)}
               title={session.label}
               className={[
                 "group relative flex items-center gap-2 px-3.5 h-[34px] shrink-0 max-w-[220px]",
-                "text-[length:var(--text-sm)] leading-none rounded-t-lg",
+                "text-[length:var(--text-sm)] leading-none rounded-t-lg cursor-pointer",
                 "transition-[color,background-color,box-shadow] duration-[var(--duration-fast)]",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                 isActive
@@ -53,6 +73,8 @@ export function SftpTabs() {
               </span>
 
               <button
+                type="button"
+                data-testid={`sftp-tab-${session.sftpSessionId}-close`}
                 onClick={(e) => void handleClose(session.sftpSessionId, e)}
                 className={[
                   "ml-auto p-1 -mr-1 rounded shrink-0",
@@ -62,7 +84,7 @@ export function SftpTabs() {
                   "focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 ].join(" ")}
                 aria-label={`Close ${session.label}`}
-                tabIndex={-1}
+                tabIndex={0}
               >
                 <X size={13} strokeWidth={2} aria-hidden="true" />
               </button>
@@ -73,7 +95,7 @@ export function SftpTabs() {
                   aria-hidden="true"
                 />
               )}
-            </button>
+            </div>
           );
         })}
       </div>
