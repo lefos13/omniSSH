@@ -139,7 +139,7 @@
 ## 📥 Installation
 
 ### Pre-Built Releases
-Download the latest binaries for your platform from the [Releases](https://github.com/lefos13/anySCP/releases) page:
+Download the latest binaries for your platform from the [Releases](https://github.com/lefos13/omniSSH/releases) page:
 
 * **macOS (Apple Silicon & Intel)**: `.dmg`
   > *Note for macOS*: If Gatekeeper prompts with an unverified developer warning, run:
@@ -163,8 +163,8 @@ Download the latest binaries for your platform from the [Releases](https://githu
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/lefos13/anySCP.git
-cd anySCP
+git clone https://github.com/lefos13/omniSSH.git
+cd omniSSH
 
 # 2. Install frontend dependencies
 pnpm install --frozen-lockfile

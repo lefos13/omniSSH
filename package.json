@@ -5,7 +5,7 @@
   "description": "A modern desktop client for SSH, SFTP/SCP, and S3",
   "author": "Nevil Macwan <macnev2013@gmail.com>",
   "license": "MIT",
-  "repository": "https://github.com/lefos13/anySCP",
+  "repository": "https://github.com/lefos13/omniSSH",
   "type": "module",
   "scripts": {
     "dev": "vite",

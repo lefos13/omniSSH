@@ -4,8 +4,8 @@ version = "0.0.0-dev"
 description = "OmniSSH - A modern desktop client for SSH, SFTP, and S3"
 authors = ["Nevil Macwan <macnev2013@gmail.com>"]
 license = "MIT"
-repository = "https://github.com/lefos13/anySCP"
-homepage = "https://github.com/lefos13/anySCP"
+repository = "https://github.com/lefos13/omniSSH"
+homepage = "https://github.com/lefos13/omniSSH"
 edition = "2021"
 
 [lib]

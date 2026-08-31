@@ -2,7 +2,7 @@ import { ExternalLink } from "lucide-react";
 import { useUpdaterStore } from "../../stores/updater-store";
 import { ModalShell, BTN_GHOST, BTN_SECONDARY, BTN_PRIMARY } from "../shared/ModalShell";
 
-const REPO_URL = "https://github.com/lefos13/anySCP";
+const REPO_URL = "https://github.com/lefos13/omniSSH";
 
 /**
  * Shown when an update is available. Lets users install now, defer, or skip.
