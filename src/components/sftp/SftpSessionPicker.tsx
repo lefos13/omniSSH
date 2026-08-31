@@ -21,7 +21,7 @@ export function SftpSessionPicker() {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const sftpSessionId = await invoke<string>("sftp_open", { sessionId: sshSessionId });
-      openSession(sftpSessionId, sshSessionId, label, username);
+      openSession(sftpSessionId, sshSessionId, label, username, false, undefined, "sftp");
     } catch (err: unknown) {
       const msg =
         err && typeof err === "object" && "message" in err

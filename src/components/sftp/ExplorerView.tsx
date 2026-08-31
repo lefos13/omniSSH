@@ -8,7 +8,7 @@ import type { ExplorerEntry, ExplorerClipboard, ChmodResult, DragOutResult } fro
 import { ExplorerToolbar, ExplorerFileTable, ExplorerDropZone } from "../explorer";
 import { DropOverwriteDialog } from "./DropOverwriteDialog";
 import { createSftpProvider, toExplorerEntry } from "../../providers/sftp-provider";
-import { explorerInvoke, transferEventName, type Transport } from "../../lib/explorer-transport";
+import { closeExplorerSession, explorerInvoke, transferEventName, type Transport } from "../../lib/explorer-transport";
 import { editorLaunchErrorMessage } from "../../lib/editor-errors";
 import { conflictingNames } from "../../lib/drop-conflicts";
 import { toast } from "../../stores/toast-store";
@@ -294,7 +294,7 @@ export function ExplorerView({
       });
 
       // 2. Close old session on the server (best-effort).
-      try { await invoke("sftp_close", { sftpSessionId: sessionId }); } catch { /* ignore */ }
+      try { await closeExplorerSession(transport, sessionId); } catch { /* ignore */ }
 
       // 3. Swap the store entry (preserves currentPath so the remount lands
       //    in the same directory).

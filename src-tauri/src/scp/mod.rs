@@ -177,7 +177,6 @@ pub struct TransferInfo {
 pub struct ScpSessionWrapper {
     /// The SSH session this SCP session rides on. Retained for diagnostics /
     /// future teardown coordination even though transfers only need the handle.
-    #[allow(dead_code)]
     pub ssh_session_id: String,
     pub ssh_handle: Arc<Mutex<russh::client::Handle<SshClientHandler>>>,
     /// Remote userland, detected once at open — decides which listing/stat
@@ -211,8 +210,20 @@ impl ScpManager {
             .ok_or_else(|| ScpError::SessionNotFound(id.to_string()))
     }
 
-    pub fn remove_session(&self, id: &str) {
-        self.sessions.remove(id);
+    pub fn remove_session(&self, id: &str) -> Option<ScpSessionWrapper> {
+        self.sessions.remove(id).map(|(_, session)| session)
+    }
+
+    pub fn remove_sessions_for_ssh(&self, ssh_session_id: &str) -> Vec<ScpSessionWrapper> {
+        let ids: Vec<String> = self
+            .sessions
+            .iter()
+            .filter(|entry| entry.value().ssh_session_id == ssh_session_id)
+            .map(|entry| entry.key().clone())
+            .collect();
+        ids.into_iter()
+            .filter_map(|id| self.sessions.remove(&id).map(|(_, session)| session))
+            .collect()
     }
 
     pub fn insert_transfer(&self, id: String, token: CancellationToken) {

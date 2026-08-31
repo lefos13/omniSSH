@@ -141,18 +141,22 @@ export function HistoryPage() {
       // subsystem is disabled.
       let explorerSessionId: string;
       let transport: "sftp" | "scp" = "sftp";
+      /*
+       * History Explore creates a bare connection solely for this explorer,
+       * so the Rust session owns the connection until its final close.
+       */
       try {
-        explorerSessionId = await invoke<string>("sftp_open", { sessionId });
+        explorerSessionId = await invoke<string>("sftp_open", { sessionId, ownsSsh: true });
       } catch (sftpErr) {
         try {
-          explorerSessionId = await invoke<string>("scp_open", { sessionId });
+          explorerSessionId = await invoke<string>("scp_open", { sessionId, ownsSsh: true });
           transport = "scp";
         } catch {
           throw sftpErr;
         }
       }
 
-      useSftpStore.getState().openSession(explorerSessionId, sessionId, label, entry.username);
+      useSftpStore.getState().openSession(explorerSessionId, sessionId, label, entry.username, false, undefined, transport);
       useTabStore.getState().addTab({ type: "sftp", id: explorerSessionId, label, transport });
     } catch {
       // Errors surface via SFTP page

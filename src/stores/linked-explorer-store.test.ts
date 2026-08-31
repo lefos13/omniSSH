@@ -170,7 +170,9 @@ describe("linked-explorer-store", () => {
     expect(useLinkedExplorerStore.getState().openTabIds.has("tab-1")).toBe(false);
     expect(useLinkedExplorerStore.getState().bindings.has("tab-1")).toBe(false);
     expect(useSftpStore.getState().sessions.has("sftp-1")).toBe(false);
-    expect(invoke).toHaveBeenCalledWith("sftp_close", { sftpSessionId: "sftp-1" });
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("sftp_close", { sftpSessionId: "sftp-1" }),
+    );
 
     // Terminal SSH session remains connected and untouched
     expect(useSessionStore.getState().sessions.has("ssh-1")).toBe(true);
@@ -214,7 +216,9 @@ describe("linked-explorer-store", () => {
     await useLinkedExplorerStore.getState().ensureConnected("tab-1", "ssh-pane-2");
 
     // Previous channel closed and removed from sftp-store
-    expect(invoke).toHaveBeenCalledWith("sftp_close", { sftpSessionId: "sftp-pane-1" });
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("sftp_close", { sftpSessionId: "sftp-pane-1" }),
+    );
     expect(useSftpStore.getState().sessions.has("sftp-pane-1")).toBe(false);
 
     // New binding active
@@ -335,7 +339,9 @@ describe("linked-explorer-store", () => {
     // Subscription cleans up linked explorer binding and closes session
     expect(useLinkedExplorerStore.getState().bindings.has("tab-1")).toBe(false);
     expect(useSftpStore.getState().sessions.has("sftp-auto")).toBe(false);
-    expect(invoke).toHaveBeenCalledWith("sftp_close", { sftpSessionId: "sftp-auto" });
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("sftp_close", { sftpSessionId: "sftp-auto" }),
+    );
   });
 
   it("atomically closes linked panels and bindings when a remote SSH transport drops", async () => {

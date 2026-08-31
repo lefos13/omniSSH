@@ -20,6 +20,7 @@ import {
 import { useTabStore, type UnifiedTab, type PageId } from "../../stores/tab-store";
 import { useSessionStore, countPanes, getTopDirection } from "../../stores/session-store";
 import { useUiStore } from "../../stores/ui-store";
+import { closeExplorerSession, resolveExplorerTransport } from "../../lib/explorer-transport";
 
 // ─── Icon mapping ───────────────────────────────────────────────────────────
 
@@ -130,8 +131,10 @@ export function UnifiedTabBar() {
         }
       }
     } else if (tab.type === "sftp") {
-      try { await invoke("sftp_close", { sftpSessionId: tabId }); } catch { /* ok */ }
       const { useSftpStore } = await import("../../stores/sftp-store");
+      const session = useSftpStore.getState().sessions.get(tabId);
+      const transport = resolveExplorerTransport(session, tab.transport) ?? "sftp";
+      try { await closeExplorerSession(transport, tabId); } catch { /* ok */ }
       useSftpStore.getState().closeSession(tabId);
     } else if (tab.type === "s3") {
       try { await invoke("s3_disconnect", { s3SessionId: tabId }); } catch { /* ok */ }

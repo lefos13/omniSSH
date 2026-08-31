@@ -12,6 +12,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useSessionStore } from "./session-store";
 import { useSftpStore } from "./sftp-store";
 import type { Transport } from "../lib/explorer-transport";
+import type { LayoutNode } from "../types";
 
 export interface LinkedExplorerBinding {
   tabId: string;
@@ -82,6 +83,24 @@ function clearInFlightForTab(tabId: string): void {
       inFlightConnections.delete(key);
     }
   }
+}
+
+/*
+ * Linked explorer panels are keyed by terminal tabs, while disconnect events
+ * identify individual SSH panes. Walk each tab layout so a dropped split pane
+ * also clears its owning linked panel without affecting unrelated tabs.
+ */
+function layoutContainsSession(layout: LayoutNode, sshSessionId: string): boolean {
+  if (layout.type === "pane") return layout.sessionId === sshSessionId;
+  return layout.children.some((child) => layoutContainsSession(child, sshSessionId));
+}
+
+function terminalTabIdsForSshSession(sshSessionId: string): Set<string> {
+  return new Set(
+    [...useSessionStore.getState().tabs.entries()]
+      .filter(([, tab]) => layoutContainsSession(tab.layout, sshSessionId))
+      .map(([tabId]) => tabId),
+  );
 }
 
 export const useLinkedExplorerStore = create<LinkedExplorerState>((set, get) => ({
@@ -340,9 +359,13 @@ export const useLinkedExplorerStore = create<LinkedExplorerState>((set, get) => 
     const bindings = [...get().bindings.entries()].filter(
       ([, binding]) => binding.sshSessionId === sshSessionId,
     );
-    if (bindings.length === 0) return;
+    const terminalTabIds = terminalTabIdsForSshSession(sshSessionId);
+    const affectedTabIds = new Set([
+      ...bindings.map(([tabId]) => tabId),
+      ...[...get().openTabIds].filter((tabId) => terminalTabIds.has(tabId)),
+    ]);
 
-    for (const [tabId] of bindings) {
+    for (const tabId of affectedTabIds) {
       bumpGeneration(tabId);
       clearInFlightForTab(tabId);
     }
@@ -350,7 +373,7 @@ export const useLinkedExplorerStore = create<LinkedExplorerState>((set, get) => 
     set((state) => {
       const nextBindings = new Map(state.bindings);
       const nextOpenTabIds = new Set(state.openTabIds);
-      for (const [tabId] of bindings) {
+      for (const tabId of affectedTabIds) {
         nextBindings.delete(tabId);
         nextOpenTabIds.delete(tabId);
       }

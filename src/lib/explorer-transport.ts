@@ -11,6 +11,19 @@
 
 export type Transport = "sftp" | "scp";
 
+/*
+ * Session metadata is authoritative whenever it is available. A unified tab
+ * supplies the compatibility fallback for older standalone sessions that do
+ * not yet carry a transport value.
+ */
+export function resolveExplorerTransport(
+  session: { transport?: Transport } | undefined,
+  fallback?: Transport,
+): Transport | undefined {
+  const transport = session?.transport;
+  return transport ?? fallback;
+}
+
 /** The Tauri event channel that carries transfer progress for a transport. */
 export function transferEventName(transport: Transport): string {
   return `${transport}:transfer`;
@@ -37,4 +50,12 @@ export async function explorerInvoke<T>(
     [sessionKey(transport)]: sessionId,
     ...extra,
   });
+}
+
+/** Close an SFTP/SCP session using the transport-specific command contract. */
+export function closeExplorerSession(
+  transport: Transport,
+  sessionId: string,
+): Promise<void> {
+  return explorerInvoke<void>(transport, "close", sessionId);
 }

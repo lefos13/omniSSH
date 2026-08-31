@@ -137,7 +137,9 @@ describe("SFTP to SCP fallback and transport dispatch", () => {
       invoke.mockResolvedValueOnce(undefined);
       useLinkedExplorerStore.getState().closeLinkedExplorer(tabId);
 
-      expect(invoke).toHaveBeenCalledWith("scp_close", { scpSessionId: "scp-chan-888" });
+      await vi.waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("scp_close", { scpSessionId: "scp-chan-888" }),
+      );
       expect(useSftpStore.getState().sessions.has("scp-chan-888")).toBe(false);
     });
   });

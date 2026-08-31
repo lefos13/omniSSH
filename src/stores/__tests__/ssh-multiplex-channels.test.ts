@@ -90,7 +90,9 @@ describe("Two protocol channels over one SSH session", () => {
     invoke.mockResolvedValueOnce(undefined); // sftp_close
     useLinkedExplorerStore.getState().closeLinkedExplorer(tabId);
 
-    expect(invoke).toHaveBeenCalledWith("sftp_close", { sftpSessionId: "sftp-chan-302" });
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("sftp_close", { sftpSessionId: "sftp-chan-302" }),
+    );
 
     // SFTP session is removed from sftp-store
     expect(useSftpStore.getState().sessions.has("sftp-chan-302")).toBe(false);

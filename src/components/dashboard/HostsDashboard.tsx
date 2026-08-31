@@ -41,6 +41,7 @@ import { GroupModal } from "./GroupModal";
 import { ConnectionDialog } from "./ConnectionDialog";
 import { RecentConnections } from "./RecentConnections";
 import { toast } from "../../stores/toast-store";
+import { closeExplorerSession } from "../../lib/explorer-transport";
 
 // Abort an in-flight SSH connection attempt on the Rust side. Best-effort:
 // the attempt may already have settled, in which case the backend reports it
@@ -329,12 +330,16 @@ export function HostsDashboard() {
 
         let explorerSessionId: string;
         let transport: "sftp" | "scp" = "sftp";
+        /*
+         * This no-PTY connection exists only for the standalone explorer, so
+         * Rust owns its lifetime and can release it with the final channel.
+         */
         try {
-          explorerSessionId = await invoke<string>("sftp_open", { sessionId });
+          explorerSessionId = await invoke<string>("sftp_open", { sessionId, ownsSsh: true });
         } catch (sftpErr) {
           // SFTP subsystem unavailable — retry over SCP on the same connection.
           try {
-            explorerSessionId = await invoke<string>("scp_open", { sessionId });
+            explorerSessionId = await invoke<string>("scp_open", { sessionId, ownsSsh: true });
             transport = "scp";
           } catch {
             // Surface the original SFTP error if SCP also fails.
@@ -345,13 +350,12 @@ export function HostsDashboard() {
         if (cancelled) {
           // Cancel landed while the explorer channel was opening — drop the
           // explorer session and the connection beneath it; no tab was added.
-          if (transport === "sftp") void invoke("sftp_close", { sftpSessionId: explorerSessionId });
-          else void invoke("scp_close", { scpSessionId: explorerSessionId });
+          void closeExplorerSession(transport, explorerSessionId);
           void invoke("ssh_disconnect", { sessionId });
           return;
         }
 
-        useSftpStore.getState().openSession(explorerSessionId, sessionId, label, host.username, false, host.start_directory ?? undefined);
+        useSftpStore.getState().openSession(explorerSessionId, sessionId, label, host.username, false, host.start_directory ?? undefined, transport);
 
         setConnectingHost(null);
         useTabStore.getState().addTab({ type: "sftp", id: explorerSessionId, label, transport });

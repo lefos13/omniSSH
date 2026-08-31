@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { UnifiedTabBar } from "../UnifiedTabBar";
 import { useTabStore, pageTabId, type UnifiedTab } from "../../../stores/tab-store";
+import { useSftpStore } from "../../../stores/sftp-store";
 
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -57,6 +58,7 @@ describe("UnifiedTabBar", () => {
   beforeEach(() => {
     invoke.mockReset();
     invoke.mockResolvedValue(undefined);
+    useSftpStore.setState({ sessions: new Map(), activeSftpSessionId: null });
     seedTabs([hostsTab, snippetsTab], hostsTab.id);
   });
 
@@ -78,6 +80,78 @@ describe("UnifiedTabBar", () => {
     // Give the (would-be) async close path a beat, then confirm nothing happened.
     await Promise.resolve();
     expect(useTabStore.getState().tabs.has(hostsTab.id)).toBe(true);
+  });
+
+  /* Both protocol variants use the same unified tab surface, so these checks
+   * protect the IPC command and argument selected from tab transport metadata. */
+  it("closes an SFTP explorer tab through sftp_close", async () => {
+    const sftpTab: UnifiedTab = {
+      type: "sftp",
+      id: "sftp-1",
+      label: "SFTP",
+      transport: "sftp",
+    };
+    seedTabs([hostsTab, sftpTab], sftpTab.id);
+
+    render(<UnifiedTabBar />);
+    middleClick(screen.getByTestId(`tab-${sftpTab.id}`));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("sftp_close", { sftpSessionId: "sftp-1" }),
+    );
+    expect(invoke).not.toHaveBeenCalledWith("scp_close", { scpSessionId: "sftp-1" });
+    expect(useTabStore.getState().tabs.has(sftpTab.id)).toBe(false);
+  });
+
+  it("closes an SCP explorer tab through scp_close", async () => {
+    const scpTab: UnifiedTab = {
+      type: "sftp",
+      id: "scp-1",
+      label: "SCP",
+      transport: "scp",
+    };
+    seedTabs([hostsTab, scpTab], scpTab.id);
+
+    render(<UnifiedTabBar />);
+    middleClick(screen.getByTestId(`tab-${scpTab.id}`));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("scp_close", { scpSessionId: "scp-1" }),
+    );
+    expect(invoke).not.toHaveBeenCalledWith("sftp_close", { sftpSessionId: "scp-1" });
+    expect(useTabStore.getState().tabs.has(scpTab.id)).toBe(false);
+  });
+
+  /*
+   * When session metadata carries a specific transport, the tab close path must
+   * dispatch through that transport even if the tab carries a fallback.
+   */
+  it("prefers session transport metadata over the tab fallback on middle-click", async () => {
+    const sftpTab: UnifiedTab = {
+      type: "sftp",
+      id: "sftp-1",
+      label: "SFTP",
+      transport: "sftp",
+    };
+    useSftpStore.getState().openSession(
+      "sftp-1",
+      "ssh-1",
+      "SFTP",
+      "user",
+      false,
+      undefined,
+      "scp",
+    );
+    seedTabs([hostsTab, sftpTab], sftpTab.id);
+
+    render(<UnifiedTabBar />);
+    middleClick(screen.getByTestId(`tab-${sftpTab.id}`));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("scp_close", { scpSessionId: "sftp-1" }),
+    );
+    expect(invoke).not.toHaveBeenCalledWith("sftp_close", { sftpSessionId: "sftp-1" });
+    expect(useTabStore.getState().tabs.has(sftpTab.id)).toBe(false);
   });
 
   it("shows no scroll chevrons when the strip fits", () => {
