@@ -338,6 +338,30 @@ describe("linked-explorer-store", () => {
     expect(invoke).toHaveBeenCalledWith("sftp_close", { sftpSessionId: "sftp-auto" });
   });
 
+  it("atomically closes linked panels and bindings when a remote SSH transport drops", async () => {
+    useSessionStore.getState().addSession("ssh-drop", dummyHost);
+    invoke.mockImplementation(async (command) => {
+      if (command === "sftp_open") return "sftp-drop";
+      return undefined;
+    });
+
+    useLinkedExplorerStore.getState().openLinkedExplorer("tab-drop");
+    await useLinkedExplorerStore.getState().ensureConnected("tab-drop", "ssh-drop");
+
+    const cleanup = useLinkedExplorerStore
+      .getState()
+      .disconnectBindingsForSshSession("ssh-drop");
+
+    expect(useLinkedExplorerStore.getState().openTabIds.has("tab-drop")).toBe(false);
+    expect(useLinkedExplorerStore.getState().bindings.has("tab-drop")).toBe(false);
+    expect(useSftpStore.getState().sessions.has("sftp-drop")).toBe(false);
+    expect(useSessionStore.getState().sessions.has("ssh-drop")).toBe(true);
+
+    await cleanup;
+    expect(invoke).toHaveBeenCalledWith("sftp_close", { sftpSessionId: "sftp-drop" });
+    expect(invoke).not.toHaveBeenCalledWith("ssh_disconnect", expect.anything());
+  });
+
   it("cleans up openTabIds when a terminal tab is removed (even with no binding established)", () => {
     useSessionStore.getState().addSession("ssh-open-only", dummyHost);
     useLinkedExplorerStore.getState().openLinkedExplorer("ssh-open-only");

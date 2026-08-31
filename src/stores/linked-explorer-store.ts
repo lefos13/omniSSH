@@ -41,6 +41,7 @@ interface LinkedExplorerState {
   removeBinding: (tabId: string) => void;
   ensureConnected: (tabId: string, sshSessionId: string) => Promise<LinkedExplorerBinding | null>;
   disconnectBinding: (tabId: string) => Promise<void>;
+  disconnectBindingsForSshSession: (sshSessionId: string) => Promise<void>;
 }
 
 const STORAGE_KEY_WIDTH = "anyscp_linked_explorer_width";
@@ -330,6 +331,43 @@ export const useLinkedExplorerStore = create<LinkedExplorerState>((set, get) => 
     ) {
       tabGenerations.delete(tabId);
     }
+  },
+
+  /* A remote transport drop leaves the terminal session in the session store
+   * for its disconnect overlay. Remove every linked panel and binding for that
+   * SSH ID in one state update, then release protocol sessions best-effort. */
+  disconnectBindingsForSshSession: async (sshSessionId) => {
+    const bindings = [...get().bindings.entries()].filter(
+      ([, binding]) => binding.sshSessionId === sshSessionId,
+    );
+    if (bindings.length === 0) return;
+
+    for (const [tabId] of bindings) {
+      bumpGeneration(tabId);
+      clearInFlightForTab(tabId);
+    }
+
+    set((state) => {
+      const nextBindings = new Map(state.bindings);
+      const nextOpenTabIds = new Set(state.openTabIds);
+      for (const [tabId] of bindings) {
+        nextBindings.delete(tabId);
+        nextOpenTabIds.delete(tabId);
+      }
+      return { bindings: nextBindings, openTabIds: nextOpenTabIds };
+    });
+
+    await Promise.all(bindings.map(async ([, binding]) => {
+      if (!binding.sftpSessionId) return;
+      useSftpStore.getState().closeSession(binding.sftpSessionId);
+      const closeCmd = binding.transport === "scp" ? "scp_close" : "sftp_close";
+      const key = binding.transport === "scp" ? "scpSessionId" : "sftpSessionId";
+      try {
+        await invoke(closeCmd, { [key]: binding.sftpSessionId });
+      } catch {
+        /* The remote SSH transport is already gone. */
+      }
+    }));
   },
 }));
 
