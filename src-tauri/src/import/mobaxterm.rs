@@ -273,7 +273,11 @@ fn parse_ssh_record(
         hostname: Some(hostname.to_string()),
         user: Some(user),
         port: Some(port),
-        identity_file: resolve_key_path(nonempty_field(fields, 14), source_drive_root),
+        identity_file: resolve_key_path(
+            nonempty_field(fields, 14),
+            source_drive_root,
+            &mut warnings,
+        ),
         proxy_jump,
         keep_alive_interval: None,
         is_pattern: false,
@@ -282,6 +286,7 @@ fn parse_ssh_record(
         startup_command: decode_optional_value(field(fields, 7)),
         notes: decode_optional_value(comments),
         warnings,
+        start_directory: None,
     })
 }
 
@@ -302,7 +307,11 @@ fn parse_sftp_record(
         hostname: Some(hostname.to_string()),
         user: Some(normalize_username(field(fields, 3))),
         port: Some(port),
-        identity_file: resolve_key_path(nonempty_field(fields, 9), source_drive_root),
+        identity_file: resolve_key_path(
+            nonempty_field(fields, 9),
+            source_drive_root,
+            &mut warnings,
+        ),
         proxy_jump: None,
         keep_alive_interval: None,
         is_pattern: false,
@@ -311,6 +320,7 @@ fn parse_sftp_record(
         startup_command: None,
         notes: decode_optional_value(comments),
         warnings,
+        start_directory: decode_optional_value(field(fields, 6)),
     })
 }
 
@@ -328,13 +338,28 @@ fn nonempty_field(fields: &[&str], index: usize) -> Option<String> {
     (!value.is_empty()).then(|| value.to_string())
 }
 
-fn resolve_key_path(value: Option<String>, source_drive_root: Option<&Path>) -> Option<String> {
+/* Portable `_CurrentDrive_` markers are resolved only when the selected file
+ * identifies a Windows drive. Otherwise the original path stays visible as
+ * provenance and a static warning tells the user it needs correction. */
+fn resolve_key_path(
+    value: Option<String>,
+    source_drive_root: Option<&Path>,
+    warnings: &mut Vec<String>,
+) -> Option<String> {
     let value = value?;
     let marker = "_CurrentDrive_";
-    let Some(remainder) = value.strip_prefix(marker) else {
+    let Some(prefix) = value.get(..marker.len()) else {
         return Some(value);
     };
+    if !prefix.eq_ignore_ascii_case(marker) {
+        return Some(value);
+    }
+    let remainder = &value[marker.len()..];
     let Some(root) = source_drive_root else {
+        add_warning(
+            warnings,
+            "Portable MobaXterm key path uses _CurrentDrive_; correct the key path before connecting.",
+        );
         return Some(value);
     };
     let remainder = remainder.trim_start_matches(['\\', '/']);
@@ -471,7 +496,10 @@ fn add_warning(warnings: &mut Vec<String>, warning: &'static str) {
 mod tests {
     use std::path::Path;
 
-    use super::{parse_mobaxterm_bytes, parse_mobaxterm_with_source_root, MAX_MOBAXTERM_ENTRIES};
+    use super::{
+        parse_mobaxterm_bytes, parse_mobaxterm_with_source_root, source_drive_root,
+        MAX_MOBAXTERM_ENTRIES,
+    };
 
     const SSH_RECORD: &str =
         "#109#0%target.example%2222%alice%%-1%-1%echo __PTVIRG__ ready%gateway.example%2200%jump%%-1%0%C:\\keys\\target.ppk%gateway-key%0%0%0%0%0%0%0%0%0%0%0%0%0%0%0%0%0%0%0%0#MobaFont%10%0%0%0%15%236,236,236%30,30,30%180,180,192%0%-1%0%%xterm%-1%0%_Std_Colors_0_%80%24%0%0%-1#0#production server#-1";
@@ -508,7 +536,7 @@ mod tests {
     fn keeps_username_less_sftp_sessions_as_root_and_reads_cp1252() {
         let mut contents = b"[Bookmarks]\r\nSubRep=\r\nSftp ".to_vec();
         contents.push(0x80);
-        contents.extend_from_slice(b"=#140#7%files.example%22%%%0%0%/srv/files%0%C:\\keys\\files.ppk%0%0%0%0%0%0%0%0#MobaFont%10%0%0%0%15%0%0%0%0%0%0%0%0%0%0#0#Caf");
+        contents.extend_from_slice(b"=#140#7%files.example%22%%%0%/srv/files%0%0%C:\\keys\\files.ppk%0%0%0%0%0%0%0%0#MobaFont%10%0%0%0%15%0%0%0%0%0%0%0%0%0%0#0#Caf");
         contents.push(0xe9);
         contents.extend_from_slice(b"#-1\r\n");
         let entries = parse_mobaxterm_bytes(&contents, &[]).expect("parse CP1252");
@@ -518,6 +546,7 @@ mod tests {
         assert_eq!(entries[0].hostname.as_deref(), Some("files.example"));
         assert_eq!(entries[0].user.as_deref(), Some("root"));
         assert_eq!(entries[0].port, Some(22));
+        assert_eq!(entries[0].start_directory.as_deref(), Some("/srv/files"));
         assert_eq!(entries[0].notes.as_deref(), Some("Café"));
         assert_eq!(
             entries[0].identity_file.as_deref(),
@@ -615,6 +644,15 @@ mod tests {
     }
 
     #[test]
+    fn derives_drive_root_from_selected_windows_file_path() {
+        assert_eq!(
+            source_drive_root(r"D:\portable\MobaXterm.ini").as_deref(),
+            Some(Path::new(r"D:\"))
+        );
+        assert!(source_drive_root("/tmp/MobaXterm.ini").is_none());
+    }
+
+    #[test]
     fn preserves_current_drive_key_when_source_root_is_unavailable() {
         let mut fields = vec!["0", "target.example", "22", "root"];
         fields.resize(15, "");
@@ -626,5 +664,9 @@ mod tests {
             entries[0].identity_file.as_deref(),
             Some(r"_CurrentDrive_\keys\target.ppk")
         );
+        assert!(entries[0]
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("_CurrentDrive_")));
     }
 }

@@ -31,6 +31,7 @@ describe("ImportSshConfigModal — MobaXterm source", () => {
     group_path: "Production / Web",
     startup_command: "sudo systemctl status web",
     notes: "Imported note",
+    start_directory: "/srv/www",
     warnings: ["A gateway setting was not imported."],
   };
 
@@ -76,6 +77,7 @@ describe("ImportSshConfigModal — MobaXterm source", () => {
           group_path: "Production / Web",
           startup_command: "sudo systemctl status web",
           notes: "Imported note",
+          start_directory: "/srv/www",
         }],
       },
     ));

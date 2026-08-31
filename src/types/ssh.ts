@@ -142,6 +142,8 @@ export interface SshConfigEntry {
   startup_command?: string | null;
   notes?: string | null;
   warnings?: string[];
+  startDirectory?: string | null;
+  start_directory?: string | null;
 }
 
 export type MobaXtermEntry = SshConfigEntry;
@@ -159,6 +161,8 @@ export interface SshConfigImportEntry {
   startupCommand?: string | null;
   startup_command?: string | null;
   notes?: string | null;
+  startDirectory?: string | null;
+  start_directory?: string | null;
 }
 
 export interface ImportResult {
