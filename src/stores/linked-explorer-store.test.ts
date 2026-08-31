@@ -380,6 +380,21 @@ describe("linked-explorer-store", () => {
     expect(useLinkedExplorerStore.getState().openTabIds.has("ssh-open-only")).toBe(false);
   });
 
+  it("clears a pre-binding panel on SSH disconnect without closing another session", async () => {
+    useSessionStore.getState().addSession("ssh-open-only", dummyHost);
+    useSessionStore.getState().addSession("ssh-other", dummyHost);
+    useLinkedExplorerStore.getState().openLinkedExplorer("ssh-open-only");
+    useLinkedExplorerStore.getState().openLinkedExplorer("ssh-other");
+
+    await useLinkedExplorerStore.getState().disconnectBindingsForSshSession("ssh-open-only");
+
+    expect(useLinkedExplorerStore.getState().openTabIds).toEqual(new Set(["ssh-other"]));
+    expect(useLinkedExplorerStore.getState().bindings.size).toBe(0);
+    expect(invoke).not.toHaveBeenCalled();
+    expect(useSessionStore.getState().sessions.has("ssh-open-only")).toBe(true);
+    expect(useSessionStore.getState().sessions.get("ssh-open-only")?.status).not.toBe("Disconnected");
+  });
+
   it("prunes generation entries when a terminal tab is removed after its panel was closed", async () => {
     useSessionStore.getState().addSession("ssh-gen-prune", dummyHost);
     invoke.mockResolvedValue("sftp-gen-prune");

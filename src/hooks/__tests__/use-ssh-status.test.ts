@@ -184,4 +184,30 @@ describe("useSshStatus", () => {
     expect(useSessionStore.getState().sessions.get("ssh-linked")?.status).toBe("Disconnected");
     expect(invoke).not.toHaveBeenCalledWith("ssh_disconnect", expect.anything());
   });
+
+  it("clears a pre-binding linked panel on remote disconnect without closing a protocol session", async () => {
+    useSessionStore.getState().addSession("ssh-pre-binding", {
+      host: "10.0.0.2",
+      port: 22,
+      username: "root",
+      auth_method: { type: "password", password: "pwd" },
+    });
+    useLinkedExplorerStore.getState().openLinkedExplorer("ssh-pre-binding");
+
+    renderHook(() => useSshStatus());
+    await vi.waitFor(() => expect(statusListener).toBeDefined());
+
+    await act(async () => {
+      emitStatus("ssh-pre-binding", "Disconnected");
+      await vi.waitFor(() =>
+        expect(useLinkedExplorerStore.getState().openTabIds.has("ssh-pre-binding")).toBe(false),
+      );
+    });
+
+    expect(useSessionStore.getState().sessions.has("ssh-pre-binding")).toBe(true);
+    expect(useSessionStore.getState().sessions.get("ssh-pre-binding")?.status).toBe("Disconnected");
+    expect(useSftpStore.getState().sessions.size).toBe(0);
+    expect(invoke).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalledWith("ssh_disconnect", expect.anything());
+  });
 });

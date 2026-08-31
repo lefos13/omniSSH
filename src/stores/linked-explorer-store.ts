@@ -337,8 +337,6 @@ export const useLinkedExplorerStore = create<LinkedExplorerState>((set, get) => 
     const bindings = [...get().bindings.entries()].filter(
       ([, binding]) => binding.sshSessionId === sshSessionId,
     );
-    if (bindings.length === 0) return;
-
     for (const [tabId] of bindings) {
       bumpGeneration(tabId);
       clearInFlightForTab(tabId);
@@ -347,6 +345,11 @@ export const useLinkedExplorerStore = create<LinkedExplorerState>((set, get) => 
     set((state) => {
       const nextBindings = new Map(state.bindings);
       const nextOpenTabIds = new Set(state.openTabIds);
+      /* Before the panel creates its binding, the terminal tab ID is the only
+       * durable association available for a dropped SSH session. Remove that
+       * ID alongside any fully established bindings, without touching other
+       * linked panels. */
+      nextOpenTabIds.delete(sshSessionId);
       for (const [tabId] of bindings) {
         nextBindings.delete(tabId);
         nextOpenTabIds.delete(tabId);
