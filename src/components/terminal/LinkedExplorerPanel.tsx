@@ -370,8 +370,11 @@ export function LinkedExplorerPanel({ tabId, isActive = true }: LinkedExplorerPa
             </button>
           </div>
         ) : binding?.status === "connected" && binding.sftpSessionId ? (
+          /* Keep the linked session identity on the connected container so
+           * runtime checks can distinguish it from hidden explorer tabs. */
           <div
             className="flex-1 min-h-0 flex flex-col overflow-hidden"
+            data-explorer-session-id={binding.sftpSessionId}
             data-explorer-transport={binding.transport}
           >
             <ExplorerView

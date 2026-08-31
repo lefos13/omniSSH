@@ -17,7 +17,12 @@ import {
     waitForModalClosed,
 } from "../helpers/host.js";
 import { tabCountOfType, waitForTabCount } from "../helpers/tabs.js";
-import { waitForEntry, waitForExplorer } from "../helpers/sftp-ops.js";
+import {
+    activeExplorerPath,
+    waitForActiveEntry,
+    waitForActiveExplorer,
+    waitForExplorer,
+} from "../helpers/sftp-ops.js";
 
 const SSHD_PASS_HOST = process.env.SSHD_PASS_HOST ?? "sshd-pass";
 const SSHD_PASS_PORT = Number(process.env.SSHD_PASS_PORT ?? 2222);
@@ -61,23 +66,15 @@ describe("two independent explorer connections", () => {
         await exp1Btn.click();
         await waitForExplorer();
 
-        // /etc/passwd exists on linuxserver/openssh-server
-        const passwdEntry = await waitForEntry("passwd");
-        expect(await passwdEntry.isExisting()).to.equal(true);
+        // /etc/passwd is stable content on the linuxserver test target.
+        const container1 = await waitForActiveExplorer();
+        expect(await container1.getAttribute("data-explorer-transport")).to.equal("sftp");
+        expect((await container1.$$('[data-testid="explorer-error"]')).length).to.equal(0);
+        const passwdEntry = await waitForActiveEntry("passwd");
+        expect(await passwdEntry.getAttribute("data-entry-name")).to.equal("passwd");
+        expect(await activeExplorerPath()).to.equal("etc");
 
-        const lastCrumb1 = await browser.execute(() => {
-            const buttons = Array.from(
-                document.querySelectorAll<HTMLButtonElement>(
-                    "[aria-label='Current path'] button",
-                ),
-            );
-            return buttons.at(-1)?.textContent ?? "";
-        });
-        expect(lastCrumb1).to.equal("etc");
-
-        // Capture session ID from explorer container
-        const container1 = await $("[data-explorer-session-id]");
-        await container1.waitForDisplayed({ timeout: 10_000 });
+        // Capture session ID from the active explorer container.
         const sessionId1 = await container1.getAttribute("data-explorer-session-id");
         expect(sessionId1).to.be.a("string").and.not.be.empty;
 
@@ -93,19 +90,18 @@ describe("two independent explorer connections", () => {
         await exp2Btn.click();
         await waitForExplorer();
 
-        const lastCrumb2 = await browser.execute(() => {
-            const buttons = Array.from(
-                document.querySelectorAll<HTMLButtonElement>(
-                    "[aria-label='Current path'] button",
-                ),
-            );
-            return buttons.at(-1)?.textContent ?? "";
-        });
-        expect(lastCrumb2).to.equal("tmp");
+        const container2 = await waitForActiveExplorer();
+        expect(await container2.getAttribute("data-explorer-transport")).to.equal("sftp");
+        expect((await container2.$$('[data-testid="explorer-error"]')).length).to.equal(0);
+        await browser.waitUntil(
+            async () => (await container2.$$('[data-entry-row="true"]')).length > 0,
+            { timeout: 10_000, timeoutMsg: "second explorer directory listing never rendered" },
+        );
+        const tmpEntries = await container2.$$('[data-entry-row="true"]');
+        expect(tmpEntries.length).to.be.greaterThan(0);
+        expect(await activeExplorerPath()).to.equal("tmp");
 
-        // Capture session ID from second explorer container
-        const container2 = await $("[data-explorer-session-id]");
-        await container2.waitForDisplayed({ timeout: 10_000 });
+        // Capture session ID from the second active explorer container.
         const sessionId2 = await container2.getAttribute("data-explorer-session-id");
         expect(sessionId2).to.be.a("string").and.not.be.empty;
         expect(sessionId1).not.to.equal(sessionId2);
@@ -120,11 +116,13 @@ describe("two independent explorer connections", () => {
         await tab1.click();
         await waitForExplorer();
 
-        const activeContainer1 = await $("[data-explorer-session-id]");
+        const activeContainer1 = await waitForActiveExplorer();
         expect(await activeContainer1.getAttribute("data-explorer-session-id")).to.equal(sessionId1);
+        expect(await activeContainer1.getAttribute("data-explorer-transport")).to.equal("sftp");
 
-        const passwdEntryAgain = await waitForEntry("passwd");
-        expect(await passwdEntryAgain.isExisting()).to.equal(true);
+        const passwdEntryAgain = await waitForActiveEntry("passwd");
+        expect(await passwdEntryAgain.getAttribute("data-entry-name")).to.equal("passwd");
+        expect(await activeExplorerPath()).to.equal("etc");
 
         // 6. Switch back to Host 2 explorer tab and verify it preserves sessionId2 and /tmp
         const tab2 = await $(`[data-tab-label='host-tmp']`);
@@ -132,17 +130,11 @@ describe("two independent explorer connections", () => {
         await tab2.click();
         await waitForExplorer();
 
-        const activeContainer2 = await $("[data-explorer-session-id]");
+        const activeContainer2 = await waitForActiveExplorer();
         expect(await activeContainer2.getAttribute("data-explorer-session-id")).to.equal(sessionId2);
+        expect(await activeContainer2.getAttribute("data-explorer-transport")).to.equal("sftp");
 
-        const finalCrumb2 = await browser.execute(() => {
-            const buttons = Array.from(
-                document.querySelectorAll<HTMLButtonElement>(
-                    "[aria-label='Current path'] button",
-                ),
-            );
-            return buttons.at(-1)?.textContent ?? "";
-        });
-        expect(finalCrumb2).to.equal("tmp");
+        expect(await activeExplorerPath()).to.equal("tmp");
+        expect((await activeContainer2.$$('[data-entry-row="true"]')).length).to.be.greaterThan(0);
     });
 });

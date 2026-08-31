@@ -109,6 +109,16 @@ describe("LinkedExplorerPanel", () => {
     expect(screen.getByTestId("linked-explorer-panel")).toBeInTheDocument();
   });
 
+  it("exposes the connected explorer session identity and transport", async () => {
+    render(<LinkedExplorerPanel tabId="tab-1" isActive={true} />);
+
+    const container = await screen.findByTestId("linked-explorer-panel");
+    await screen.findByTestId("explorer-refresh");
+
+    expect(container.querySelector("[data-explorer-session-id='sftp-sess-1']")).toBeInTheDocument();
+    expect(container.querySelector("[data-explorer-transport='sftp']")).toBeInTheDocument();
+  });
+
   it("displays error state with retry button when connection fails", async () => {
     invoke.mockImplementation(async (cmd) => {
       if (cmd === "sftp_open") throw new Error("SFTP disabled");
