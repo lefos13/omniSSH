@@ -215,8 +215,10 @@ fn decode_utf16_be(
         ));
     }
     let units = bytes
-        .chunks_exact(2)
-        .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&[b0, b1]| u16::from_be_bytes([b0, b1]))
         .collect::<Vec<_>>();
     String::from_utf16(&units).map_err(|_| {
         malformed(
