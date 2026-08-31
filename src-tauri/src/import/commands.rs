@@ -280,9 +280,14 @@ fn existing_host_keys(db: &HostDb) -> Result<Vec<(String, String, u16)>, SshErro
         })
 }
 
-fn timestamp_now() -> String {
-    // SQLite-compatible datetime string
-    "datetime('now')".to_string()
+pub(crate) fn timestamp_now() -> String {
+    format_timestamp(chrono::Utc::now())
+}
+
+fn format_timestamp(value: chrono::DateTime<chrono::Utc>) -> String {
+    /* RFC 3339 UTC output keeps persisted timestamps comparable and delegates
+     * leap-year/calendar behavior to the already-used chrono implementation. */
+    value.format("%Y-%m-%dT%H:%M:%S.000Z").to_string()
 }
 
 /// Resolve a single-hop `ProxyJump` directive value to a saved-host id.
@@ -344,6 +349,7 @@ fn resolve_jump_target(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
     use std::collections::HashMap;
 
     /// Minimal SavedHost for resolution tests (only id/label/host are consulted).
@@ -745,5 +751,17 @@ mod tests {
         assert_eq!(entry_camel.startup_command.as_deref(), Some("bash"));
         assert_eq!(entry_camel.notes.as_deref(), Some("EC2 instance"));
         assert_eq!(entry_camel.start_directory.as_deref(), Some("/srv/app"));
+    }
+
+    #[test]
+    fn timestamp_format_handles_epoch_and_leap_day_boundaries() {
+        let epoch = chrono::Utc.timestamp_opt(0, 0).single().unwrap();
+        assert_eq!(format_timestamp(epoch), "1970-01-01T00:00:00.000Z");
+
+        let leap_day = chrono::Utc
+            .with_ymd_and_hms(2024, 2, 29, 23, 59, 59)
+            .single()
+            .unwrap();
+        assert_eq!(format_timestamp(leap_day), "2024-02-29T23:59:59.000Z");
     }
 }

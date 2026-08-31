@@ -304,7 +304,7 @@ pub async fn s3_reconnect(
         .map_err(|e| S3Error::IoError(format!("task panicked: {e}")))?
         .map_err(|e| S3Error::CredentialError(format!("No saved credentials: {e}")))?;
 
-    let (access_key, secret_key) = match cred {
+    let (access_key, secret_key) = match &cred {
         crate::vault::StoredCredential::Password { password } => {
             let parts: Vec<&str> = password.splitn(2, ':').collect();
             if parts.len() == 2 {

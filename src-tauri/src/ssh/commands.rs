@@ -615,11 +615,37 @@ fn auth_method_label(auth: &AuthMethod) -> &'static str {
 /// error.
 fn resolve_auth_method(host_id: &str, auth_type: &str, key_path: Option<String>) -> AuthMethod {
     match auth_type {
+        /* Raw key credentials are kept in the vault and materialized only in
+         * this Rust-side connection configuration. */
+        "privateKeyData" => match vault::get_credential(host_id) {
+            Ok(credential) => match &credential {
+                vault::StoredCredential::PrivateKeyData {
+                    key_data,
+                    passphrase,
+                } => AuthMethod::PrivateKeyData {
+                    key_data: key_data.clone(),
+                    passphrase: passphrase.clone(),
+                },
+                _ => AuthMethod::PrivateKeyData {
+                    key_data: String::new(),
+                    passphrase: None,
+                },
+            },
+            Err(_) => AuthMethod::PrivateKeyData {
+                key_data: String::new(),
+                passphrase: None,
+            },
+        },
         "privateKey" => {
             let path = key_path.unwrap_or_default();
             let passphrase = match vault::get_credential(host_id) {
-                Ok(vault::StoredCredential::KeyPassphrase { passphrase }) => Some(passphrase),
-                _ => None,
+                Ok(credential) => match &credential {
+                    vault::StoredCredential::KeyPassphrase { passphrase } => {
+                        Some(passphrase.clone())
+                    }
+                    _ => None,
+                },
+                Err(_) => None,
             };
             AuthMethod::PrivateKey {
                 key_path: path,
@@ -628,8 +654,11 @@ fn resolve_auth_method(host_id: &str, auth_type: &str, key_path: Option<String>)
         }
         _ => {
             let password = match vault::get_credential(host_id) {
-                Ok(vault::StoredCredential::Password { password }) => password,
-                _ => String::new(),
+                Ok(credential) => match &credential {
+                    vault::StoredCredential::Password { password } => password.clone(),
+                    _ => String::new(),
+                },
+                Err(_) => String::new(),
             };
             AuthMethod::Password { password }
         }

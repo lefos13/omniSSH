@@ -168,13 +168,37 @@ pub async fn pf_start_tunnel(
 
     let auth_method = task::spawn_blocking(move || -> AuthMethod {
         match auth_type.as_str() {
+            /* Tunnels use the same vault-only raw-key representation as SSH
+             * sessions, without sending credential fields through Tauri. */
+            "privateKeyData" => match crate::vault::get_credential(&vid) {
+                Ok(credential) => match &credential {
+                    crate::vault::StoredCredential::PrivateKeyData {
+                        key_data,
+                        passphrase,
+                    } => AuthMethod::PrivateKeyData {
+                        key_data: key_data.clone(),
+                        passphrase: passphrase.clone(),
+                    },
+                    _ => AuthMethod::PrivateKeyData {
+                        key_data: String::new(),
+                        passphrase: None,
+                    },
+                },
+                Err(_) => AuthMethod::PrivateKeyData {
+                    key_data: String::new(),
+                    passphrase: None,
+                },
+            },
             "privateKey" => {
                 let path = key_path.unwrap_or_default();
                 let passphrase = match crate::vault::get_credential(&vid) {
-                    Ok(crate::vault::StoredCredential::KeyPassphrase { passphrase }) => {
-                        Some(passphrase)
-                    }
-                    _ => None,
+                    Ok(credential) => match &credential {
+                        crate::vault::StoredCredential::KeyPassphrase { passphrase } => {
+                            Some(passphrase.clone())
+                        }
+                        _ => None,
+                    },
+                    Err(_) => None,
                 };
                 AuthMethod::PrivateKey {
                     key_path: path,
@@ -183,8 +207,11 @@ pub async fn pf_start_tunnel(
             }
             _ => {
                 let password = match crate::vault::get_credential(&vid) {
-                    Ok(crate::vault::StoredCredential::Password { password }) => password,
-                    _ => String::new(),
+                    Ok(credential) => match &credential {
+                        crate::vault::StoredCredential::Password { password } => password.clone(),
+                        _ => String::new(),
+                    },
+                    Err(_) => String::new(),
                 };
                 AuthMethod::Password { password }
             }

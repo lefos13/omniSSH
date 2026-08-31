@@ -103,6 +103,7 @@ dependencies = [
  "argon2",
  "async-trait",
  "base64 0.22.1",
+ "chrono",
  "dashmap",
  "dirs",
  "drag",
@@ -136,6 +137,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "xsalsa20poly1305",
+ "zeroize",
 ]
 
 [[package]]

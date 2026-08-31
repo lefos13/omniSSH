@@ -2,6 +2,7 @@ pub mod commands;
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use tracing::instrument;
 
@@ -147,6 +148,12 @@ pub struct HostGroup {
     pub default_username: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+pub struct ImportTransactionResult {
+    pub imported_hosts: usize,
+    pub imported_groups: usize,
+    pub skipped_host_ids: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -541,6 +548,18 @@ impl HostDb {
             tracing::info!("migration 14→15 applied: added s3_connections.sort_order");
         }
 
+        if version < 16 {
+            /* Only generated vault entry IDs are journaled. The table never
+             * contains credential values and supports crash-safe cleanup. */
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS vault_cleanup_queue (
+                    host_id TEXT PRIMARY KEY
+                );
+                INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', '16');",
+            )?;
+            tracing::info!("migration 15→16 applied: added vault cleanup queue");
+        }
+
         Ok(())
     }
 
@@ -581,6 +600,130 @@ impl HostDb {
         Self::check_proxy_jump_chain(&tx, &host.id, host.proxy_jump_host_id.as_deref())?;
         Self::upsert_host(&tx, host)?;
         tx.commit()?;
+        Ok(())
+    }
+
+    /* Recheck import deduplication under the same IMMEDIATE transaction that
+     * inserts rows. Group IDs are remapped and validated, while transaction-time
+     * host duplicates are returned so staged vault entries can be removed. */
+    #[instrument(skip(self, groups, hosts), fields(group_count = groups.len(), host_count = hosts.len()))]
+    pub fn save_groups_and_hosts_transaction(
+        &self,
+        groups: &[HostGroup],
+        hosts: &[SavedHost],
+    ) -> Result<ImportTransactionResult, DbError> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut group_ids = tx
+            .prepare("SELECT name, id FROM host_groups")?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<HashMap<_, _>, _>>()?;
+        let mut remapped_groups = HashMap::new();
+        let mut imported_groups = 0;
+        for group in groups {
+            if let Some(existing_id) = group_ids.get(&group.name) {
+                remapped_groups.insert(group.id.clone(), existing_id.clone());
+            } else {
+                Self::insert_group(&tx, group)?;
+                group_ids.insert(group.name.clone(), group.id.clone());
+                remapped_groups.insert(group.id.clone(), group.id.clone());
+                imported_groups += 1;
+            }
+        }
+        let valid_group_ids = group_ids.values().cloned().collect::<HashSet<_>>();
+
+        let mut host_keys = tx
+            .prepare("SELECT lower(trim(host)), trim(username), port FROM saved_hosts")?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, u16>(2)?,
+                ))
+            })?
+            .collect::<Result<HashSet<_>, _>>()?;
+        let mut skipped_host_ids = Vec::new();
+        let mut imported_hosts = 0;
+        for host in hosts {
+            let mut host = host.clone();
+            if let Some(group_id) = host.group_id.as_ref() {
+                if let Some(remapped) = remapped_groups.get(group_id) {
+                    host.group_id = Some(remapped.clone());
+                } else if !valid_group_ids.contains(group_id) {
+                    return Err(DbError::Validation(
+                        "Imported host references an unknown group".to_string(),
+                    ));
+                }
+            }
+            let key = (
+                host.host.trim().to_ascii_lowercase(),
+                host.username.trim().to_string(),
+                host.port,
+            );
+            if !host_keys.insert(key) {
+                skipped_host_ids.push(host.id.clone());
+                continue;
+            }
+            Self::check_proxy_jump_chain(&tx, &host.id, host.proxy_jump_host_id.as_deref())?;
+            Self::upsert_host(&tx, &host)?;
+            tx.execute(
+                "DELETE FROM vault_cleanup_queue WHERE host_id = ?1",
+                params![host.id],
+            )?;
+            imported_hosts += 1;
+        }
+        tx.commit()?;
+        Ok(ImportTransactionResult {
+            imported_hosts,
+            imported_groups,
+            skipped_host_ids,
+        })
+    }
+
+    /* Cleanup records contain only generated host IDs. Writes are transactional
+     * so a failed enqueue never leaves a partially protected staging set. */
+    pub fn enqueue_vault_cleanup(&self, host_ids: &[String]) -> Result<(), DbError> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let tx = conn.transaction()?;
+        for host_id in host_ids {
+            tx.execute(
+                "INSERT OR IGNORE INTO vault_cleanup_queue (host_id) VALUES (?1)",
+                params![host_id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn list_vault_cleanup(&self) -> Result<Vec<String>, DbError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let host_ids = conn
+            .prepare("SELECT host_id FROM vault_cleanup_queue ORDER BY host_id")?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(host_ids)
+    }
+
+    pub fn remove_vault_cleanup(&self, host_id: &str) -> Result<(), DbError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        conn.execute(
+            "DELETE FROM vault_cleanup_queue WHERE host_id = ?1",
+            params![host_id],
+        )?;
         Ok(())
     }
 
@@ -1028,6 +1171,10 @@ impl HostDb {
             .conn
             .lock()
             .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        Self::insert_group(&conn, group)
+    }
+
+    fn insert_group(conn: &Connection, group: &HostGroup) -> Result<(), DbError> {
         conn.execute(
             "INSERT INTO host_groups (id, name, color, icon, sort_order, default_username, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -1770,10 +1917,15 @@ impl HostDb {
             .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
 
         // Collect the keychain keys before deleting the rows that reference them.
-        let host_ids = conn
+        let mut host_ids = conn
             .prepare("SELECT id FROM saved_hosts")?
             .query_map([], |r| r.get::<_, String>(0))?
             .collect::<Result<Vec<String>, _>>()?;
+        host_ids.extend(
+            conn.prepare("SELECT host_id FROM vault_cleanup_queue")?
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?,
+        );
         let s3_ids = conn
             .prepare("SELECT id FROM s3_connections")?
             .query_map([], |r| r.get::<_, String>(0))?
@@ -1793,6 +1945,7 @@ impl HostDb {
              DELETE FROM snippet_folders;
              DELETE FROM saved_hosts;
              DELETE FROM host_groups;
+             DELETE FROM vault_cleanup_queue;
              DELETE FROM app_settings;",
         )?;
         tx.commit()?;
@@ -2899,5 +3052,85 @@ mod tests {
             .map(|g| g.id)
             .collect::<Vec<_>>();
         assert_eq!(ids, vec!["a", "b"], "order unchanged after rollback");
+    }
+
+    #[test]
+    fn groups_and_hosts_batch_rolls_back_everything_on_a_late_db_failure() {
+        let (db, _dir) = test_db();
+        let root = HostGroup {
+            id: "batch-root".to_string(),
+            name: "Cloud".to_string(),
+            color: "#6366f1".to_string(),
+            icon: None,
+            sort_order: 0,
+            default_username: None,
+            created_at: "2026-01-01T00:00:00".to_string(),
+            updated_at: "2026-01-01T00:00:00".to_string(),
+        };
+        let child = HostGroup {
+            id: "batch-child".to_string(),
+            name: "Production".to_string(),
+            ..root.clone()
+        };
+        let mut valid_host = sample_host("batch-valid");
+        valid_host.group_id = Some(child.id.clone());
+        let mut invalid_host = sample_host("batch-invalid");
+        invalid_host.group_id = Some("missing-group".to_string());
+
+        let error = match db
+            .save_groups_and_hosts_transaction(&[root, child], &[valid_host, invalid_host])
+        {
+            Err(error) => error,
+            Ok(_) => panic!("unknown host group must reject the batch"),
+        };
+        assert!(matches!(error, DbError::Validation(_)));
+        assert!(db.list_groups().expect("list groups").is_empty());
+        assert!(db.list_hosts().expect("list hosts").is_empty());
+    }
+
+    #[test]
+    fn concurrent_import_transactions_recheck_host_and_group_duplicates() {
+        let (db, _dir) = test_db();
+        let db = std::sync::Arc::new(db);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let mut workers = Vec::new();
+        for index in 0..2 {
+            let db = db.clone();
+            let barrier = barrier.clone();
+            workers.push(std::thread::spawn(move || {
+                let mut group = sample_group(&format!("concurrent-group-{index}"));
+                group.name = "Shared imported group".to_string();
+                let mut host = sample_host(&format!("concurrent-host-{index}"));
+                host.host = "same-import.example".to_string();
+                host.group_id = Some(group.id.clone());
+                barrier.wait();
+                db.save_groups_and_hosts_transaction(&[group], &[host])
+                    .expect("transaction")
+            }));
+        }
+        let results = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            results
+                .iter()
+                .map(|result| result.imported_hosts)
+                .sum::<usize>(),
+            1
+        );
+        assert_eq!(
+            results
+                .iter()
+                .map(|result| result.imported_groups)
+                .sum::<usize>(),
+            1
+        );
+        assert_eq!(db.list_hosts().unwrap().len(), 1);
+        assert_eq!(db.list_groups().unwrap().len(), 1);
+        assert_eq!(
+            db.list_hosts().unwrap()[0].group_id.as_deref(),
+            Some(db.list_groups().unwrap()[0].id.as_str())
+        );
     }
 }

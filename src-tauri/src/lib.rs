@@ -15,6 +15,7 @@ mod types;
 mod vault;
 
 use db::HostDb;
+use import::termius::workflow::TermiusImportState;
 use portforward::manager::PortForwardManager;
 use s3::transfer_manager::S3TransferManager;
 use s3::S3Manager;
@@ -60,6 +61,9 @@ pub fn run() {
 
             let host_db = HostDb::new(&app_data_dir)
                 .map_err(|e| format!("failed to initialise database: {e}"))?;
+            if !import::termius::workflow::recover_pending_vault_cleanup(&host_db) {
+                tracing::warn!("deferred credential cleanup remains pending");
+            }
 
             // Resolve the persisted theme up-front and inject it onto <html>
             // *before* the page loads, so the very first paint already carries
@@ -139,6 +143,7 @@ pub fn run() {
                 .map_err(|e| format!("failed to create main window: {e}"))?;
 
             app.manage(Arc::new(host_db));
+            app.manage(Arc::new(TermiusImportState::new()));
 
             // SftpManager must be created inside setup so it can be shared with
             // TransferManager, which also needs the AppHandle.
@@ -312,6 +317,9 @@ pub fn run() {
             import::commands::import_save_ssh_hosts,
             import::commands::import_parse_mobaxterm,
             import::commands::import_save_mobaxterm_hosts,
+            // Termius v1 — opaque preview and atomic commit
+            import::termius::workflow::import_preview_termius,
+            import::termius::workflow::import_commit_termius,
             // Port forwarding
             portforward::commands::pf_create_rule,
             portforward::commands::pf_update_rule,
