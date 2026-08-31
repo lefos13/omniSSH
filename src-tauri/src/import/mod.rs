@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod mobaxterm;
+pub mod termius;
 
 use serde::{Deserialize, Serialize};
 use ssh2_config::{ParseRule, SshConfig};
