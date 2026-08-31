@@ -1,8 +1,7 @@
 /*
- * Termius uses different Electron roots by platform, with the App Store
- * build living in a macOS container. Candidate construction is kept separate
- * from resolution so tests can use temporary roots without touching a real
- * user profile.
+ * Termius uses different Electron roots by platform, including a Snap-specific
+ * Linux root and a macOS App Store container. Candidate construction is kept
+ * separate from resolution so tests can use temporary roots safely.
  */
 
 use std::path::{Path, PathBuf};
@@ -48,6 +47,9 @@ fn candidate_dirs_for(home: &Path, _appdata: Option<&Path>) -> Vec<DataDir> {
 
     #[cfg(target_os = "linux")]
     {
+        candidates.push(DataDir::new(
+            home.join("snap/termius-app/current/.config/Termius"),
+        ));
         candidates.push(DataDir::new(home.join(".config/Termius")));
     }
 
@@ -120,6 +122,27 @@ mod tests {
         fs::create_dir_all(candidate.leveldb_path()).unwrap();
         fs::write(candidate.leveldb_path().join("MANIFEST-000001"), "").unwrap();
         assert_eq!(resolve_candidates(&[candidate]), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn snap_candidate_precedes_regular_linux_candidate() {
+        let root = tempdir().unwrap();
+        let candidates = candidate_dirs_for(root.path(), None);
+        let snap = root.path().join("snap/termius-app/current/.config/Termius");
+        let regular = root.path().join(".config/Termius");
+
+        assert_eq!(candidates[0].path, snap);
+        assert_eq!(candidates[1].path, regular);
+
+        fs::create_dir_all(candidates[0].leveldb_path()).unwrap();
+        fs::write(candidates[0].leveldb_path().join("CURRENT"), "MANIFEST\n").unwrap();
+        fs::create_dir_all(candidates[1].leveldb_path()).unwrap();
+        fs::write(candidates[1].leveldb_path().join("CURRENT"), "MANIFEST\n").unwrap();
+        assert_eq!(
+            resolve_candidates(&candidates),
+            Some(candidates[0].leveldb_path())
+        );
     }
 
     #[cfg(target_os = "macos")]

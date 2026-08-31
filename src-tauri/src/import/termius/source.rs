@@ -7,7 +7,7 @@
  */
 
 use super::comparator::IdbComparator;
-use super::running::{check, RunningError};
+use super::running::{acquire, RunningError};
 use rusty_leveldb::env::{Env, FileLock, Logger, RandomAccess};
 use rusty_leveldb::{LdbIterator, Options, Status, StatusCode, DB};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -761,11 +761,9 @@ where
     Ok(rows)
 }
 
-/// Iterate a LevelDB directory without opening it for writes or acquiring its
-/// LOCK file. The returned values are LevelDB's current user-visible rows.
-/// Prefer [`read_source`] or [`read_rows`], which enforce the closed-profile
-/// invariant before opening the database.
-pub fn read_leveldb(path: &Path) -> Result<Vec<RawKeyValue>, SourceError> {
+/// Iterate a LevelDB directory without opening it for writes. The caller must
+/// hold the source lock for the complete operation.
+fn read_leveldb(path: &Path) -> Result<Vec<RawKeyValue>, SourceError> {
     if !path.join("CURRENT").is_file() {
         return Err(SourceError::Open);
     }
@@ -793,9 +791,9 @@ pub fn decode_record_value(value: &[u8]) -> Result<&[u8], SourceError> {
 }
 
 /*
- * Both public row-reading entry points are guarded here, before CURRENT or
- * any LevelDB data/manifest file is opened. The private parser remains available to the
- * synthetic fixture tests on platforms without Unix record-lock semantics.
+ * Both public row-reading entry points route through this function. The guard
+ * remains alive until every LevelDB and parsing operation has completed, so a
+ * profile cannot reopen or mutate between the closed check and data access.
  */
 pub fn read_rows(path: &Path) -> Result<SourceRows, SourceError> {
     read_source(path)
@@ -900,7 +898,7 @@ fn read_rows_unchecked(path: &Path) -> Result<SourceRows, SourceError> {
 /// Read the wanted IndexedDB rows from a closed Termius LevelDB directory.
 /// The lock probe runs before rusty-leveldb opens the database.
 pub fn read_source(path: &Path) -> Result<SourceRows, SourceError> {
-    check(path)?;
+    let _lock = acquire(path)?;
     read_rows_unchecked(path)
 }
 

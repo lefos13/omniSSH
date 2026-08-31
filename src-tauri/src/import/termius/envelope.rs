@@ -32,9 +32,10 @@ pub enum EnvelopeError {
 
 /// Decode only base64 strings large enough to contain a secretbox envelope.
 ///
-/// Short or non-base64 strings are ordinary plaintext fields. A structurally
-/// complete envelope with an unfamiliar header is returned for strict failure
-/// by [`parse`], rather than being silently treated as plaintext.
+/// Short or non-base64 strings, and long base64 blobs without Termius magic,
+/// are ordinary plaintext fields. A structurally complete envelope beginning
+/// with Termius magic but carrying an unfamiliar version is returned for strict
+/// failure by [`parse`], rather than being silently treated as plaintext.
 pub fn decode_candidate(value: &str) -> Option<Vec<u8>> {
     if value.len() < MIN_ENVELOPE_LEN.div_ceil(3) * 4 || value.len() > MAX_ENVELOPE_BASE64_LEN {
         return None;
@@ -51,6 +52,10 @@ pub fn parse(value: &str) -> Result<Option<Envelope>, EnvelopeError> {
     let Some(raw) = decode_candidate(value) else {
         return Ok(None);
     };
+
+    if raw[0] != HEADER[0] {
+        return Ok(None);
+    }
 
     let header = [raw[0], raw[1]];
     if header != HEADER {
@@ -75,8 +80,9 @@ fn has_base64_shape(value: &str) -> bool {
 /// Return the first nested field whose decoded bytes carry the known header.
 ///
 /// The result is the original base64 text, not decrypted content. Traversal
-/// is deterministic for arrays and JSON objects, and unfamiliar complete
-/// envelopes are propagated to keep format changes visible to callers.
+/// is deterministic for arrays and JSON objects. Complete values with Termius
+/// magic but an unfamiliar version are propagated to keep format changes
+/// visible to callers; unrelated base64 blobs are skipped.
 pub fn first_encrypted_field(record: &serde_json::Value) -> Result<Option<&str>, EnvelopeError> {
     match record {
         serde_json::Value::String(value) => {
@@ -150,6 +156,34 @@ mod tests {
             "display_name": plaintext_decoy,
             "nested": ["ordinary text", encrypted]
         });
+        assert_eq!(
+            first_encrypted_field(&record).unwrap(),
+            Some(encrypted.as_str())
+        );
+    }
+
+    /*
+     * Termius records can contain large base64 blobs that are not encrypted
+     * fields; traversal must ignore them and continue to a later ciphertext.
+     */
+    #[test]
+    fn skips_long_private_key_like_blob_before_encrypted_field() {
+        let encrypted = valid_envelope();
+        let mut private_key_like = b"-----BEGIN PRIVATE KEY-----".to_vec();
+        private_key_like.extend([0x55; MIN_ENVELOPE_LEN]);
+        let private_key_like = encoded(&private_key_like);
+        let record = json!({
+            "private_key": private_key_like,
+            "secret": encrypted,
+        });
+
+        assert!(
+            decode_candidate(&private_key_like)
+                .expect("private-key-like blob should be a bounded candidate")
+                .len()
+                >= MIN_ENVELOPE_LEN
+        );
+        assert_eq!(parse(&private_key_like).unwrap(), None);
         assert_eq!(
             first_encrypted_field(&record).unwrap(),
             Some(encrypted.as_str())

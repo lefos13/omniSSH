@@ -18,6 +18,18 @@ pub enum RunningError {
     Io,
 }
 
+/*
+ * The guard owns the descriptor used for Chromium's advisory record lock.
+ * Keeping that descriptor and guard alive across source ingestion closes the
+ * check-then-open race; the future command layer must run this synchronous
+ * filesystem operation on a blocking task.
+ */
+#[derive(Debug)]
+pub struct LockGuard {
+    #[cfg(unix)]
+    file: std::fs::File,
+}
+
 #[cfg(unix)]
 fn set_record_lock(fd: std::os::fd::RawFd, lock_type: libc::c_short) -> std::io::Result<()> {
     let mut lock = libc::flock {
@@ -44,7 +56,19 @@ fn is_lock_conflict(error: &std::io::Error) -> bool {
         )
 }
 
-pub fn check(leveldb: &Path) -> Result<(), RunningError> {
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+
+            let _ = set_record_lock(self.file.as_raw_fd(), libc::F_UNLCK as libc::c_short);
+        }
+    }
+}
+
+/// Acquire the Termius LevelDB record lock without blocking.
+pub fn acquire(leveldb: &Path) -> Result<LockGuard, RunningError> {
     #[cfg(unix)]
     {
         use std::os::fd::AsRawFd;
@@ -67,8 +91,7 @@ pub fn check(leveldb: &Path) -> Result<(), RunningError> {
             return Err(RunningError::Io);
         }
 
-        set_record_lock(lock.as_raw_fd(), libc::F_UNLCK as libc::c_short)
-            .map_err(|_| RunningError::Io)
+        Ok(LockGuard { file: lock })
     }
 
     #[cfg(not(unix))]
@@ -76,6 +99,12 @@ pub fn check(leveldb: &Path) -> Result<(), RunningError> {
         let _ = leveldb;
         Err(RunningError::Undetermined)
     }
+}
+
+/// Probe whether Termius is closed, releasing the lock immediately.
+pub fn check(leveldb: &Path) -> Result<(), RunningError> {
+    let _guard = acquire(leveldb)?;
+    Ok(())
 }
 
 #[cfg(all(test, unix))]
@@ -89,6 +118,8 @@ pub(crate) mod test_support {
 
     const LOCK_HOLDER_PATH: &str = "TERMIUS_TEST_LOCK_HOLDER_PATH";
     const LOCK_HOLDER_TEST: &str = "import::termius::running::test_support::lock_holder";
+    const LOCK_PROBE_PATH: &str = "TERMIUS_TEST_LOCK_PROBE_PATH";
+    const LOCK_PROBE_TEST: &str = "import::termius::running::test_support::lock_probe";
 
     /*
      * fcntl record locks are associated with a process, so a same-process
@@ -128,6 +159,21 @@ pub(crate) mod test_support {
         assert!(child.wait().expect("wait for lock-holder test").success());
     }
 
+    pub(crate) fn lock_is_available_from_child(path: &Path) -> bool {
+        let lock_path = path.join("LOCK");
+        let output = Command::new(std::env::current_exe().expect("test executable"))
+            .args(["--exact", LOCK_PROBE_TEST, "--nocapture"])
+            .env(LOCK_PROBE_PATH, lock_path.as_os_str())
+            .output()
+            .expect("spawn lock probe test");
+        assert!(
+            output.status.success(),
+            "lock probe test failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).contains("available")
+    }
+
     #[test]
     fn lock_holder() {
         let Some(path) = std::env::var_os(LOCK_HOLDER_PATH) else {
@@ -145,6 +191,27 @@ pub(crate) mod test_support {
 
         let mut release = [0u8; 1];
         let _ = io::stdin().read(&mut release);
+    }
+
+    #[test]
+    fn lock_probe() {
+        let Some(path) = std::env::var_os(LOCK_PROBE_PATH) else {
+            return;
+        };
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .expect("open lock-probe file");
+        match set_record_lock(file.as_raw_fd(), libc::F_WRLCK as libc::c_short) {
+            Ok(()) => {
+                println!("available");
+                set_record_lock(file.as_raw_fd(), libc::F_UNLCK as libc::c_short)
+                    .expect("unlock lock-probe file");
+            }
+            Err(error) if super::is_lock_conflict(&error) => println!("blocked"),
+            Err(error) => panic!("unexpected lock-probe error: {error}"),
+        }
     }
 }
 
@@ -171,6 +238,18 @@ mod tests {
         test_support::with_held_lock(root.path(), || {
             assert_eq!(check(root.path()), Err(RunningError::Running));
         });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn acquired_guard_remains_contended_until_drop() {
+        let root = tempdir().unwrap();
+        fs::write(root.path().join("LOCK"), b"").unwrap();
+
+        let guard = acquire(root.path()).unwrap();
+        assert!(!test_support::lock_is_available_from_child(root.path()));
+        drop(guard);
+        assert!(test_support::lock_is_available_from_child(root.path()));
     }
 
     #[cfg(not(unix))]

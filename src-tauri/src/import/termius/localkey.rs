@@ -1,13 +1,19 @@
 /*
- * Keychain lookup is intentionally candidate-agnostic: both desktop and App
- * Store services are tried, but only an authenticated ciphertext validator
- * may select the returned 32-byte key.
+ * Keychain lookup is intentionally candidate-agnostic across the desktop,
+ * App Store, DMG bundle, and Linux Snap service names. Only an authenticated
+ * ciphertext validator may select the returned 32-byte key.
  */
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use thiserror::Error;
 
 const MAX_LOCAL_KEY_BASE64_LEN: usize = 44;
+const LOCAL_KEY_CANDIDATES: [(&str, &str); 4] = [
+    ("termius-app", "localKey"),
+    ("Termius", "localKey"),
+    ("Termius (MAS)", "localKey"),
+    ("com.termius-dmg.mac", "localKey"),
+];
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum LocalKeyError {
@@ -27,8 +33,8 @@ pub fn decode_local_key(value: &str) -> Result<[u8; 32], LocalKeyError> {
 }
 
 pub fn find_local_key(validate: impl Fn(&[u8; 32]) -> bool) -> Result<[u8; 32], LocalKeyError> {
-    for service in ["Termius", "Termius (MAS)"] {
-        let Ok(entry) = keyring::Entry::new(service, "localKey") else {
+    for (service, account) in LOCAL_KEY_CANDIDATES {
+        let Ok(entry) = keyring::Entry::new(service, account) else {
             continue;
         };
         let Ok(encoded) = entry.get_password() else {
@@ -61,6 +67,7 @@ mod tests {
 
     type MockStore = HashMap<(String, String), Vec<u8>>;
     static MOCK_STORE: LazyLock<Mutex<MockStore>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+    static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     #[derive(Debug)]
     struct MemCredential {
@@ -125,8 +132,8 @@ mod tests {
     }
 
     fn clear_candidates() {
-        for service in ["Termius", "Termius (MAS)"] {
-            if let Ok(entry) = keyring::Entry::new(service, "localKey") {
+        for &(service, account) in &LOCAL_KEY_CANDIDATES {
+            if let Ok(entry) = keyring::Entry::new(service, account) {
                 let _ = entry.delete_credential();
             }
         }
@@ -156,6 +163,7 @@ mod tests {
 
     #[test]
     fn validator_selects_authenticated_mas_candidate_over_decoy() {
+        let _serial = TEST_LOCK.lock().unwrap();
         init_mock_keystore();
         clear_candidates();
         let decoy = [0x11u8; 32];
@@ -170,6 +178,46 @@ mod tests {
             .unwrap();
 
         let ciphertext = envelope_for(&valid, b"synthetic validation");
+        assert_eq!(
+            find_local_key(|candidate| decrypt(candidate, &ciphertext).is_ok()),
+            Ok(valid)
+        );
+        clear_candidates();
+    }
+
+    #[test]
+    fn known_keychain_candidates_have_deterministic_service_account_order() {
+        assert_eq!(
+            LOCAL_KEY_CANDIDATES,
+            [
+                ("termius-app", "localKey"),
+                ("Termius", "localKey"),
+                ("Termius (MAS)", "localKey"),
+                ("com.termius-dmg.mac", "localKey"),
+            ]
+        );
+    }
+
+    #[test]
+    fn validator_rejects_decoys_and_reaches_every_known_service() {
+        let _serial = TEST_LOCK.lock().unwrap();
+        init_mock_keystore();
+        clear_candidates();
+        let valid = [0x77u8; 32];
+        let ciphertext = envelope_for(&valid, b"synthetic validation");
+
+        for (index, &(service, account)) in LOCAL_KEY_CANDIDATES.iter().enumerate() {
+            let key = if index + 1 == LOCAL_KEY_CANDIDATES.len() {
+                valid
+            } else {
+                [u8::try_from(index + 1).unwrap(); 32]
+            };
+            keyring::Entry::new(service, account)
+                .unwrap()
+                .set_password(&STANDARD.encode(key))
+                .unwrap();
+        }
+
         assert_eq!(
             find_local_key(|candidate| decrypt(candidate, &ciphertext).is_ok()),
             Ok(valid)

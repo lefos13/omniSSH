@@ -43,11 +43,11 @@ pub use envelope::{
 #[allow(unused_imports)]
 pub use localkey::{decode_local_key, find_local_key, LocalKeyError};
 #[allow(unused_imports)]
-pub use running::{check, RunningError};
+pub use running::{acquire, check, LockGuard, RunningError};
 #[allow(unused_imports)]
 pub use source::{
-    decode_idb_key, decode_record_value, decode_varint, is_leveldb_path, read_leveldb, read_rows,
-    read_source, IdbKey, RawKeyValue, Row, SourceError, SourceRows, MAX_RAW_BYTES, MAX_RAW_ROWS,
+    decode_idb_key, decode_record_value, decode_varint, is_leveldb_path, read_rows, read_source,
+    IdbKey, RawKeyValue, Row, SourceError, SourceRows, MAX_RAW_BYTES, MAX_RAW_ROWS,
     WANTED_DATABASES,
 };
 #[allow(unused_imports)]
