@@ -151,44 +151,50 @@ jobs:
 
       - name: Generate changelog
         run: |
-          PREV_TAG=$(git tag --sort=-version:refname | head -2 | tail -1)
-          TAG="${{ inputs.tag }}"
-          CURRENT_TAG="${TAG:-$GITHUB_REF_NAME}"
-
-          if [ "$PREV_TAG" = "$CURRENT_TAG" ] || [ -z "$PREV_TAG" ]; then
-            COMMITS=$(git log --pretty=format:"- %s" HEAD)
-          else
-            COMMITS=$(git log --pretty=format:"- %s" "${PREV_TAG}..${CURRENT_TAG}")
-          fi
-
-          cat <<BODY > release_notes.md
-          ## What's New
-
-          ${COMMITS}
-
-          ## Downloads
-
-          | Platform | File |
-          |----------|------|
-          | macOS (Apple Silicon) | \`.dmg\` (aarch64) |
-          | macOS (Intel) | \`.dmg\` (x64) |
-          | Windows | \`.msi\` / \`.exe\` |
-          | Linux | \`.deb\` / \`.AppImage\` |
-
-          ## Installation
-
-          Download the appropriate file for your platform from the assets below.
-
-          macOS users: If you see "app is damaged", run:
-          \`\`\`bash
-          xattr -cr /Applications/OmniSSH.app
-          ```
-
-          ## Auto-Updates
-
-          Already have OmniSSH installed? Go to **Settings > Updates** and click **Check** to update in-app.
-          BODY
-
+          node -e '
+            const { execSync } = require("child_process");
+            const fs = require("fs");
+            let commits = "";
+            try {
+              const prevTag = execSync("git tag --sort=-version:refname | head -2 | tail -1", { encoding: "utf8" }).trim();
+              const tag = "${{ inputs.tag }}" || process.env.GITHUB_REF_NAME || "v1.0.0";
+              if (prevTag && prevTag !== tag) {
+                commits = execSync(`git log --pretty=format:"- %s" "${prevTag}..HEAD"`, { encoding: "utf8" }).trim();
+              } else {
+                commits = execSync("git log -n 25 --pretty=format:\"- %s\" HEAD", { encoding: "utf8" }).trim();
+              }
+            } catch (e) {
+              commits = "- Initial release of OmniSSH";
+            }
+            const body = [
+              "## What\x27s New",
+              "",
+              commits,
+              "",
+              "## Downloads",
+              "",
+              "| Platform | File |",
+              "|----------|------|",
+              "| macOS (Apple Silicon) | `.dmg` (aarch64) |",
+              "| macOS (Intel) | `.dmg` (x64) |",
+              "| Windows | `.msi` / `.exe` |",
+              "| Linux | `.deb` / `.rpm` / `.AppImage` |",
+              "",
+              "## Installation",
+              "",
+              "Download the appropriate installer for your operating system from the assets below.",
+              "",
+              "macOS users: If you see \"app is damaged\" or Gatekeeper prompt, run:",
+              "```bash",
+              "xattr -cr /Applications/OmniSSH.app",
+              "```",
+              "",
+              "## Auto-Updates",
+              "",
+              "Already have OmniSSH installed? Navigate to **Settings > Updates** and click **Check for updates** to update seamlessly in-app.",
+            ].join("\n");
+            fs.writeFileSync("release_notes.md", body, "utf8");
+          '
       - name: Update release body
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
