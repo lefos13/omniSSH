@@ -98,12 +98,12 @@ describe("TerminalTabContainer", () => {
     fireEvent.keyDown(handle, { key: "ArrowRight" });
     expect(useLinkedExplorerStore.getState().panelWidth).toBe(340);
 
-    // Home jumps to max width 800
+    // Home jumps to min width 220
     fireEvent.keyDown(handle, { key: "Home" });
-    expect(useLinkedExplorerStore.getState().panelWidth).toBe(800);
-
-    // End jumps to min width 220
-    fireEvent.keyDown(handle, { key: "End" });
     expect(useLinkedExplorerStore.getState().panelWidth).toBe(220);
+
+    // End jumps to max width 800
+    fireEvent.keyDown(handle, { key: "End" });
+    expect(useLinkedExplorerStore.getState().panelWidth).toBe(800);
   });
 });

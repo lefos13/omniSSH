@@ -209,6 +209,7 @@ describe("LinkedExplorerPanel", () => {
     fireEvent.keyDown(document, { key: "Escape" });
 
     expect(screen.queryByTestId("linked-explorer-sync-menu")).not.toBeInTheDocument();
+    expect(document.activeElement).toBe(statusBtn);
   });
 
   it("triggers one-shot sync on clicking 'Trigger sync once'", async () => {
@@ -329,5 +330,64 @@ describe("LinkedExplorerPanel", () => {
 
     // Now it connects for active pane ssh-1
     expect(invoke).toHaveBeenCalledWith("sftp_open", { sessionId: "ssh-1" });
+  });
+
+  it("rebinds when active pane changes in an active split terminal tab", async () => {
+    useSessionStore.getState().addSession("ssh-active-2", {
+      ...dummyHost,
+      host: "10.0.0.2",
+    });
+
+    useSessionStore.setState({
+      tabs: new Map([
+        [
+          "tab-1",
+          {
+            layout: {
+              type: "split",
+              direction: "horizontal",
+              ratio: 0.5,
+              children: [
+                { type: "pane", sessionId: "ssh-1" },
+                { type: "pane", sessionId: "ssh-active-2" },
+              ],
+            },
+            label: "split-tab",
+          },
+        ],
+      ]),
+      activeSessionId: "ssh-1",
+    });
+
+    invoke.mockImplementation(async (cmd, args) => {
+      if (cmd === "sftp_open") {
+        if (args && typeof args === "object" && "sessionId" in args && args.sessionId === "ssh-active-2") {
+          return "sftp-sess-2";
+        }
+        return "sftp-sess-1";
+      }
+      if (cmd === "sftp_list_dir") return [];
+      if (cmd === "sftp_home_dir") return "/home/alice";
+      return undefined;
+    });
+
+    render(<LinkedExplorerPanel tabId="tab-1" isActive={true} />);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(invoke).toHaveBeenCalledWith("sftp_open", { sessionId: "ssh-1" });
+
+    // Switch active pane to ssh-active-2
+    act(() => {
+      useSessionStore.getState().setActiveSession("ssh-active-2");
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(invoke).toHaveBeenCalledWith("sftp_open", { sessionId: "ssh-active-2" });
   });
 });

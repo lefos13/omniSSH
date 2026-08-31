@@ -52,10 +52,10 @@ export function TerminalTabContainer({ tabId, layout, isActive }: TerminalTabCon
         setPanelWidth(panelWidth - KEYBOARD_STEP);
       } else if (e.key === "Home") {
         e.preventDefault();
-        setPanelWidth(MAX_WIDTH);
+        setPanelWidth(MIN_WIDTH);
       } else if (e.key === "End") {
         e.preventDefault();
-        setPanelWidth(MIN_WIDTH);
+        setPanelWidth(MAX_WIDTH);
       }
     },
     [panelWidth, setPanelWidth],

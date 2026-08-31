@@ -273,6 +273,49 @@ describe("linked-explorer-store", () => {
     expect(useSftpStore.getState().sessions.has("sftp-stale-late")).toBe(false);
   });
 
+  it("closes stale connection and uses fresh connection when panel is closed and immediately reopened before old connection completes", async () => {
+    useSessionStore.getState().addSession("ssh-race", dummyHost);
+
+    const d1 = createDeferred<string>();
+    const d2 = createDeferred<string>();
+
+    let callCount = 0;
+    invoke.mockImplementation((cmd) => {
+      if (cmd === "sftp_open") {
+        callCount++;
+        return callCount === 1 ? d1.promise : d2.promise;
+      }
+      return Promise.resolve(undefined);
+    });
+
+    useLinkedExplorerStore.getState().openLinkedExplorer("tab-1");
+    const p1 = useLinkedExplorerStore.getState().ensureConnected("tab-1", "ssh-race");
+
+    // Close panel mid-flight
+    useLinkedExplorerStore.getState().closeLinkedExplorer("tab-1");
+
+    // Immediately reopen panel and connect again
+    useLinkedExplorerStore.getState().openLinkedExplorer("tab-1");
+    const p2 = useLinkedExplorerStore.getState().ensureConnected("tab-1", "ssh-race");
+
+    // Resolve old connect late
+    d1.resolve("sftp-stale-old");
+    const r1 = await p1;
+    expect(r1).toBeNull();
+    // Old channel closed on backend, not registered in sftp-store
+    expect(invoke).toHaveBeenCalledWith("sftp_close", { sftpSessionId: "sftp-stale-old" });
+    expect(useSftpStore.getState().sessions.has("sftp-stale-old")).toBe(false);
+
+    // Resolve new connect
+    d2.resolve("sftp-fresh-new");
+    const r2 = await p2;
+    expect(r2).not.toBeNull();
+    expect(r2?.sftpSessionId).toBe("sftp-fresh-new");
+    expect(r2?.status).toBe("connected");
+    expect(useSftpStore.getState().sessions.has("sftp-fresh-new")).toBe(true);
+    expect(useLinkedExplorerStore.getState().bindings.get("tab-1")?.sftpSessionId).toBe("sftp-fresh-new");
+  });
+
   it("automatically cleans up linked session when terminal session is removed", async () => {
     useSessionStore.getState().addSession("ssh-auto", dummyHost);
     invoke.mockResolvedValue("sftp-auto");

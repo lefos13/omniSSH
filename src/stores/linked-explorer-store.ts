@@ -63,10 +63,25 @@ function initialFollow(): boolean {
   return stored === null ? true : stored === "true";
 }
 
-// In-flight connection promises and generation counters to ensure idempotency
-// and immediately close stale connections if the tab closed or rebound mid-flight.
+// In-flight connection promises, active count, and monotonic generation counters to ensure
+// idempotency and immediately close stale connections if the tab closed or rebound mid-flight.
 const inFlightConnections = new Map<string, Promise<LinkedExplorerBinding | null>>();
+const inFlightCounts = new Map<string, number>();
 const tabGenerations = new Map<string, number>();
+
+function bumpGeneration(tabId: string): number {
+  const next = (tabGenerations.get(tabId) ?? 0) + 1;
+  tabGenerations.set(tabId, next);
+  return next;
+}
+
+function clearInFlightForTab(tabId: string): void {
+  for (const key of inFlightConnections.keys()) {
+    if (key.startsWith(`${tabId}:`)) {
+      inFlightConnections.delete(key);
+    }
+  }
+}
 
 export const useLinkedExplorerStore = create<LinkedExplorerState>((set, get) => ({
   openTabIds: new Set(),
@@ -91,8 +106,9 @@ export const useLinkedExplorerStore = create<LinkedExplorerState>((set, get) => 
     }),
 
   closeLinkedExplorer: (tabId) => {
-    // Invalidate any in-flight connection for this tab
-    tabGenerations.delete(tabId);
+    // Invalidate any in-flight connection for this tab monotonically
+    bumpGeneration(tabId);
+    clearInFlightForTab(tabId);
 
     set((state) => {
       const next = new Set(state.openTabIds);
@@ -160,9 +176,9 @@ export const useLinkedExplorerStore = create<LinkedExplorerState>((set, get) => 
     const sshSession = useSessionStore.getState().sessions.get(sshSessionId);
     if (!sshSession) return null;
 
-    // Track generation to detect stale completions if closed/rebound mid-flight
-    const currentGeneration = (tabGenerations.get(tabId) ?? 0) + 1;
-    tabGenerations.set(tabId, currentGeneration);
+    // Track monotonic generation to detect stale completions if closed/rebound mid-flight
+    const currentGeneration = bumpGeneration(tabId);
+    inFlightCounts.set(tabId, (inFlightCounts.get(tabId) ?? 0) + 1);
 
     // Mark as connecting
     const connectingBinding: LinkedExplorerBinding = {
@@ -261,6 +277,17 @@ export const useLinkedExplorerStore = create<LinkedExplorerState>((set, get) => 
       return await connectPromise;
     } finally {
       inFlightConnections.delete(connectionKey);
+      const remaining = (inFlightCounts.get(tabId) ?? 1) - 1;
+      if (remaining <= 0) {
+        inFlightCounts.delete(tabId);
+        // Only delete generation state after all in-flight entries for that tab have settled
+        // and the tab is no longer open/managed.
+        if (!get().openTabIds.has(tabId) && !useSessionStore.getState().tabs.has(tabId)) {
+          tabGenerations.delete(tabId);
+        }
+      } else {
+        inFlightCounts.set(tabId, remaining);
+      }
     }
   },
 
@@ -268,7 +295,9 @@ export const useLinkedExplorerStore = create<LinkedExplorerState>((set, get) => 
     const binding = get().bindings.get(tabId);
     if (!binding) return;
 
-    tabGenerations.delete(tabId);
+    // Invalidate generation monotonically
+    bumpGeneration(tabId);
+    clearInFlightForTab(tabId);
 
     // Synchronously remove from store so UI updates immediately
     get().removeBinding(tabId);
@@ -285,6 +314,15 @@ export const useLinkedExplorerStore = create<LinkedExplorerState>((set, get) => 
       } catch {
         /* Best-effort cleanup */
       }
+    }
+
+    // Clean up generation state if no in-flight promises remain and tab is closed
+    if (
+      (inFlightCounts.get(tabId) ?? 0) <= 0 &&
+      !get().openTabIds.has(tabId) &&
+      !useSessionStore.getState().tabs.has(tabId)
+    ) {
+      tabGenerations.delete(tabId);
     }
   },
 }));
