@@ -4,7 +4,7 @@ use tauri::State;
 use tokio::task;
 use tracing::instrument;
 
-use crate::db::{DbError, HostDb, SavedHost};
+use crate::db::{DbError, HostDb, HostGroup, SavedHost};
 use crate::types::SshError;
 
 use super::{ImportResult, SshConfigEntry, SshConfigImportEntry};
@@ -33,6 +33,162 @@ pub async fn import_parse_ssh_config(
     .map_err(|e| SshError::IoError(format!("task panicked: {e}")))?
 }
 
+/* Save a batch of imported host entries into the database.
+ * Resolves optional group paths against existing HostGroups or creates
+ * new ones (cached to prevent duplicate group creation within a run),
+ * maps startup commands and notes, and resolves single-hop ProxyJump targets. */
+pub fn save_imported_hosts(
+    db: &HostDb,
+    entries: &[SshConfigImportEntry],
+) -> Result<ImportResult, DbError> {
+    let mut imported = 0u32;
+    let mut skipped = 0u32;
+    let mut errors = Vec::new();
+
+    // Group name → group id cache for the import run.
+    // Seeded with pre-existing groups so identical group paths reuse existing groups.
+    let mut group_cache: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let existing_groups = db.list_groups().unwrap_or_default();
+    let mut next_sort_order: i32 = existing_groups
+        .iter()
+        .map(|g| g.sort_order)
+        .max()
+        .map_or(0, |m| m + 1);
+    for g in existing_groups {
+        group_cache.insert(g.name, g.id);
+    }
+
+    // alias (Host block name) → generated host id, for ProxyJump resolution.
+    let mut alias_to_id: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    // (host id, alias, raw ProxyJump value) tuples that still need resolving.
+    let mut pending_jumps: Vec<(String, String, String)> = Vec::new();
+
+    for entry in entries {
+        let now = timestamp_now();
+        let id = uuid::Uuid::new_v4().to_string();
+
+        /* Resolve an optional group_path to a HostGroup ID. If the group
+         * already exists in the database or was created earlier in this
+         * import run, reuse its ID. Otherwise, create a new HostGroup with
+         * default visual settings and append it after existing groups. */
+        let group_id = match entry
+            .group_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(group_name) => {
+                if let Some(cached_id) = group_cache.get(group_name) {
+                    Some(cached_id.clone())
+                } else {
+                    let new_group_id = uuid::Uuid::new_v4().to_string();
+                    let group = HostGroup {
+                        id: new_group_id.clone(),
+                        name: group_name.to_string(),
+                        color: "#6366f1".to_string(),
+                        icon: Some("Folder".to_string()),
+                        sort_order: next_sort_order,
+                        default_username: None,
+                        created_at: now.clone(),
+                        updated_at: now.clone(),
+                    };
+                    match db.create_group(&group) {
+                        Ok(()) => {
+                            next_sort_order += 1;
+                            group_cache.insert(group_name.to_string(), new_group_id.clone());
+                            Some(new_group_id)
+                        }
+                        Err(e) => {
+                            errors
+                                .push(format!("{}: group creation failed: {e}", entry.host_alias));
+                            None
+                        }
+                    }
+                }
+            }
+            None => None,
+        };
+
+        let host = SavedHost {
+            id: id.clone(),
+            label: entry.host_alias.clone(),
+            host: entry.hostname.clone(),
+            port: entry.port as _,
+            username: entry.user.clone(),
+            auth_type: if entry.identity_file.is_some() {
+                "privateKey".to_string()
+            } else {
+                "password".to_string()
+            },
+            key_path: entry.identity_file.clone(),
+            group_id,
+            color: None,
+            notes: entry.notes.clone(),
+            environment: None,
+            os_type: None,
+            startup_command: entry.startup_command.clone(),
+            proxy_jump: entry.proxy_jump.clone(),
+            proxy_jump_host_id: None,
+            start_directory: None,
+            keep_alive_interval: entry.keep_alive_interval,
+            default_shell: None,
+            font_size: None,
+            last_connected_at: None,
+            connection_count: None,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+
+        match db.save_host(&host) {
+            Ok(()) => {
+                imported += 1;
+                alias_to_id.insert(entry.host_alias.clone(), id.clone());
+                if let Some(pj) = entry.proxy_jump.as_ref().filter(|s| !s.trim().is_empty()) {
+                    pending_jumps.push((id, entry.host_alias.clone(), pj.clone()));
+                }
+            }
+            Err(e) => {
+                errors.push(format!("{}: {e}", entry.host_alias));
+                skipped += 1;
+            }
+        }
+    }
+
+    // Second pass: resolve each parsed ProxyJump value against the imported
+    // (and pre-existing) hosts, then link via proxy_jump_host_id. Matching is
+    // best-effort — an unresolved jump simply leaves the free-text proxy_jump
+    // field in place without breaking the import. Linking goes through the
+    // *validated* setter so a config with mutually-referencing ProxyJump
+    // directives (A→B, B→A) can never persist a connect-breaking cycle.
+    let existing_hosts = db.list_hosts().unwrap_or_default();
+    for (host_id, alias, jump_value) in pending_jumps {
+        // Multi-hop chains (`jump1,jump2`) are retained as free-text but not
+        // auto-linked: a single proxy_jump_host_id can't express the chain,
+        // and guessing which hop is adjacent to the target risks a wrong link.
+        if jump_value.contains(',') {
+            continue;
+        }
+        let Some(jump_id) = resolve_jump_target(&jump_value, &alias_to_id, &existing_hosts) else {
+            continue;
+        };
+        match db.set_proxy_jump_host_validated(&host_id, &jump_id) {
+            Ok(()) => {}
+            // A self-reference / cycle is an expected best-effort skip; only
+            // surface genuine write failures so they aren't silently lost.
+            Err(DbError::Validation(_)) => {}
+            Err(e) => errors.push(format!("{alias}: tunnel link not created: {e}")),
+        }
+    }
+
+    Ok(ImportResult {
+        imported,
+        skipped,
+        errors,
+    })
+}
+
 /// Save selected SSH config entries as SavedHosts.
 #[tauri::command]
 #[instrument(skip(db))]
@@ -43,101 +199,9 @@ pub async fn import_save_ssh_hosts(
     let host_count = entries.len();
     let db = Arc::clone(&db);
 
-    let result = task::spawn_blocking(move || {
-        let mut imported = 0u32;
-        let mut skipped = 0u32;
-        let mut errors = Vec::new();
-
-        // alias (Host block name) → generated host id, for ProxyJump resolution.
-        let mut alias_to_id: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
-        // (host id, alias, raw ProxyJump value) tuples that still need resolving.
-        let mut pending_jumps: Vec<(String, String, String)> = Vec::new();
-
-        for entry in &entries {
-            let now = timestamp_now();
-            let id = uuid::Uuid::new_v4().to_string();
-
-            let host = SavedHost {
-                id: id.clone(),
-                label: entry.host_alias.clone(),
-                host: entry.hostname.clone(),
-                port: entry.port as _,
-                username: entry.user.clone(),
-                auth_type: if entry.identity_file.is_some() {
-                    "privateKey".to_string()
-                } else {
-                    "password".to_string()
-                },
-                key_path: entry.identity_file.clone(),
-                group_id: None,
-                color: None,
-                notes: None,
-                environment: None,
-                os_type: None,
-                startup_command: None,
-                proxy_jump: entry.proxy_jump.clone(),
-                proxy_jump_host_id: None,
-                start_directory: None,
-                keep_alive_interval: entry.keep_alive_interval,
-                default_shell: None,
-                font_size: None,
-                last_connected_at: None,
-                connection_count: None,
-                created_at: now.clone(),
-                updated_at: now,
-            };
-
-            match db.save_host(&host) {
-                Ok(()) => {
-                    imported += 1;
-                    alias_to_id.insert(entry.host_alias.clone(), id.clone());
-                    if let Some(pj) = entry.proxy_jump.as_ref().filter(|s| !s.trim().is_empty()) {
-                        pending_jumps.push((id, entry.host_alias.clone(), pj.clone()));
-                    }
-                }
-                Err(e) => {
-                    errors.push(format!("{}: {e}", entry.host_alias));
-                    skipped += 1;
-                }
-            }
-        }
-
-        // Second pass: resolve each parsed ProxyJump value against the imported
-        // (and pre-existing) hosts, then link via proxy_jump_host_id. Matching is
-        // best-effort — an unresolved jump simply leaves the free-text proxy_jump
-        // field in place without breaking the import. Linking goes through the
-        // *validated* setter so a config with mutually-referencing ProxyJump
-        // directives (A→B, B→A) can never persist a connect-breaking cycle.
-        let existing_hosts = db.list_hosts().unwrap_or_default();
-        for (host_id, alias, jump_value) in pending_jumps {
-            // Multi-hop chains (`jump1,jump2`) are retained as free-text but not
-            // auto-linked: a single proxy_jump_host_id can't express the chain,
-            // and guessing which hop is adjacent to the target risks a wrong link.
-            if jump_value.contains(',') {
-                continue;
-            }
-            let Some(jump_id) = resolve_jump_target(&jump_value, &alias_to_id, &existing_hosts)
-            else {
-                continue;
-            };
-            match db.set_proxy_jump_host_validated(&host_id, &jump_id) {
-                Ok(()) => {}
-                // A self-reference / cycle is an expected best-effort skip; only
-                // surface genuine write failures so they aren't silently lost.
-                Err(DbError::Validation(_)) => {}
-                Err(e) => errors.push(format!("{alias}: tunnel link not created: {e}")),
-            }
-        }
-
-        Ok(ImportResult {
-            imported,
-            skipped,
-            errors,
-        })
-    })
-    .await
-    .map_err(|e| DbError::InitError(format!("task panicked: {e}")))?;
+    let result = task::spawn_blocking(move || save_imported_hosts(&db, &entries))
+        .await
+        .map_err(|e| DbError::InitError(format!("task panicked: {e}")))?;
 
     crate::telemetry::capture(
         "ssh_config_imported",
@@ -311,5 +375,244 @@ mod tests {
     #[test]
     fn unmatched_value_returns_none() {
         assert_eq!(resolve_jump_target("nope", &HashMap::new(), &[]), None);
+    }
+
+    struct TestDb {
+        db: HostDb,
+        path: std::path::PathBuf,
+    }
+
+    impl Drop for TestDb {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn test_db() -> TestDb {
+        let dir = std::env::temp_dir().join(format!("anyscp_import_test_{}", uuid::Uuid::new_v4()));
+        let db = HostDb::new(&dir).expect("HostDb::new");
+        TestDb { db, path: dir }
+    }
+
+    fn sample_import_entry(alias: &str) -> SshConfigImportEntry {
+        SshConfigImportEntry {
+            host_alias: alias.to_string(),
+            hostname: format!("{alias}.example.com"),
+            user: "root".to_string(),
+            port: 22,
+            identity_file: None,
+            proxy_jump: None,
+            keep_alive_interval: None,
+            group_path: None,
+            startup_command: None,
+            notes: None,
+        }
+    }
+
+    fn sample_group(id: &str, name: &str, sort_order: i32) -> HostGroup {
+        HostGroup {
+            id: id.to_string(),
+            name: name.to_string(),
+            color: "#6366f1".to_string(),
+            icon: Some("Folder".to_string()),
+            sort_order,
+            default_username: None,
+            created_at: "2026-01-01T00:00:00".to_string(),
+            updated_at: "2026-01-01T00:00:00".to_string(),
+        }
+    }
+
+    #[test]
+    fn two_hosts_sharing_group_path_creates_one_group_and_assigns_id() {
+        let fixture = test_db();
+        let mut h1 = sample_import_entry("web1");
+        h1.group_path = Some("Production / Web".to_string());
+        let mut h2 = sample_import_entry("web2");
+        h2.group_path = Some("Production / Web".to_string());
+
+        let result = save_imported_hosts(&fixture.db, &[h1, h2]).expect("save_imported_hosts");
+        assert_eq!(result.imported, 2);
+        assert_eq!(result.skipped, 0);
+        assert!(result.errors.is_empty());
+
+        let groups = fixture.db.list_groups().expect("list_groups");
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "Production / Web");
+        assert_eq!(groups[0].color, "#6366f1");
+        assert_eq!(groups[0].icon.as_deref(), Some("Folder"));
+
+        let hosts = fixture.db.list_hosts().expect("list_hosts");
+        assert_eq!(hosts.len(), 2);
+        assert_eq!(hosts[0].group_id.as_deref(), Some(groups[0].id.as_str()));
+        assert_eq!(hosts[1].group_id.as_deref(), Some(groups[0].id.as_str()));
+    }
+
+    #[test]
+    fn pre_existing_group_reused_not_duplicated() {
+        let fixture = test_db();
+        let existing = sample_group("grp-staging", "Staging", 0);
+        fixture.db.create_group(&existing).expect("create_group");
+
+        let mut h1 = sample_import_entry("stage1");
+        h1.group_path = Some("Staging".to_string());
+
+        let result = save_imported_hosts(&fixture.db, &[h1]).expect("save_imported_hosts");
+        assert_eq!(result.imported, 1);
+        assert_eq!(result.skipped, 0);
+        assert!(result.errors.is_empty());
+
+        let groups = fixture.db.list_groups().expect("list_groups");
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].id, "grp-staging");
+        assert_eq!(groups[0].name, "Staging");
+
+        let hosts = fixture.db.list_hosts().expect("list_hosts");
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].group_id.as_deref(), Some("grp-staging"));
+    }
+
+    #[test]
+    fn absent_group_path_leaves_group_id_none() {
+        let fixture = test_db();
+        let h1 = sample_import_entry("standalone");
+
+        let result = save_imported_hosts(&fixture.db, &[h1]).expect("save_imported_hosts");
+        assert_eq!(result.imported, 1);
+        assert_eq!(result.skipped, 0);
+
+        let groups = fixture.db.list_groups().expect("list_groups");
+        assert!(groups.is_empty());
+
+        let hosts = fixture.db.list_hosts().expect("list_hosts");
+        assert_eq!(hosts.len(), 1);
+        assert!(hosts[0].group_id.is_none());
+    }
+
+    #[test]
+    fn whitespace_group_path_treated_as_absent() {
+        let fixture = test_db();
+        let mut h1 = sample_import_entry("h1");
+        h1.group_path = Some("   ".to_string());
+        let mut h2 = sample_import_entry("h2");
+        h2.group_path = Some("".to_string());
+
+        let result = save_imported_hosts(&fixture.db, &[h1, h2]).expect("save_imported_hosts");
+        assert_eq!(result.imported, 2);
+
+        let groups = fixture.db.list_groups().expect("list_groups");
+        assert!(groups.is_empty());
+
+        let hosts = fixture.db.list_hosts().expect("list_hosts");
+        assert_eq!(hosts.len(), 2);
+        assert!(hosts[0].group_id.is_none());
+        assert!(hosts[1].group_id.is_none());
+    }
+
+    #[test]
+    fn host_saved_without_new_fields_behaves_exactly_as_before() {
+        let fixture = test_db();
+        let mut h = sample_import_entry("legacy");
+        h.identity_file = Some("/home/user/.ssh/id_ed25519".to_string());
+        h.keep_alive_interval = Some(60);
+
+        let result = save_imported_hosts(&fixture.db, &[h]).expect("save_imported_hosts");
+        assert_eq!(result.imported, 1);
+
+        let hosts = fixture.db.list_hosts().expect("list_hosts");
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].label, "legacy");
+        assert_eq!(hosts[0].auth_type, "privateKey");
+        assert_eq!(
+            hosts[0].key_path.as_deref(),
+            Some("/home/user/.ssh/id_ed25519")
+        );
+        assert_eq!(hosts[0].keep_alive_interval, Some(60));
+        assert!(hosts[0].group_id.is_none());
+        assert!(hosts[0].startup_command.is_none());
+        assert!(hosts[0].notes.is_none());
+    }
+
+    #[test]
+    fn startup_command_and_notes_persisted() {
+        let fixture = test_db();
+        let mut h = sample_import_entry("devbox");
+        h.startup_command = Some("tmux attach || tmux".to_string());
+        h.notes = Some("Development jump machine".to_string());
+
+        let result = save_imported_hosts(&fixture.db, &[h]).expect("save_imported_hosts");
+        assert_eq!(result.imported, 1);
+
+        let hosts = fixture.db.list_hosts().expect("list_hosts");
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(
+            hosts[0].startup_command.as_deref(),
+            Some("tmux attach || tmux")
+        );
+        assert_eq!(hosts[0].notes.as_deref(), Some("Development jump machine"));
+    }
+
+    #[test]
+    fn new_group_sort_order_places_after_existing_groups() {
+        let fixture = test_db();
+        fixture
+            .db
+            .create_group(&sample_group("g1", "First", 5))
+            .expect("create g1");
+        fixture
+            .db
+            .create_group(&sample_group("g2", "Second", 10))
+            .expect("create g2");
+
+        let mut h1 = sample_import_entry("srv1");
+        h1.group_path = Some("Third".to_string());
+        let mut h2 = sample_import_entry("srv2");
+        h2.group_path = Some("Fourth".to_string());
+
+        let result = save_imported_hosts(&fixture.db, &[h1, h2]).expect("save_imported_hosts");
+        assert_eq!(result.imported, 2);
+
+        let groups = fixture.db.list_groups().expect("list_groups");
+        assert_eq!(groups.len(), 4);
+        let third = groups.iter().find(|g| g.name == "Third").unwrap();
+        let fourth = groups.iter().find(|g| g.name == "Fourth").unwrap();
+        assert_eq!(third.sort_order, 11);
+        assert_eq!(fourth.sort_order, 12);
+    }
+
+    #[test]
+    fn serde_absent_option_fields_deserialize_to_none_and_alias_works() {
+        let json_minimal = r#"{
+            "host_alias": "srv1",
+            "hostname": "1.2.3.4",
+            "user": "admin",
+            "port": 22
+        }"#;
+        let entry: SshConfigImportEntry =
+            serde_json::from_str(json_minimal).expect("deserialize minimal");
+        assert_eq!(entry.host_alias, "srv1");
+        assert_eq!(entry.hostname, "1.2.3.4");
+        assert_eq!(entry.user, "admin");
+        assert_eq!(entry.port, 22);
+        assert!(entry.identity_file.is_none());
+        assert!(entry.proxy_jump.is_none());
+        assert!(entry.keep_alive_interval.is_none());
+        assert!(entry.group_path.is_none());
+        assert!(entry.startup_command.is_none());
+        assert!(entry.notes.is_none());
+
+        let json_camel_case = r#"{
+            "host_alias": "srv2",
+            "hostname": "1.2.3.5",
+            "user": "ubuntu",
+            "port": 2222,
+            "groupPath": "Cloud / AWS",
+            "startupCommand": "bash",
+            "notes": "EC2 instance"
+        }"#;
+        let entry_camel: SshConfigImportEntry =
+            serde_json::from_str(json_camel_case).expect("deserialize camelCase");
+        assert_eq!(entry_camel.group_path.as_deref(), Some("Cloud / AWS"));
+        assert_eq!(entry_camel.startup_command.as_deref(), Some("bash"));
+        assert_eq!(entry_camel.notes.as_deref(), Some("EC2 instance"));
     }
 }
