@@ -41,7 +41,7 @@ const TEXT_INPUT_CLASS = [
 
 const FIELD_LABEL_CLASS = "block text-[length:var(--text-xs)] font-medium text-text-secondary mb-1";
 
-const REPO_URL = "https://github.com/macnev2013/anySCP";
+const REPO_URL = "https://github.com/lefos13/anySCP";
 
 // ─── Sections ─────────────────────────────────────────────────────────────────
 // Each settings category is a section here. To add a new category, add an entry
@@ -734,8 +734,8 @@ function DataSettings() {
       const picked = await open({
         multiple: false,
         directory: false,
-        title: "Select anySCP backup",
-        filters: [{ name: "anySCP backup", extensions: ["ascpbak"] }],
+        title: "Select OmniSSH backup",
+        filters: [{ name: "OmniSSH backup", extensions: ["ascpbak"] }],
       });
       if (typeof picked === "string") setImportPath(picked);
     } catch { /* dialog cancelled / unavailable */ }
@@ -760,7 +760,7 @@ function DataSettings() {
           <div>
             <p className={LABEL_CLASS}>Import backup</p>
             <p className={DESC_CLASS}>
-              Restore from a backup file. This replaces all current data and restarts anySCP.
+              Restore from a backup file. This replaces all current data and restarts OmniSSH.
             </p>
           </div>
           <button type="button" data-testid="s-import-backup" onClick={() => void pickImportFile()} className={BTN_SECONDARY}>
@@ -776,7 +776,7 @@ function DataSettings() {
             <p className={DESC_CLASS}>
               Permanently delete every saved host, group, connection history entry,
               snippet, port-forward rule, and S3 connection — along with their stored
-              credentials and all app preferences. anySCP restarts at first-launch state.
+              credentials and all app preferences. OmniSSH restarts at first-launch state.
               This can’t be undone.
             </p>
           </div>
@@ -850,9 +850,9 @@ function BackupPasswordModal({ mode, open, path, onClose }: {
         const d = new Date();
         const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
         const dest = await save({
-          title: "Save anySCP backup",
-          defaultPath: `anyscp-backup-${stamp}.ascpbak`,
-          filters: [{ name: "anySCP backup", extensions: ["ascpbak"] }],
+          title: "Save OmniSSH backup",
+          defaultPath: `omnissh-backup-${stamp}.ascpbak`,
+          filters: [{ name: "OmniSSH backup", extensions: ["ascpbak"] }],
         });
         if (!dest) { setBusy(false); return; } // dialog cancelled — keep the modal open
         await invoke("backup_export", { password: pw, path: dest });
@@ -907,7 +907,7 @@ function BackupPasswordModal({ mode, open, path, onClose }: {
           <p className="text-[length:var(--text-sm)] text-text-secondary">
             {isExport
               ? "Choose a password to encrypt the backup. You’ll need it to restore — there’s no way to recover the data without it."
-              : "Enter the password this backup was created with. Importing replaces all current data and restarts anySCP."}
+              : "Enter the password this backup was created with. Importing replaces all current data and restarts OmniSSH."}
           </p>
 
           <div>
@@ -1020,7 +1020,7 @@ function ConfirmResetModal({ open, onClose }: { open: boolean; onClose: () => vo
           <p className="text-[length:var(--text-sm)] text-text-secondary">
             This permanently deletes <strong className="text-text-primary">all</strong> saved
             hosts, groups, history, snippets, port-forward rules, S3 connections, stored
-            credentials, and preferences. anySCP will restart fresh. This action cannot be undone.
+            credentials, and preferences. OmniSSH will restart fresh. This action cannot be undone.
           </p>
           <div>
             <label htmlFor="reset-confirm" className={FIELD_LABEL_CLASS}>
@@ -1429,8 +1429,8 @@ function AboutCard() {
     <div className="px-4 py-3 rounded-xl bg-bg-surface border border-border/50">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <p className="text-[length:var(--text-base)] font-semibold text-text-primary">anySCP</p>
-          <p className={DESC_CLASS}>A modern desktop client for SSH, SFTP, and S3</p>
+          <p className="text-[length:var(--text-base)] font-semibold text-text-primary">OmniSSH</p>
+          <p className={DESC_CLASS}>A modern desktop client for SSH, SFTP/SCP, and S3</p>
         </div>
         <span className="shrink-0 text-[length:var(--text-xs)] tabular-nums text-text-muted">
           {appVersion ? `v${appVersion}` : ""}

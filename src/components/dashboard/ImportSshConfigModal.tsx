@@ -527,7 +527,7 @@ export function ImportSshConfigModal({
                         onChange={(event) => setCredentialsConfirmed(event.target.checked)}
                         className="mt-0.5 w-3.5 h-3.5 rounded border-border text-accent focus:ring-ring shrink-0"
                       />
-                      <span>I understand that selected credentials will be stored in anySCP’s secure vault.</span>
+                      <span>I understand that selected credentials will be stored in OmniSSH’s secure vault.</span>
                     </label>
                   )}
                 </div>

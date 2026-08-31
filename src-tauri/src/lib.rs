@@ -135,7 +135,7 @@ pub fn run() {
             );
 
             WebviewWindowBuilder::new(app.handle(), "main", WebviewUrl::App("index.html".into()))
-                .title("anySCP")
+                .title("OmniSSH")
                 .inner_size(1200.0, 800.0)
                 .min_inner_size(800.0, 500.0)
                 .initialization_script(&theme_script)

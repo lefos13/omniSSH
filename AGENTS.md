@@ -1,8 +1,8 @@
-# anySCP Agent Guide
+# OmniSSH Agent Guide
 
 ## Project overview
 
-anySCP is a cross-platform Tauri v2 desktop client for SSH terminals, SFTP/SCP file management, S3-compatible storage, port forwarding, and reusable command snippets.
+OmniSSH (formerly anySCP) is a cross-platform Tauri v2 desktop client for SSH terminals, SFTP/SCP file management, S3-compatible storage, port forwarding, and reusable command snippets.
 
 - `src/`: React 19 + strict TypeScript frontend.
 - `src/components/`: feature UI and shared components.

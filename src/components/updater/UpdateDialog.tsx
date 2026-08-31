@@ -2,7 +2,7 @@ import { ExternalLink } from "lucide-react";
 import { useUpdaterStore } from "../../stores/updater-store";
 import { ModalShell, BTN_GHOST, BTN_SECONDARY, BTN_PRIMARY } from "../shared/ModalShell";
 
-const REPO_URL = "https://github.com/macnev2013/anySCP";
+const REPO_URL = "https://github.com/lefos13/anySCP";
 
 /**
  * Shown when an update is available. Lets users install now, defer, or skip.
@@ -48,7 +48,7 @@ export function UpdateDialog() {
     >
       <div className="flex flex-col gap-3 no-select">
         <p className="text-[length:var(--text-sm)] text-text-secondary">
-          anySCP <span className="font-medium text-text-primary">v{version}</span> is available
+          OmniSSH <span className="font-medium text-text-primary">v{version}</span> is available
           {appVersion ? <span className="text-text-muted"> — you have v{appVersion}</span> : null}.
         </p>
         <button
