@@ -74,24 +74,32 @@ describe("SFTP to SCP fallback and transport dispatch", () => {
       });
     });
 
-    it("handles all common file operations across both transports", async () => {
+    it("invokes production file operations (mkdir, delete, rename) with correct SCP signatures", async () => {
       invoke.mockResolvedValue(undefined);
 
-      await explorerInvoke("scp", "create_dir", "scp-1", { path: "/dir" });
-      expect(invoke).toHaveBeenCalledWith("scp_create_dir", { scpSessionId: "scp-1", path: "/dir" });
+      await explorerInvoke("scp", "mkdir", "scp-1", { path: "/dir" });
+      expect(invoke).toHaveBeenCalledWith("scp_mkdir", { scpSessionId: "scp-1", path: "/dir" });
 
-      await explorerInvoke("scp", "remove_file", "scp-1", { path: "/dir/a.txt" });
-      expect(invoke).toHaveBeenCalledWith("scp_remove_file", { scpSessionId: "scp-1", path: "/dir/a.txt" });
+      await explorerInvoke("scp", "delete", "scp-1", { path: "/dir/a.txt", isDir: false });
+      expect(invoke).toHaveBeenCalledWith("scp_delete", {
+        scpSessionId: "scp-1",
+        path: "/dir/a.txt",
+        isDir: false,
+      });
 
       await explorerInvoke("scp", "rename", "scp-1", { oldPath: "/dir/a.txt", newPath: "/dir/b.txt" });
-      expect(invoke).toHaveBeenCalledWith("scp_rename", { scpSessionId: "scp-1", oldPath: "/dir/a.txt", newPath: "/dir/b.txt" });
+      expect(invoke).toHaveBeenCalledWith("scp_rename", {
+        scpSessionId: "scp-1",
+        oldPath: "/dir/a.txt",
+        newPath: "/dir/b.txt",
+      });
     });
   });
 
   describe("linked explorer store fallback integration", () => {
     it("transparently falls back to SCP when sftp_open rejects and records transport='scp'", async () => {
       const sshSessionId = "ssh-fallback-01";
-      const tabId = "tab-fallback-01";
+      const tabId = sshSessionId; // Owner tab ID matches initial SSH session
 
       useSessionStore.getState().addSession(sshSessionId, fallbackHost);
       useLinkedExplorerStore.getState().openLinkedExplorer(tabId);
@@ -115,7 +123,7 @@ describe("SFTP to SCP fallback and transport dispatch", () => {
 
     it("uses scp_close when closing an SCP-backed linked explorer session", async () => {
       const sshSessionId = "ssh-fallback-02";
-      const tabId = "tab-fallback-02";
+      const tabId = sshSessionId;
 
       useSessionStore.getState().addSession(sshSessionId, fallbackHost);
       useLinkedExplorerStore.getState().openLinkedExplorer(tabId);

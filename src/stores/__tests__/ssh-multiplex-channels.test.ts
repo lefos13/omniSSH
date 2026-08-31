@@ -49,11 +49,13 @@ describe("Two protocol channels over one SSH session", () => {
 
   it("opens an SFTP protocol channel over an existing active SSH terminal session", async () => {
     const sshSessionId = "ssh-conn-101";
-    const tabId = "tab-conn-101";
+    // In session-store, addSession creates a tab with tabId = sshSessionId
+    const tabId = sshSessionId;
 
-    // 1. Establish terminal session
+    // 1. Establish terminal session and verify layout tab exists
     useSessionStore.getState().addSession(sshSessionId, mockHost);
     expect(useSessionStore.getState().sessions.get(sshSessionId)?.status).toBe("Connected");
+    expect(useSessionStore.getState().tabs.has(tabId)).toBe(true);
 
     // 2. Open linked explorer SFTP channel over the same SSH session
     invoke.mockResolvedValueOnce("sftp-chan-202"); // sftp_open response
@@ -76,7 +78,7 @@ describe("Two protocol channels over one SSH session", () => {
 
   it("closing the SFTP protocol channel leaves the terminal SSH session fully connected", async () => {
     const sshSessionId = "ssh-conn-301";
-    const tabId = "tab-conn-301";
+    const tabId = sshSessionId;
 
     useSessionStore.getState().addSession(sshSessionId, mockHost);
     invoke.mockResolvedValueOnce("sftp-chan-302"); // sftp_open
@@ -101,7 +103,7 @@ describe("Two protocol channels over one SSH session", () => {
 
   it("disconnecting the parent SSH session automatically closes and cleans up the linked protocol channel", async () => {
     const sshSessionId = "ssh-conn-401";
-    const tabId = "tab-conn-401";
+    const tabId = sshSessionId;
 
     useSessionStore.getState().addSession(sshSessionId, mockHost);
     invoke.mockResolvedValueOnce("sftp-chan-402"); // sftp_open
@@ -112,7 +114,7 @@ describe("Two protocol channels over one SSH session", () => {
     expect(useLinkedExplorerStore.getState().bindings.has(tabId)).toBe(true);
     expect(useSftpStore.getState().sessions.has("sftp-chan-402")).toBe(true);
 
-    // Simulate SSH session removal in session-store (e.g. user closes tab or connection terminates)
+    // Simulate SSH session removal in session-store (which removes the tab from session-store.tabs)
     invoke.mockResolvedValueOnce(undefined); // sftp_close cleanup
     useSessionStore.getState().removeSession(sshSessionId);
 
@@ -125,7 +127,7 @@ describe("Two protocol channels over one SSH session", () => {
 
   it("remote transport drop dispatches disconnectBindingsForSshSession immediately", async () => {
     const sshSessionId = "ssh-conn-501";
-    const tabId = "tab-conn-501";
+    const tabId = sshSessionId;
 
     useSessionStore.getState().addSession(sshSessionId, mockHost);
     invoke.mockResolvedValueOnce("sftp-chan-502"); // sftp_open

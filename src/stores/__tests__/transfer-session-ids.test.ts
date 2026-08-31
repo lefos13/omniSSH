@@ -97,37 +97,55 @@ describe("Transfer session IDs and protocol routing", () => {
 
     const { result } = renderHook(() => useTransfers());
 
-    // Test cancellation routing
-    await act(async () => {
+    // Test cancellation routing with vi.waitFor to properly await dynamic import + invoke
+    invoke.mockClear();
+    act(() => {
       result.current.onCancel("t-sftp");
     });
-    expect(invoke).toHaveBeenCalledWith("sftp_cancel_transfer", { transferId: "t-sftp" });
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("sftp_cancel_transfer", { transferId: "t-sftp" });
+    });
 
-    await act(async () => {
+    invoke.mockClear();
+    act(() => {
       result.current.onCancel("t-scp");
     });
-    expect(invoke).toHaveBeenCalledWith("scp_cancel_transfer", { transferId: "t-scp" });
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("scp_cancel_transfer", { transferId: "t-scp" });
+    });
 
-    await act(async () => {
+    invoke.mockClear();
+    act(() => {
       result.current.onCancel("t-s3");
     });
-    expect(invoke).toHaveBeenCalledWith("s3_cancel_transfer", { transferId: "t-s3" });
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("s3_cancel_transfer", { transferId: "t-s3" });
+    });
 
     // Test retry routing
-    await act(async () => {
+    invoke.mockClear();
+    act(() => {
       result.current.onRetry("t-sftp");
     });
-    expect(invoke).toHaveBeenCalledWith("sftp_retry_transfer", { transferId: "t-sftp" });
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("sftp_retry_transfer", { transferId: "t-sftp" });
+    });
 
-    await act(async () => {
+    invoke.mockClear();
+    act(() => {
       result.current.onRetry("t-scp");
     });
-    expect(invoke).toHaveBeenCalledWith("scp_retry_transfer", { transferId: "t-scp" });
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("scp_retry_transfer", { transferId: "t-scp" });
+    });
 
-    await act(async () => {
+    invoke.mockClear();
+    act(() => {
       result.current.onRetry("t-s3");
     });
-    expect(invoke).toHaveBeenCalledWith("s3_retry_transfer", { transferId: "t-s3" });
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("s3_retry_transfer", { transferId: "t-s3" });
+    });
   });
 
   it("preserves session labels across session closures and transfer hydration", () => {

@@ -81,15 +81,17 @@ describe("Terminal split/tab/panel cleanup", () => {
   it("cleans up child session and disposes xterm instance when a split pane is closed", () => {
     const mainSessionId = "sess-main";
     const splitSessionId = "sess-split";
+    // In session-store, tab ID equals initial mainSessionId
+    const tabId = mainSessionId;
 
     useSessionStore.getState().addSession(mainSessionId, testHost);
     useTabStore.getState().addTab({
       type: "terminal",
-      id: mainSessionId,
+      id: tabId,
       label: "cleanup@clean.local",
     });
 
-    // Create split
+    // Create split under the tab
     useSessionStore.getState().splitPane("horizontal", mainSessionId, splitSessionId);
 
     // Initialize xterm instances for both panes
@@ -115,12 +117,13 @@ describe("Terminal split/tab/panel cleanup", () => {
   });
 
   it("cleans up all child split panes, linked panels, and generations on whole tab close", async () => {
-    const tabId = "tab-multi-pane";
     const pane1Id = "pane-1";
     const pane2Id = "pane-2";
+    // Tab ID equals initial pane1Id in session-store
+    const tabId = pane1Id;
     const linkedSftpId = "sftp-linked-cleanup";
 
-    // Setup session layout with 2 panes
+    // Setup session layout with 2 panes under tabId
     useSessionStore.getState().addSession(pane1Id, testHost);
     useTabStore.getState().addTab({ type: "terminal", id: tabId, label: "Multi Pane Tab" });
     useSessionStore.getState().splitPane("vertical", pane1Id, pane2Id);
@@ -128,7 +131,7 @@ describe("Terminal split/tab/panel cleanup", () => {
     ensureTerminal(pane1Id);
     ensureTerminal(pane2Id);
 
-    // Open linked explorer on this tab
+    // Open linked explorer on this tab bound to pane2Id
     invoke.mockResolvedValueOnce(linkedSftpId);
     useLinkedExplorerStore.getState().openLinkedExplorer(tabId);
     await useLinkedExplorerStore.getState().ensureConnected(tabId, pane2Id);
