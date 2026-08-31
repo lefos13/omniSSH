@@ -86,13 +86,22 @@ export function ImportSshConfigModal({
   const [credentialsConfirmed, setCredentialsConfirmed] = useState(false);
   const [termiusResult, setTermiusResult] = useState<TermiusCommitResponse | null>(null);
   const scanRequest = useRef(0);
-  const firstSourceRef = useRef<HTMLButtonElement>(null);
+  /* Continuations capture this generation so a dialog or IPC response cannot
+   * repopulate state after the user changes source or starts another operation. */
+  const sourceGeneration = useRef(0);
+  const sshSourceRef = useRef<HTMLButtonElement>(null);
+  const mobaxtermSourceRef = useRef<HTMLButtonElement>(null);
+  const termiusSourceRef = useRef<HTMLButtonElement>(null);
+  const resultRef = useRef<HTMLDivElement>(null);
 
   /* Put keyboard focus inside the dialog as soon as it mounts, so opening an
    * import source does not leave assistive technology focus on the dashboard. */
   useEffect(() => {
-    firstSourceRef.current?.focus();
-  }, []);
+    const sourceRef = initialSource === "ssh"
+      ? sshSourceRef
+      : initialSource === "mobaxterm" ? mobaxtermSourceRef : termiusSourceRef;
+    sourceRef.current?.focus();
+  }, [initialSource]);
 
   // Close on Escape
   useEffect(() => {
@@ -110,6 +119,7 @@ export function ImportSshConfigModal({
     }
 
     const requestId = ++scanRequest.current;
+    const requestGeneration = sourceGeneration.current;
     setScanning(true);
     setScanError(null);
     setEntries([]);
@@ -132,7 +142,7 @@ export function ImportSshConfigModal({
             metadata_only: true,
           },
         });
-        if (requestId !== scanRequest.current) return;
+        if (requestId !== scanRequest.current || requestGeneration !== sourceGeneration.current) return;
         setTermiusPreview(preview);
         setTermiusPreviewToken(preview.preview_token);
         setSelected(new Set(
@@ -143,7 +153,7 @@ export function ImportSshConfigModal({
       const results = nextSource === "ssh"
         ? await invoke<SshConfigEntry[]>("import_parse_ssh_config", { path })
         : await invoke<MobaXtermEntry[]>("import_parse_mobaxterm", { path });
-      if (requestId !== scanRequest.current) return;
+      if (requestId !== scanRequest.current || requestGeneration !== sourceGeneration.current) return;
       setEntries(results);
       // Auto-select non-pattern, non-duplicate entries
       const autoSelected = new Set<ImportRowId>();
@@ -154,7 +164,7 @@ export function ImportSshConfigModal({
       }
       setSelected(autoSelected);
     } catch (err) {
-      if (requestId !== scanRequest.current) return;
+      if (requestId !== scanRequest.current || requestGeneration !== sourceGeneration.current) return;
       const msg = nextSource === "termius"
         ? termiusErrorMessage(err)
         : err && typeof err === "object" && "message" in err
@@ -166,7 +176,7 @@ export function ImportSshConfigModal({
         setTermiusPreviewToken(null);
       }
     } finally {
-      if (requestId === scanRequest.current) setScanning(false);
+      if (requestId === scanRequest.current && requestGeneration === sourceGeneration.current) setScanning(false);
     }
   };
 
@@ -177,6 +187,7 @@ export function ImportSshConfigModal({
 
   const handleSourceChange = (nextSource: ImportSource) => {
     if (nextSource === source) return;
+    sourceGeneration.current += 1;
     scanRequest.current += 1;
     setSource(nextSource);
     setConfigPath(null);
@@ -194,6 +205,9 @@ export function ImportSshConfigModal({
   };
 
   const handleBrowse = async () => {
+    if (importing) return;
+    const browseGeneration = sourceGeneration.current;
+    const browseSource = source;
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const path = await open({
@@ -204,18 +218,21 @@ export function ImportSshConfigModal({
           filters: [{ name: "MobaXterm files", extensions: ["mxtsessions", "ini"] }],
         }),
       });
-      if (path && typeof path === "string") {
+      if (path && typeof path === "string" && browseGeneration === sourceGeneration.current && !importing) {
         setConfigPath(path);
-        await scan(source, path);
+        await scan(browseSource, path);
       }
     } catch { /* cancelled */ }
   };
 
   const handleImport = async () => {
+    if (importing) return;
+    const importGeneration = ++sourceGeneration.current;
+    const importSource = source;
     setImporting(true);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      if (source === "termius") {
+      if (importSource === "termius") {
         if (!termiusPreviewToken) return;
         /* Commit sends only opaque selection IDs and explicit consent flags;
          * decrypted credentials never enter React state or the IPC payload. */
@@ -229,6 +246,7 @@ export function ImportSshConfigModal({
             credentials_confirmed: includeCredentials && credentialsConfirmed,
           },
         });
+        if (importGeneration !== sourceGeneration.current) return;
         setTermiusResult(response);
         onImported();
         return;
@@ -237,14 +255,16 @@ export function ImportSshConfigModal({
         .filter((e, index) => selected.has(index) && !e.is_pattern)
         .map(toImportEntry);
 
-      const command = source === "ssh" ? "import_save_ssh_hosts" : "import_save_mobaxterm_hosts";
+      const command = importSource === "ssh" ? "import_save_ssh_hosts" : "import_save_mobaxterm_hosts";
       const importResult = await invoke<ImportResult>(command, {
         entries: toImport,
       });
+      if (importGeneration !== sourceGeneration.current) return;
       setResult(importResult);
       onImported();
     } catch (err) {
-      if (source === "termius") {
+      if (importGeneration !== sourceGeneration.current) return;
+      if (importSource === "termius") {
         setTermiusPreview(null);
         setTermiusPreviewToken(null);
         setSelected(new Set());
@@ -292,6 +312,10 @@ export function ImportSshConfigModal({
     : [];
   const showingResult = source === "termius" ? termiusResult !== null : result !== null;
 
+  useEffect(() => {
+    if (showingResult) resultRef.current?.focus();
+  }, [showingResult]);
+
   return (
     <ModalShell
       open
@@ -329,8 +353,9 @@ export function ImportSshConfigModal({
           <div className="flex items-center gap-1 p-1 mb-4 rounded-lg bg-bg-base border border-border/60" role="group" aria-label="Import source">
             <button
               type="button"
-              ref={firstSourceRef}
+              ref={sshSourceRef}
               data-testid="import-ssh-config-source"
+              disabled={importing}
               aria-pressed={source === "ssh"}
               onClick={() => handleSourceChange("ssh")}
               className={[
@@ -342,7 +367,9 @@ export function ImportSshConfigModal({
             </button>
             <button
               type="button"
+              ref={mobaxtermSourceRef}
               data-testid="import-mobaxterm-source"
+              disabled={importing}
               aria-pressed={source === "mobaxterm"}
               onClick={() => handleSourceChange("mobaxterm")}
               className={[
@@ -354,7 +381,9 @@ export function ImportSshConfigModal({
             </button>
             <button
               type="button"
+              ref={termiusSourceRef}
               data-testid="import-termius-source"
+              disabled={importing}
               aria-pressed={source === "termius"}
               onClick={() => handleSourceChange("termius")}
               className={[
@@ -368,7 +397,7 @@ export function ImportSshConfigModal({
 
           {/* Result view */}
           {showingResult ? (
-            <div className="flex flex-col items-center gap-4 py-8">
+            <div ref={resultRef} data-testid="import-result" role="status" tabIndex={-1} aria-live="polite" className="flex flex-col items-center gap-4 py-8">
               <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-status-connected/10">
                 <Check size={26} strokeWidth={2} className="text-status-connected" />
               </div>
@@ -400,9 +429,10 @@ export function ImportSshConfigModal({
           ) : scanError ? (
             <div className="flex flex-col items-center gap-4 py-8">
               <AlertCircle size={26} strokeWidth={1.8} className="text-status-error" />
-              <p className="text-[length:var(--text-sm)] text-status-error text-center">{scanError}</p>
+              <p role="alert" className="text-[length:var(--text-sm)] text-status-error text-center">{scanError}</p>
               <button
                 data-testid={source === "termius" ? "import-termius-rescan" : undefined}
+                disabled={importing}
                 onClick={() => source === "termius" ? void scan("termius", configPath) : void handleBrowse()}
                 className="px-4 py-2 text-[length:var(--text-sm)] font-medium text-text-inverse bg-accent hover:bg-accent-hover rounded-lg transition-colors duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
@@ -415,7 +445,7 @@ export function ImportSshConfigModal({
                 <span className="text-[length:var(--text-2xs)] text-text-muted truncate flex-1">
                   {configPath ? "Selected Termius LevelDB directory" : "Automatic Termius data directory"}
                 </span>
-                <button type="button" onClick={() => void handleBrowse()} className="text-[length:var(--text-2xs)] text-accent hover:text-accent-hover transition-colors duration-[var(--duration-fast)] shrink-0">
+                <button type="button" disabled={importing} onClick={() => void handleBrowse()} className="text-[length:var(--text-2xs)] text-accent hover:text-accent-hover transition-colors duration-[var(--duration-fast)] shrink-0">
                   Browse
                 </button>
               </div>
@@ -442,8 +472,8 @@ export function ImportSshConfigModal({
                 <span className="text-[length:var(--text-xs)] text-text-muted">
                   {termiusImportableCount} of {termiusPreview.hosts.length} selected
                 </span>
-                <button type="button" onClick={() => setSelected(new Set(termiusPreview.hosts.map((host) => host.id)))} className="text-[length:var(--text-2xs)] text-accent hover:text-accent-hover">All</button>
-                <button type="button" onClick={() => setSelected(new Set())} className="text-[length:var(--text-2xs)] text-accent hover:text-accent-hover">None</button>
+                <button type="button" disabled={importing} onClick={() => setSelected(new Set(termiusPreview.hosts.map((host) => host.id)))} className="text-[length:var(--text-2xs)] text-accent hover:text-accent-hover">All</button>
+                <button type="button" disabled={importing} onClick={() => setSelected(new Set())} className="text-[length:var(--text-2xs)] text-accent hover:text-accent-hover">None</button>
               </div>
 
               <div className="rounded-lg bg-bg-base border border-border/60 divide-y divide-border/30 overflow-hidden">
@@ -452,6 +482,7 @@ export function ImportSshConfigModal({
                     <input
                       type="checkbox"
                       checked={selected.has(host.id)}
+                      disabled={importing}
                       onChange={() => toggleSelect(host.id)}
                       aria-label={`Select ${host.label}`}
                       className="w-3.5 h-3.5 rounded border-border text-accent focus:ring-ring shrink-0"
@@ -475,6 +506,7 @@ export function ImportSshConfigModal({
                       type="checkbox"
                       data-testid="import-termius-credentials"
                       checked={includeCredentials}
+                      disabled={importing}
                       onChange={(event) => {
                         setIncludeCredentials(event.target.checked);
                         if (!event.target.checked) setCredentialsConfirmed(false);
@@ -489,6 +521,7 @@ export function ImportSshConfigModal({
                         type="checkbox"
                         data-testid="import-termius-credentials-confirm"
                         checked={credentialsConfirmed}
+                        disabled={importing}
                         onChange={(event) => setCredentialsConfirmed(event.target.checked)}
                         className="mt-0.5 w-3.5 h-3.5 rounded border-border text-accent focus:ring-ring shrink-0"
                       />
@@ -505,6 +538,8 @@ export function ImportSshConfigModal({
                 No hosts found in {source === "ssh" ? "SSH config" : "MobaXterm file"}
               </p>
               <button
+                type="button"
+                disabled={importing}
                 onClick={() => void handleBrowse()}
                 className="px-3 py-1.5 text-[length:var(--text-xs)] font-medium text-text-muted border border-border rounded-lg hover:text-text-primary hover:bg-bg-overlay transition-all duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
@@ -519,6 +554,8 @@ export function ImportSshConfigModal({
                   {configPath ?? (source === "ssh" ? "~/.ssh/config" : "Choose a MobaXterm file")}
                 </span>
                 <button
+                  type="button"
+                  disabled={importing}
                   onClick={() => void handleBrowse()}
                   className="text-[length:var(--text-2xs)] text-accent hover:text-accent-hover transition-colors duration-[var(--duration-fast)] shrink-0"
                 >
@@ -545,8 +582,8 @@ export function ImportSshConfigModal({
                 <span className="text-[length:var(--text-xs)] text-text-muted">
                   {importableCount} of {entries.filter((e) => !e.is_pattern).length} selected
                 </span>
-                <button onClick={selectAll} className="text-[length:var(--text-2xs)] text-accent hover:text-accent-hover">All</button>
-                <button onClick={selectNone} className="text-[length:var(--text-2xs)] text-accent hover:text-accent-hover">None</button>
+                <button type="button" disabled={importing} onClick={selectAll} className="text-[length:var(--text-2xs)] text-accent hover:text-accent-hover">All</button>
+                <button type="button" disabled={importing} onClick={selectNone} className="text-[length:var(--text-2xs)] text-accent hover:text-accent-hover">None</button>
               </div>
 
               {/* Host list */}
@@ -567,7 +604,7 @@ export function ImportSshConfigModal({
                       <input
                         type="checkbox"
                         checked={isChecked}
-                        disabled={disabled}
+                        disabled={disabled || importing}
                         onChange={() => !disabled && toggleSelect(index)}
                         className="w-3.5 h-3.5 rounded border-border text-accent focus:ring-ring shrink-0"
                       />
