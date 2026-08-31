@@ -23,6 +23,7 @@ pub const MAX_PREVIEW_STATES: usize = 32;
 pub const MAX_PREVIEW_HOSTS: usize = 10_000;
 pub const MAX_PREVIEW_GROUPS: usize = 10_000;
 pub const PREVIEW_TTL_SECONDS: u64 = 10 * 60;
+pub const MAX_RETAINED_PREVIEW_BYTES: usize = 128 * 1024 * 1024;
 const MAX_FIELD_LENGTH: usize = 16 * 1024;
 const MAX_REFERENCE_COUNT: usize = 8;
 const MAX_WARNING_COUNT: usize = 64;
@@ -35,9 +36,12 @@ const PROXY_DATABASES: &[&str] = &["proxies"];
 const WARN_UNSUPPORTED_RECORD: &str = "Some Termius records could not be read";
 const WARN_PROXY_NOT_LINKED: &str = "Proxy settings were preserved but not linked automatically";
 const WARN_PROXY_RELATIONSHIP: &str = "Some Termius proxy relationships were not imported";
+const WARN_PROXY_UNSAFE: &str = "A free-form Termius proxy value was not imported";
 const WARN_CREDENTIAL_RELATIONSHIP: &str =
     "Some Termius credential relationships could not be resolved";
 const WARN_MISSING_GROUP: &str = "Some host group references could not be resolved";
+const WARN_INCOMPARABLE_UPDATE: &str = "Some Termius update markers could not be compared";
+const WARN_CLEANUP_PENDING: &str = "Some unused credential entries are pending cleanup";
 
 const SOURCE_ID_ALIASES: &[&str] = &["id", "_id", "uuid"];
 const HOST_ENTITY_ID_ALIASES: &[&str] = &["id", "_id", "uuid", "hostId", "host_id"];
@@ -343,6 +347,8 @@ pub enum TermiusImportError {
     CredentialsUnavailable,
     #[error("Termius import could not be completed")]
     CommitFailed,
+    #[error("Termius credential cleanup is pending")]
+    CleanupPending,
 }
 
 impl Serialize for TermiusImportError {
@@ -364,6 +370,7 @@ impl Serialize for TermiusImportError {
             Self::CredentialsConfirmationRequired => "credentials_confirmation_required",
             Self::CredentialsUnavailable => "credentials_unavailable",
             Self::CommitFailed => "commit_failed",
+            Self::CleanupPending => "cleanup_pending",
         };
         state.serialize_field("kind", kind)?;
         state.serialize_field("message", &self.to_string())?;
@@ -455,19 +462,16 @@ fn merge_source_refs(destination: &mut SourceRef, incoming: &SourceRef) {
 #[derive(Clone, PartialEq, Eq)]
 enum UpdatedAt {
     Missing,
-    Number(i128),
-    Text(String),
+    Chronological(i128),
+    Incomparable,
 }
 
 fn compare_updated_at(left: &UpdatedAt, right: &UpdatedAt) -> std::cmp::Ordering {
     match (left, right) {
-        (UpdatedAt::Missing, UpdatedAt::Missing) => std::cmp::Ordering::Equal,
-        (UpdatedAt::Missing, _) => std::cmp::Ordering::Less,
-        (_, UpdatedAt::Missing) => std::cmp::Ordering::Greater,
-        (UpdatedAt::Number(left), UpdatedAt::Number(right)) => left.cmp(right),
-        (UpdatedAt::Text(left), UpdatedAt::Text(right)) => left.cmp(right),
-        (UpdatedAt::Number(left), UpdatedAt::Text(right)) => left.to_string().cmp(right),
-        (UpdatedAt::Text(left), UpdatedAt::Number(right)) => left.cmp(&right.to_string()),
+        (UpdatedAt::Chronological(left), UpdatedAt::Chronological(right)) => left.cmp(right),
+        (UpdatedAt::Chronological(_), _) => std::cmp::Ordering::Greater,
+        (_, UpdatedAt::Chronological(_)) => std::cmp::Ordering::Less,
+        _ => std::cmp::Ordering::Equal,
     }
 }
 
@@ -497,6 +501,7 @@ struct VersionedValueIndex {
     records: BTreeMap<String, VersionedValue>,
     aliases: HashMap<String, String>,
     namespace: &'static str,
+    incomparable_update: bool,
 }
 
 impl VersionedValueIndex {
@@ -505,6 +510,7 @@ impl VersionedValueIndex {
             records: BTreeMap::new(),
             aliases: HashMap::new(),
             namespace,
+            incomparable_update: false,
         }
     }
 
@@ -529,6 +535,9 @@ impl VersionedValueIndex {
             ids.id = storage_key.clone();
         }
         let updated_at = field_updated_at(object);
+        if updated_at == UpdatedAt::Incomparable {
+            self.incomparable_update = true;
+        }
         let mut incoming = VersionedValue {
             ids,
             aliases: BTreeSet::new(),
@@ -657,8 +666,15 @@ impl SourceIndexes {
 struct PendingPreview {
     normalized: NormalizedImport,
     created_at: Instant,
+    retained_bytes: usize,
     #[cfg(test)]
     drop_probe: Option<std::sync::Arc<PendingDropProbe>>,
+}
+
+#[derive(Default)]
+struct PreviewStore {
+    previews: HashMap<String, PendingPreview>,
+    retained_bytes: usize,
 }
 
 #[cfg(test)]
@@ -692,8 +708,10 @@ impl PendingDropProbe {
 }
 
 pub struct TermiusImportState {
-    previews: Arc<Mutex<HashMap<String, PendingPreview>>>,
+    previews: Arc<Mutex<PreviewStore>>,
     ttl: Duration,
+    byte_limit: usize,
+    commit_lock: Mutex<()>,
 }
 
 impl Default for TermiusImportState {
@@ -708,9 +726,18 @@ impl TermiusImportState {
     }
 
     fn with_ttl(ttl: Duration) -> Self {
+        Self::with_limits(ttl, MAX_RETAINED_PREVIEW_BYTES)
+    }
+
+    fn with_limits(ttl: Duration, byte_limit: usize) -> Self {
         let ttl = std::cmp::max(ttl, Duration::from_millis(1));
-        let previews = Arc::new(Mutex::new(HashMap::new()));
-        Self { previews, ttl }
+        let previews = Arc::new(Mutex::new(PreviewStore::default()));
+        Self {
+            previews,
+            ttl,
+            byte_limit,
+            commit_lock: Mutex::new(()),
+        }
     }
 
     fn insert(&self, normalized: NormalizedImport) -> Result<String, TermiusImportError> {
@@ -735,6 +762,7 @@ impl TermiusImportState {
         self.insert_pending(
             token,
             PendingPreview {
+                retained_bytes: normalized_retained_bytes(&normalized)?,
                 normalized,
                 created_at,
                 #[cfg(test)]
@@ -748,16 +776,24 @@ impl TermiusImportState {
         token: String,
         pending: PendingPreview,
     ) -> Result<String, TermiusImportError> {
-        let mut previews = self
+        let mut store = self
             .previews
             .lock()
             .map_err(|_| TermiusImportError::CommitFailed)?;
-        purge_expired(&mut previews, self.ttl, Instant::now());
-        if previews.len() >= MAX_PREVIEW_STATES {
+        purge_expired(&mut store, self.ttl, Instant::now());
+        if store.previews.len() >= MAX_PREVIEW_STATES {
             return Err(TermiusImportError::TooManyPreviews);
         }
-        previews.insert(token.clone(), pending);
-        drop(previews);
+        let next_bytes = store
+            .retained_bytes
+            .checked_add(pending.retained_bytes)
+            .ok_or(TermiusImportError::PreviewLimit)?;
+        if next_bytes > self.byte_limit {
+            return Err(TermiusImportError::PreviewLimit);
+        }
+        store.retained_bytes = next_bytes;
+        store.previews.insert(token.clone(), pending);
+        drop(store);
 
         /* A per-token weak timer removes expired normalized records without
          * retaining the state or its secrets. Thread creation is fail-closed:
@@ -776,8 +812,8 @@ impl TermiusImportState {
             })
             .is_err()
         {
-            if let Ok(mut previews) = self.previews.lock() {
-                previews.remove(&token);
+            if let Ok(mut store) = self.previews.lock() {
+                remove_preview(&mut store, &token);
             }
             return Err(TermiusImportError::CommitFailed);
         }
@@ -785,19 +821,22 @@ impl TermiusImportState {
     }
 
     fn take(&self, token: &str) -> Result<PendingPreview, TermiusImportError> {
-        let mut previews = self
+        let mut store = self
             .previews
             .lock()
             .map_err(|_| TermiusImportError::CommitFailed)?;
-        purge_expired(&mut previews, self.ttl, Instant::now());
-        previews
-            .remove(token)
-            .ok_or(TermiusImportError::PreviewExpired)
+        purge_expired(&mut store, self.ttl, Instant::now());
+        remove_preview(&mut store, token).ok_or(TermiusImportError::PreviewExpired)
     }
 
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.previews.lock().unwrap().len()
+        self.previews.lock().unwrap().previews.len()
+    }
+
+    #[cfg(test)]
+    fn retained_bytes(&self) -> usize {
+        self.previews.lock().unwrap().retained_bytes
     }
 
     #[cfg(test)]
@@ -825,24 +864,85 @@ fn is_expired(created_at: Instant, now: Instant, ttl: Duration) -> bool {
         .is_some_and(|elapsed| elapsed >= ttl)
 }
 
-fn purge_expired(previews: &mut HashMap<String, PendingPreview>, ttl: Duration, now: Instant) {
-    previews.retain(|_, preview| !is_expired(preview.created_at, now, ttl));
+fn remove_preview(store: &mut PreviewStore, token: &str) -> Option<PendingPreview> {
+    let preview = store.previews.remove(token)?;
+    store.retained_bytes = store.retained_bytes.saturating_sub(preview.retained_bytes);
+    Some(preview)
 }
 
-fn evict_token(
-    previews: &Mutex<HashMap<String, PendingPreview>>,
-    token: &str,
-    ttl: Duration,
-    now: Instant,
-) {
-    if let Ok(mut previews) = previews.lock() {
-        if previews
+fn purge_expired(store: &mut PreviewStore, ttl: Duration, now: Instant) {
+    let expired = store
+        .previews
+        .iter()
+        .filter(|(_, preview)| is_expired(preview.created_at, now, ttl))
+        .map(|(token, _)| token.clone())
+        .collect::<Vec<_>>();
+    for token in expired {
+        remove_preview(store, &token);
+    }
+}
+
+fn evict_token(previews: &Mutex<PreviewStore>, token: &str, ttl: Duration, now: Instant) {
+    if let Ok(mut store) = previews.lock() {
+        if store
+            .previews
             .get(token)
             .is_some_and(|preview| is_expired(preview.created_at, now, ttl))
         {
-            previews.remove(token);
+            remove_preview(&mut store, token);
         }
     }
+}
+
+fn normalized_retained_bytes(normalized: &NormalizedImport) -> Result<usize, TermiusImportError> {
+    /* Count every retained source-derived string before insertion. The budget
+     * deliberately ignores allocator slack, so it is conservative enough to
+     * cap payload growth while remaining deterministic across platforms. */
+    let mut total = 0usize;
+    let mut add = |value: &str| -> Result<(), TermiusImportError> {
+        total = total
+            .checked_add(value.len())
+            .ok_or(TermiusImportError::PreviewLimit)?;
+        Ok(())
+    };
+    for host in &normalized.hosts {
+        for value in [
+            Some(host.source_id.as_str()),
+            Some(host.public_id.as_str()),
+            Some(host.label.as_str()),
+            Some(host.address.as_str()),
+            Some(host.username.as_str()),
+            host.group_source_id.as_deref(),
+            host.notes.as_deref(),
+            host.startup_command.as_deref(),
+            host.start_directory.as_deref(),
+            host.key_path.as_deref(),
+            host.proxy.as_deref(),
+            host.password.as_ref().map(|value| value.value.as_str()),
+            host.private_key.as_ref().map(|value| value.value.as_str()),
+            host.passphrase.as_ref().map(|value| value.value.as_str()),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            add(value)?;
+        }
+        for warning in &host.warnings {
+            add(warning)?;
+        }
+    }
+    for group in &normalized.groups {
+        add(&group.source_id)?;
+        add(&group.public_id)?;
+        add(&group.name)?;
+        if let Some(parent) = group.parent_source_id.as_deref() {
+            add(parent)?;
+        }
+    }
+    for warning in &normalized.warnings {
+        add(warning)?;
+    }
+    Ok(total)
 }
 
 #[cfg(test)]
@@ -929,6 +1029,19 @@ fn normalize_source_rows(source: SourceRows) -> Result<NormalizedImport, String>
 
     if skipped_records {
         push_warning(&mut warnings, WARN_UNSUPPORTED_RECORD);
+    }
+    if [
+        &indexes.hosts,
+        &indexes.configs,
+        &indexes.identities,
+        &indexes.keys,
+        &indexes.groups,
+        &indexes.proxies,
+    ]
+    .iter()
+    .any(|index| index.incomparable_update)
+    {
+        push_warning(&mut warnings, WARN_INCOMPARABLE_UPDATE);
     }
 
     for record in indexes.groups.values_in_source_order() {
@@ -1086,23 +1199,47 @@ fn source_ids(object: &BTreeMap<String, Value>) -> SourceRef {
 
 fn field_updated_at(object: &BTreeMap<String, Value>) -> UpdatedAt {
     match field_value(object, UPDATED_AT_ALIASES) {
-        Some(Value::Int32(value)) => UpdatedAt::Number(i128::from(*value)),
-        Some(Value::Uint32(value)) => UpdatedAt::Number(i128::from(*value)),
+        Some(Value::Int32(value)) => epoch_marker(i128::from(*value)),
+        Some(Value::Uint32(value)) => epoch_marker(i128::from(*value)),
         Some(Value::Float64(value)) if value.is_finite() && value.fract() == 0.0 => {
-            UpdatedAt::Number(*value as i128)
+            epoch_marker(*value as i128)
         }
         Some(Value::String(value)) => {
             let value = value.trim();
             if value.is_empty() || value.len() > MAX_FIELD_LENGTH {
                 UpdatedAt::Missing
             } else if let Ok(value) = value.parse::<i128>() {
-                UpdatedAt::Number(value)
+                epoch_marker(value)
+            } else if let Ok(value) = chrono::DateTime::parse_from_rfc3339(value) {
+                UpdatedAt::Chronological(
+                    i128::from(value.timestamp()) * 1_000_000_000
+                        + i128::from(value.timestamp_subsec_nanos()),
+                )
             } else {
-                UpdatedAt::Text(value.to_string())
+                UpdatedAt::Incomparable
             }
         }
         _ => UpdatedAt::Missing,
     }
+}
+
+fn epoch_marker(value: i128) -> UpdatedAt {
+    /* Termius releases have used seconds, milliseconds, microseconds, and
+     * nanoseconds. Magnitude normalization puts all epoch forms on one axis. */
+    let absolute = value.saturating_abs();
+    let multiplier = if absolute < 100_000_000_000 {
+        1_000_000_000
+    } else if absolute < 100_000_000_000_000 {
+        1_000_000
+    } else if absolute < 100_000_000_000_000_000 {
+        1_000
+    } else {
+        1
+    };
+    value
+        .checked_mul(multiplier)
+        .map(UpdatedAt::Chronological)
+        .unwrap_or(UpdatedAt::Incomparable)
 }
 
 fn resolve_source_id(index: &VersionedValueIndex, reference: &SourceRef) -> Option<String> {
@@ -1345,15 +1482,27 @@ fn normalize_host_record(
             handle_proxy_relationship(config, &indexes.proxies, &mut host_warnings, warnings);
         }
     } else if field_value(object, PROXY_ALIASES).is_some() {
-        let proxy_references = field_reference_list(object, PROXY_ALIASES);
-        if !proxy_references.is_empty() {
-            handle_proxy_relationship(object, &indexes.proxies, &mut host_warnings, warnings);
-        } else if let Some(value) = field_text(object, PROXY_ALIASES) {
-            if !proxy_contains_credentials(&value) {
-                proxy = Some(value);
+        let direct_proxy = field_value(
+            object,
+            &[
+                "proxy",
+                "proxyHost",
+                "proxy_host",
+                "jumpHost",
+                "jump_host",
+                "bastion",
+            ],
+        );
+        if let Some(Value::String(value)) = direct_proxy {
+            proxy = safe_proxy_value(value);
+            if proxy.is_none() {
+                push_warning(&mut host_warnings, WARN_PROXY_UNSAFE);
+                push_warning(warnings, WARN_PROXY_UNSAFE);
             }
             push_warning(&mut host_warnings, WARN_PROXY_NOT_LINKED);
             push_warning(warnings, WARN_PROXY_NOT_LINKED);
+        } else {
+            handle_proxy_relationship(object, &indexes.proxies, &mut host_warnings, warnings);
         }
     }
 
@@ -1601,18 +1750,54 @@ fn bounded_text(value: &str) -> Option<String> {
     (!value.is_empty() && value.len() <= MAX_FIELD_LENGTH).then(|| value.to_string())
 }
 
-fn proxy_contains_credentials(value: &str) -> bool {
-    if matches!(envelope::parse(value), Ok(Some(_))) {
-        return true;
+fn safe_proxy_value(value: &str) -> Option<String> {
+    /* Accept only the narrow ProxyJump metadata shape understood by anySCP.
+     * Commands, URLs, query strings, whitespace, and password-bearing userinfo
+     * are rejected instead of relying on an incomplete secret detector. */
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > MAX_FIELD_LENGTH
+        || value.chars().any(char::is_whitespace)
+        || value.chars().any(|character| {
+            character.is_control() || matches!(character, '/' | '\\' | '?' | '#' | '%' | '=' | ';')
+        })
+    {
+        return None;
     }
-    let Some(at_position) = value.rfind('@') else {
-        return false;
+    let mut parts = value.rsplitn(2, '@');
+    let host_port = parts.next()?;
+    if let Some(user) = parts.next() {
+        if user.is_empty()
+            || user.contains(':')
+            || !user
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || "._-".contains(character))
+        {
+            return None;
+        }
+    }
+    let valid = if let Some(bracketed) = host_port.strip_prefix('[') {
+        let (address, suffix) = bracketed.split_once(']')?;
+        !address.is_empty()
+            && address
+                .chars()
+                .all(|character| character.is_ascii_hexdigit() || character == ':')
+            && (suffix.is_empty() || valid_proxy_port(suffix.strip_prefix(':')?))
+    } else {
+        let (host, port) = host_port
+            .rsplit_once(':')
+            .map_or((host_port, None), |(host, port)| (host, Some(port)));
+        !host.is_empty()
+            && host
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || ".-_".contains(character))
+            && port.is_none_or(valid_proxy_port)
     };
-    let authority = value[..at_position]
-        .rsplit_once("://")
-        .map(|(_, authority)| authority)
-        .unwrap_or(&value[..at_position]);
-    authority.contains(':')
+    valid.then(|| value.to_string())
+}
+
+fn valid_proxy_port(value: &str) -> bool {
+    value.parse::<u16>().ok().is_some_and(|port| port > 0)
 }
 
 fn idb_key_identifier(key: &IdbKey) -> Option<String> {
@@ -1657,6 +1842,7 @@ fn saved_host_dedup_key(host: &SavedHost) -> (String, String, u16) {
 trait CredentialWriter {
     fn save(&self, host_id: &str, credential: &StoredCredential) -> Result<(), VaultError>;
     fn delete(&self, host_id: &str) -> Result<(), VaultError>;
+    fn exists(&self, host_id: &str) -> Result<bool, VaultError>;
 }
 
 struct OsVaultWriter;
@@ -1668,6 +1854,10 @@ impl CredentialWriter for OsVaultWriter {
 
     fn delete(&self, host_id: &str) -> Result<(), VaultError> {
         vault::delete_credential(host_id)
+    }
+
+    fn exists(&self, host_id: &str) -> Result<bool, VaultError> {
+        vault::credential_exists(host_id)
     }
 }
 
@@ -1995,10 +2185,65 @@ impl SecretText {
     }
 }
 
-fn rollback_vault(writer: &dyn CredentialWriter, host_ids: &[String]) {
-    for host_id in host_ids.iter().rev() {
+fn delete_vault_entry(writer: &dyn CredentialWriter, host_id: &str) -> bool {
+    for _ in 0..2 {
         let _ = writer.delete(host_id);
+        if matches!(writer.exists(host_id), Ok(false)) {
+            return true;
+        }
     }
+    false
+}
+
+#[derive(PartialEq, Eq)]
+enum CleanupOutcome {
+    Clean,
+    Journaled,
+    Failed,
+}
+
+fn cleanup_or_journal(
+    db: &HostDb,
+    writer: &dyn CredentialWriter,
+    host_ids: &[String],
+) -> CleanupOutcome {
+    let mut outcome = CleanupOutcome::Clean;
+    for host_id in host_ids.iter().rev() {
+        if delete_vault_entry(writer, host_id) {
+            if db.remove_vault_cleanup(host_id).is_err() {
+                outcome = CleanupOutcome::Failed;
+            }
+        } else if db
+            .enqueue_vault_cleanup(std::slice::from_ref(host_id))
+            .is_ok()
+        {
+            if outcome == CleanupOutcome::Clean {
+                outcome = CleanupOutcome::Journaled;
+            }
+        } else {
+            outcome = CleanupOutcome::Failed;
+        }
+    }
+    outcome
+}
+
+fn recover_vault_cleanup(db: &HostDb, writer: &dyn CredentialWriter) -> bool {
+    let Ok(host_ids) = db.list_vault_cleanup() else {
+        return false;
+    };
+    let mut recovered = true;
+    for host_id in host_ids {
+        if delete_vault_entry(writer, &host_id) {
+            recovered &= db.remove_vault_cleanup(&host_id).is_ok();
+        } else {
+            recovered = false;
+        }
+    }
+    recovered
+}
+
+pub(crate) fn recover_pending_vault_cleanup(db: &HostDb) -> bool {
+    recover_vault_cleanup(db, &OsVaultWriter)
 }
 
 fn persist_prepared(
@@ -2007,28 +2252,64 @@ fn persist_prepared(
     prepared: PreparedImport,
     source_warnings: &[String],
 ) -> Result<TermiusCommitResponse, TermiusImportError> {
-    let mut staged_vault_ids = Vec::with_capacity(prepared.credentials.len());
+    if !recover_vault_cleanup(db, writer) {
+        return Err(TermiusImportError::CleanupPending);
+    }
+    /* Persist non-secret cleanup intent before the first keychain write. The
+     * host transaction clears committed IDs atomically; all other exits delete
+     * or retain the journal entries for startup recovery. */
+    let staged_vault_ids = prepared
+        .credentials
+        .iter()
+        .map(|(host_id, _)| host_id.clone())
+        .collect::<Vec<_>>();
+    if db.enqueue_vault_cleanup(&staged_vault_ids).is_err() {
+        return Err(TermiusImportError::CommitFailed);
+    }
     for (host_id, credential) in &prepared.credentials {
-        staged_vault_ids.push(host_id.clone());
         if writer.save(host_id, credential).is_err() {
-            rollback_vault(writer, &staged_vault_ids);
-            return Err(TermiusImportError::CommitFailed);
+            return Err(
+                if cleanup_or_journal(db, writer, &staged_vault_ids) == CleanupOutcome::Clean {
+                    TermiusImportError::CommitFailed
+                } else {
+                    TermiusImportError::CleanupPending
+                },
+            );
         }
     }
-    if db
-        .save_groups_and_hosts_transaction(&prepared.groups, &prepared.hosts)
-        .is_err()
+    let transaction = match db.save_groups_and_hosts_transaction(&prepared.groups, &prepared.hosts)
     {
-        rollback_vault(writer, &staged_vault_ids);
-        return Err(TermiusImportError::CommitFailed);
+        Ok(transaction) => transaction,
+        Err(_) => {
+            return Err(
+                if cleanup_or_journal(db, writer, &staged_vault_ids) == CleanupOutcome::Clean {
+                    TermiusImportError::CommitFailed
+                } else {
+                    TermiusImportError::CleanupPending
+                },
+            );
+        }
+    };
+    let skipped_vault_ids = transaction
+        .skipped_host_ids
+        .iter()
+        .filter(|host_id| staged_vault_ids.contains(host_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let cleanup_pending = !skipped_vault_ids.is_empty()
+        && cleanup_or_journal(db, writer, &skipped_vault_ids) != CleanupOutcome::Clean;
+    let skipped_hosts = prepared.skipped_hosts + transaction.skipped_host_ids.len();
+    let mut warnings = duplicate_warnings(skipped_hosts, source_warnings);
+    if cleanup_pending {
+        push_warning(&mut warnings, WARN_CLEANUP_PENDING);
     }
 
     Ok(TermiusCommitResponse {
-        imported_hosts: prepared.hosts.len(),
-        imported_groups: prepared.groups.len(),
-        skipped_hosts: prepared.skipped_hosts,
-        credentials_stored: prepared.credentials.len(),
-        warnings: duplicate_warnings(prepared.skipped_hosts, source_warnings),
+        imported_hosts: transaction.imported_hosts,
+        imported_groups: transaction.imported_groups,
+        skipped_hosts,
+        credentials_stored: prepared.credentials.len() - skipped_vault_ids.len(),
+        warnings,
     })
 }
 
@@ -2092,6 +2373,10 @@ pub async fn import_commit_termius(
     let db = Arc::clone(&*db);
     let previews = Arc::clone(&*previews);
     task::spawn_blocking(move || {
+        let _commit_guard = previews
+            .commit_lock
+            .lock()
+            .map_err(|_| TermiusImportError::CommitFailed)?;
         let pending = previews.take(&request.preview_token)?;
         let writer = OsVaultWriter;
         commit_pending(&db, &writer, pending, &request)
@@ -2169,6 +2454,7 @@ mod tests {
         saved: std::sync::Mutex<Vec<(String, StoredCredential)>>,
         deleted: std::sync::Mutex<Vec<String>>,
         calls: std::sync::Mutex<usize>,
+        delete_failures: std::sync::Mutex<usize>,
         fail_at: Option<usize>,
     }
 
@@ -2178,8 +2464,13 @@ mod tests {
                 saved: std::sync::Mutex::new(Vec::new()),
                 deleted: std::sync::Mutex::new(Vec::new()),
                 calls: std::sync::Mutex::new(0),
+                delete_failures: std::sync::Mutex::new(0),
                 fail_at,
             }
+        }
+
+        fn fail_next_deletes(&self, count: usize) {
+            *self.delete_failures.lock().unwrap() = count;
         }
 
         fn saved_len(&self) -> usize {
@@ -2214,8 +2505,24 @@ mod tests {
 
         fn delete(&self, host_id: &str) -> Result<(), crate::vault::VaultError> {
             self.deleted.lock().unwrap().push(host_id.to_string());
+            let mut failures = self.delete_failures.lock().unwrap();
+            if *failures > 0 {
+                *failures -= 1;
+                return Err(crate::vault::VaultError::Keychain(
+                    "synthetic delete failure".to_string(),
+                ));
+            }
             self.saved.lock().unwrap().retain(|(id, _)| id != host_id);
             Ok(())
+        }
+
+        fn exists(&self, host_id: &str) -> Result<bool, crate::vault::VaultError> {
+            Ok(self
+                .saved
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(id, _)| id == host_id))
         }
     }
 
@@ -2285,12 +2592,14 @@ mod tests {
         hosts: Vec<NormalizedHost>,
         groups: Vec<NormalizedGroup>,
     ) -> PendingPreview {
+        let normalized = NormalizedImport {
+            hosts,
+            groups,
+            warnings: Vec::new(),
+        };
         PendingPreview {
-            normalized: NormalizedImport {
-                hosts,
-                groups,
-                warnings: Vec::new(),
-            },
+            retained_bytes: normalized_retained_bytes(&normalized).unwrap(),
+            normalized,
             created_at: Instant::now(),
             drop_probe: None,
         }
@@ -2578,6 +2887,89 @@ mod tests {
     }
 
     #[test]
+    fn latest_rows_normalize_iso_offsets_and_numeric_epoch_units() {
+        let rows = source(vec![
+            row(
+                "hosts",
+                "iso-host",
+                v8_object(&[
+                    ("id", v8_string("iso-id")),
+                    ("updated_at", v8_string("2025-01-01T00:30:00+01:00")),
+                    ("label", v8_string("iso-stale")),
+                    ("host", v8_string("iso.example")),
+                ]),
+            ),
+            row(
+                "hosts",
+                "iso-host",
+                v8_object(&[
+                    ("id", v8_string("iso-id")),
+                    ("updated_at", v8_string("2025-01-01T00:00:00Z")),
+                    ("label", v8_string("iso-current")),
+                    ("host", v8_string("iso.example")),
+                ]),
+            ),
+            row(
+                "hosts",
+                "epoch-host",
+                v8_object(&[
+                    ("id", v8_string("epoch-id")),
+                    ("updated_at", v8_string("1735689599000")),
+                    ("label", v8_string("epoch-stale")),
+                    ("host", v8_string("epoch.example")),
+                ]),
+            ),
+            row(
+                "hosts",
+                "epoch-host",
+                v8_object(&[
+                    ("id", v8_string("epoch-id")),
+                    ("updated_at", v8_string("2025-01-01T00:00:00Z")),
+                    ("label", v8_string("epoch-current")),
+                    ("host", v8_string("epoch.example")),
+                ]),
+            ),
+        ]);
+        let normalized = normalize_source_rows(rows).expect("normalize timestamps");
+        let labels = normalized
+            .hosts
+            .iter()
+            .map(|host| host.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(labels, vec!["iso-current", "epoch-current"]);
+    }
+
+    #[test]
+    fn invalid_update_markers_use_source_order_and_emit_static_warning() {
+        let rows = source(vec![
+            row(
+                "hosts",
+                "invalid-host",
+                v8_object(&[
+                    ("updated_at", v8_string("not-a-timestamp")),
+                    ("label", v8_string("first")),
+                    ("host", v8_string("invalid.example")),
+                ]),
+            ),
+            row(
+                "hosts",
+                "invalid-host",
+                v8_object(&[
+                    ("updated_at", v8_string("also-invalid")),
+                    ("label", v8_string("second")),
+                    ("host", v8_string("invalid.example")),
+                ]),
+            ),
+        ]);
+        let normalized = normalize_source_rows(rows).expect("normalize invalid timestamps");
+        assert_eq!(normalized.hosts[0].label, "second");
+        assert!(normalized
+            .warnings
+            .iter()
+            .any(|warning| warning == WARN_INCOMPARABLE_UPDATE));
+    }
+
+    #[test]
     fn legacy_inline_identity_and_proxy_aliases_remain_bounded_fallbacks() {
         let private_key = "-----BEGIN OPENSSH PRIVATE KEY-----\nlegacy-key";
         let rows = source(vec![
@@ -2678,6 +3070,58 @@ mod tests {
         let saved_host = &db.list_hosts().expect("list hosts")[0];
         assert_eq!(saved_host.auth_type, "privateKeyData");
         assert_eq!(saved_host.proxy_jump, None);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn proxy_allowlist_accepts_only_non_secret_jump_metadata() {
+        assert_eq!(
+            safe_proxy_value("alice@jump.example:2222").as_deref(),
+            Some("alice@jump.example:2222")
+        );
+        assert_eq!(
+            safe_proxy_value("[2001:db8::1]:22").as_deref(),
+            Some("[2001:db8::1]:22")
+        );
+        assert!(safe_proxy_value("ssh://alice:secret@jump.example").is_none());
+        assert!(safe_proxy_value("sshpass -p secret ssh jump.example").is_none());
+        assert!(safe_proxy_value("jump.example?password=secret").is_none());
+        assert!(safe_proxy_value("alice:secret@jump.example").is_none());
+    }
+
+    #[test]
+    fn unsafe_proxy_text_is_neither_previewed_nor_persisted() {
+        let rows = source(vec![row(
+            "hosts",
+            "unsafe-proxy",
+            v8_object(&[
+                ("host", v8_string("target.example")),
+                (
+                    "proxy",
+                    v8_string("sshpass -p fixture-secret ssh jump.example"),
+                ),
+            ]),
+        )]);
+        let normalized = normalize_source_rows(rows).expect("normalize unsafe proxy");
+        assert!(normalized.hosts[0].proxy.is_none());
+        assert!(normalized.hosts[0]
+            .warnings
+            .iter()
+            .any(|warning| warning == WARN_PROXY_UNSAFE));
+        let serialized = serde_json::to_string(&preview_for_test(&normalized, &[])).unwrap();
+        assert!(!serialized.contains("fixture-secret"));
+
+        let host_id = normalized.hosts[0].public_id.clone();
+        let (db, path) = temp_db();
+        let vault = FakeVault::new(None);
+        commit_pending(
+            &db,
+            &vault,
+            pending_import(normalized.hosts),
+            &commit_request(vec![host_id], false, false),
+        )
+        .expect("commit without proxy text");
+        assert!(db.list_hosts().unwrap()[0].proxy_jump.is_none());
         let _ = std::fs::remove_dir_all(path);
     }
 
@@ -2830,6 +3274,23 @@ mod tests {
         assert_eq!(request.selected_ids, vec!["opaque-host-id"]);
         assert!(request.include_credentials);
         assert!(request.credentials_confirmed);
+
+        let error = serde_json::to_value(TermiusImportError::CleanupPending).unwrap();
+        assert_eq!(error["kind"], "cleanup_pending");
+        assert_eq!(error["message"], "Termius credential cleanup is pending");
+
+        let preview = preview_for_test(
+            &NormalizedImport {
+                hosts: vec![pending_host("wire", "wire.example", Some("wire-secret"))],
+                groups: Vec::new(),
+                warnings: Vec::new(),
+            },
+            &[],
+        );
+        let wire = serde_json::to_value(preview).unwrap();
+        assert!(wire["preview_token"].is_string());
+        assert_eq!(wire["hosts"][0]["id"], "opaque-wire");
+        assert!(!wire.to_string().contains("wire-secret"));
     }
 
     #[test]
@@ -2879,6 +3340,7 @@ mod tests {
                 warnings: vec![],
             },
             created_at: Instant::now(),
+            retained_bytes: 0,
             drop_probe: Some(drop_probe.clone()),
         };
         state
@@ -2919,6 +3381,40 @@ mod tests {
             }),
             Err(TermiusImportError::TooManyPreviews)
         );
+    }
+
+    #[test]
+    fn preview_state_releases_aggregate_bytes_on_take_and_expiry() {
+        let state = TermiusImportState::with_limits(Duration::from_millis(10), 16);
+        let token = state
+            .insert(NormalizedImport {
+                hosts: vec![],
+                groups: vec![],
+                warnings: vec!["12345678".to_string()],
+            })
+            .expect("first preview");
+        assert_eq!(state.retained_bytes(), 8);
+        assert!(matches!(
+            state.insert(NormalizedImport {
+                hosts: vec![],
+                groups: vec![],
+                warnings: vec!["123456789".to_string()],
+            }),
+            Err(TermiusImportError::PreviewLimit)
+        ));
+        assert_eq!(state.retained_bytes(), 8);
+        drop(state.take(&token).expect("take preview"));
+        assert_eq!(state.retained_bytes(), 0);
+
+        state
+            .insert(NormalizedImport {
+                hosts: vec![],
+                groups: vec![],
+                warnings: vec!["12345678".to_string()],
+            })
+            .expect("expiring preview");
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(state.retained_bytes(), 0);
     }
 
     #[test]
@@ -3124,7 +3620,7 @@ mod tests {
                 Err(TermiusImportError::CommitFailed)
             ));
             assert_eq!(vault.saved_len(), 0);
-            assert_eq!(vault.deleted_len(), fail_at);
+            assert_eq!(vault.deleted_len(), 3);
             assert!(db.list_hosts().expect("list hosts").is_empty());
             let _ = std::fs::remove_dir_all(path);
         }
@@ -3154,6 +3650,93 @@ mod tests {
         assert_eq!(vault.deleted_len(), 1);
         assert!(db.list_groups().expect("list groups").is_empty());
         assert!(db.list_hosts().expect("list hosts").is_empty());
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn cleanup_failures_are_journaled_and_recovered_without_secret_data() {
+        let (db, path) = temp_db();
+        let vault = FakeVault::new(None);
+        vault.fail_next_deletes(2);
+        let prepared = PreparedImport {
+            groups: Vec::new(),
+            hosts: vec![saved_host_for_test("invalid", Some("missing-group"))],
+            credentials: vec![(
+                "generated-cleanup-id".to_string(),
+                StoredCredential::Password {
+                    password: "cleanup-secret".to_string(),
+                },
+            )],
+            skipped_hosts: 0,
+        };
+
+        assert!(matches!(
+            persist_prepared(&db, &vault, prepared, &[]),
+            Err(TermiusImportError::CleanupPending)
+        ));
+        assert_eq!(
+            db.list_vault_cleanup().unwrap(),
+            vec!["generated-cleanup-id"]
+        );
+        assert!(recover_vault_cleanup(&db, &vault));
+        assert!(db.list_vault_cleanup().unwrap().is_empty());
+        assert_eq!(vault.saved_len(), 0);
+
+        let snapshot = db.export_db_snapshot().unwrap();
+        assert!(!snapshot
+            .windows("cleanup-secret".len())
+            .any(|window| window == b"cleanup-secret"));
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn startup_recovery_deletes_a_vault_entry_staged_before_db_commit() {
+        let (db, path) = temp_db();
+        let vault = FakeVault::new(None);
+        let host_id = "generated-crash-window-id".to_string();
+        db.enqueue_vault_cleanup(std::slice::from_ref(&host_id))
+            .expect("journal staging intent");
+        vault
+            .save(
+                &host_id,
+                &StoredCredential::Password {
+                    password: "crash-window-secret".to_string(),
+                },
+            )
+            .expect("stage credential");
+
+        assert!(recover_vault_cleanup(&db, &vault));
+        assert_eq!(vault.saved_len(), 0);
+        assert!(db.list_vault_cleanup().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn transaction_time_duplicate_removes_its_staged_credential_and_journal() {
+        let (db, path) = temp_db();
+        db.save_host(&saved_host_for_test("existing", None))
+            .expect("seed duplicate host key");
+        let vault = FakeVault::new(None);
+        let mut duplicate = saved_host_for_test("generated-duplicate", None);
+        duplicate.host = "existing.example".to_string();
+        let prepared = PreparedImport {
+            groups: Vec::new(),
+            hosts: vec![duplicate],
+            credentials: vec![(
+                "generated-duplicate".to_string(),
+                StoredCredential::Password {
+                    password: "transaction-race-secret".to_string(),
+                },
+            )],
+            skipped_hosts: 0,
+        };
+
+        let result = persist_prepared(&db, &vault, prepared, &[]).expect("deduplicated commit");
+        assert_eq!(result.imported_hosts, 0);
+        assert_eq!(result.skipped_hosts, 1);
+        assert_eq!(result.credentials_stored, 0);
+        assert_eq!(vault.saved_len(), 0);
+        assert!(db.list_vault_cleanup().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(path);
     }
 }

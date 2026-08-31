@@ -68,6 +68,26 @@ pub enum StoredCredential {
     },
 }
 
+/* The webview may save the two credential forms that already originate in
+ * frontend forms. Raw imported private keys intentionally have no IPC shape. */
+#[derive(Deserialize)]
+#[serde(tag = "type")]
+pub enum VaultCredentialInput {
+    Password { password: String },
+    KeyPassphrase { passphrase: String },
+}
+
+impl From<VaultCredentialInput> for StoredCredential {
+    fn from(value: VaultCredentialInput) -> Self {
+        match value {
+            VaultCredentialInput::Password { password } => Self::Password { password },
+            VaultCredentialInput::KeyPassphrase { passphrase } => {
+                Self::KeyPassphrase { passphrase }
+            }
+        }
+    }
+}
+
 impl fmt::Debug for StoredCredential {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let kind = match self {
@@ -171,14 +191,22 @@ pub fn delete_credential(host_id: &str) -> Result<(), VaultError> {
 /// Return `true` when a credential exists for `host_id`, without retrieving
 /// the secret value.
 pub fn has_credential(host_id: &str) -> bool {
+    credential_exists(host_id).unwrap_or(false)
+}
+
+pub fn credential_exists(host_id: &str) -> Result<bool, VaultError> {
     let Ok(entry) = keyring::Entry::new(SERVICE_NAME, host_id) else {
-        return false;
+        return Err(VaultError::Keychain(
+            "credential entry unavailable".to_string(),
+        ));
     };
-    let Ok(mut value) = entry.get_password() else {
-        return false;
+    let mut value = match entry.get_password() {
+        Ok(value) => value,
+        Err(keyring::Error::NoEntry) => return Ok(false),
+        Err(error) => return Err(VaultError::Keychain(error.to_string())),
     };
     value.zeroize();
-    true
+    Ok(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -193,8 +221,9 @@ pub fn has_credential(host_id: &str) -> bool {
 #[tauri::command]
 pub async fn vault_save_credential(
     host_id: String,
-    credential: StoredCredential,
+    credential: VaultCredentialInput,
 ) -> Result<(), VaultError> {
+    let credential = StoredCredential::from(credential);
     tokio::task::spawn_blocking(move || save_credential(&host_id, &credential))
         .await
         .map_err(|e| VaultError::Keychain(format!("task panicked: {e}")))?
@@ -396,6 +425,16 @@ mod tests {
             }
             other => panic!("unexpected variant: {other:?}"),
         }
+    }
+
+    #[test]
+    fn public_vault_input_rejects_raw_private_key_data() {
+        let result = serde_json::from_value::<VaultCredentialInput>(serde_json::json!({
+            "type": "PrivateKeyData",
+            "key_data": "raw-private-key",
+            "passphrase": "secret"
+        }));
+        assert!(result.is_err());
     }
 
     #[test]

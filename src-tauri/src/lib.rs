@@ -61,6 +61,9 @@ pub fn run() {
 
             let host_db = HostDb::new(&app_data_dir)
                 .map_err(|e| format!("failed to initialise database: {e}"))?;
+            if !import::termius::workflow::recover_pending_vault_cleanup(&host_db) {
+                tracing::warn!("deferred credential cleanup remains pending");
+            }
 
             // Resolve the persisted theme up-front and inject it onto <html>
             // *before* the page loads, so the very first paint already carries

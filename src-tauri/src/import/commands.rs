@@ -281,39 +281,13 @@ fn existing_host_keys(db: &HostDb) -> Result<Vec<(String, String, u16)>, SshErro
 }
 
 pub(crate) fn timestamp_now() -> String {
-    /* Bound SQL parameters are values, not expressions. Generate a real UTC
-     * timestamp here so import rows never persist the SQL expression itself. */
-    let seconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let days = (seconds / 86_400) as i64;
-    let seconds_today = seconds % 86_400;
-    let (year, month, day) = civil_date_from_days(days);
-    let hour = seconds_today / 3_600;
-    let minute = (seconds_today % 3_600) / 60;
-    let second = seconds_today % 60;
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.000Z")
+    format_timestamp(chrono::Utc::now())
 }
 
-fn civil_date_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
-    // Gregorian civil-date conversion relative to 1970-01-01.
-    let shifted = days_since_epoch + 719_468;
-    let era = (if shifted >= 0 {
-        shifted
-    } else {
-        shifted - 146_096
-    }) / 146_097;
-    let day_of_era = shifted - era * 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_part = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_part + 2) / 5 + 1;
-    let month = month_part + if month_part < 10 { 3 } else { -9 };
-    let year = year + if month <= 2 { 1 } else { 0 };
-    (year, month, day)
+fn format_timestamp(value: chrono::DateTime<chrono::Utc>) -> String {
+    /* RFC 3339 UTC output keeps persisted timestamps comparable and delegates
+     * leap-year/calendar behavior to the already-used chrono implementation. */
+    value.format("%Y-%m-%dT%H:%M:%S.000Z").to_string()
 }
 
 /// Resolve a single-hop `ProxyJump` directive value to a saved-host id.
@@ -375,6 +349,7 @@ fn resolve_jump_target(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
     use std::collections::HashMap;
 
     /// Minimal SavedHost for resolution tests (only id/label/host are consulted).
@@ -776,5 +751,17 @@ mod tests {
         assert_eq!(entry_camel.startup_command.as_deref(), Some("bash"));
         assert_eq!(entry_camel.notes.as_deref(), Some("EC2 instance"));
         assert_eq!(entry_camel.start_directory.as_deref(), Some("/srv/app"));
+    }
+
+    #[test]
+    fn timestamp_format_handles_epoch_and_leap_day_boundaries() {
+        let epoch = chrono::Utc.timestamp_opt(0, 0).single().unwrap();
+        assert_eq!(format_timestamp(epoch), "1970-01-01T00:00:00.000Z");
+
+        let leap_day = chrono::Utc
+            .with_ymd_and_hms(2024, 2, 29, 23, 59, 59)
+            .single()
+            .unwrap();
+        assert_eq!(format_timestamp(leap_day), "2024-02-29T23:59:59.000Z");
     }
 }

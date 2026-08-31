@@ -31,6 +31,7 @@ use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use argon2::{Algorithm, Argon2, Params, Version};
 use serde::Serialize;
+use zeroize::Zeroizing;
 
 use crate::db::HostDb;
 use crate::vault::{self, StoredCredential};
@@ -142,7 +143,11 @@ impl<'a> Reader<'a> {
 
 // ─── Crypto ─────────────────────────────────────────────────────────────────────
 
-fn derive_key(password: &str, salt: &[u8], p: &KdfParams) -> Result<[u8; KEY_LEN], BackupError> {
+fn derive_key(
+    password: &str,
+    salt: &[u8],
+    p: &KdfParams,
+) -> Result<Zeroizing<[u8; KEY_LEN]>, BackupError> {
     if p.algorithm != "argon2id" {
         return Err(BackupError::Format(format!(
             "unsupported KDF {:?}",
@@ -165,7 +170,7 @@ fn derive_key(password: &str, salt: &[u8], p: &KdfParams) -> Result<[u8; KEY_LEN
     argon2
         .hash_password_into(password.as_bytes(), salt, &mut key)
         .map_err(|e| BackupError::Crypto(e.to_string()))?;
-    Ok(key)
+    Ok(Zeroizing::new(key))
 }
 
 /// Encrypt `plaintext` into a self-describing binary container. The header
@@ -196,7 +201,7 @@ fn seal(password: &str, plaintext: &[u8], compression: u8) -> Result<Vec<u8>, Ba
         p: ARGON2_P,
     };
     let key = derive_key(password, &salt, &kdf)?;
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key.as_ref()));
     let ciphertext = cipher
         .encrypt(
             Nonce::from_slice(&nonce),
@@ -265,7 +270,7 @@ fn decode_frame(frame: &[u8]) -> Result<(&[u8], &[u8]), BackupError> {
 /// plaintext and the compression byte. Every malformed/truncated input yields a
 /// `Format` error; a wrong password (or any tampering, including the header)
 /// yields `Decrypt` via the GCM tag check.
-fn open(password: &str, data: &[u8]) -> Result<(Vec<u8>, u8), BackupError> {
+fn open(password: &str, data: &[u8]) -> Result<(Zeroizing<Vec<u8>>, u8), BackupError> {
     let mut r = Reader::new(data);
     if r.take(MAGIC.len())? != MAGIC {
         return Err(BackupError::Format("not an anySCP backup file".into()));
@@ -297,7 +302,7 @@ fn open(password: &str, data: &[u8]) -> Result<(Vec<u8>, u8), BackupError> {
     };
     // derive_key clamps the (untrusted) KDF parameters before use.
     let key = derive_key(password, &salt, &kdf)?;
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key.as_ref()));
     let plaintext = cipher
         .decrypt(
             Nonce::from_slice(nonce),
@@ -307,7 +312,7 @@ fn open(password: &str, data: &[u8]) -> Result<(Vec<u8>, u8), BackupError> {
             },
         )
         .map_err(|_| BackupError::Decrypt)?;
-    Ok((plaintext, compression))
+    Ok((Zeroizing::new(plaintext), compression))
 }
 
 // ─── Orchestration (sync — callers use spawn_blocking) ──────────────────────────
@@ -331,10 +336,13 @@ pub fn build_backup(db: &HostDb, password: &str) -> Result<Vec<u8>, BackupError>
         }
     }
 
-    let creds_json =
-        serde_json::to_vec(&credentials).map_err(|e| BackupError::Crypto(e.to_string()))?;
-    let frame = encode_frame(&creds_json, &db_bytes);
-    let compressed = gzip(&frame)?;
+    /* Every plaintext serialization layer owns a zeroizing buffer. This covers
+     * early returns from compression/encryption as well as the success path. */
+    let creds_json = Zeroizing::new(
+        serde_json::to_vec(&credentials).map_err(|e| BackupError::Crypto(e.to_string()))?,
+    );
+    let frame = Zeroizing::new(encode_frame(&creds_json, &db_bytes));
+    let compressed = Zeroizing::new(gzip(&frame)?);
     seal(password, &compressed, COMPRESSION_GZIP)
 }
 
@@ -343,7 +351,7 @@ pub fn build_backup(db: &HostDb, password: &str) -> Result<Vec<u8>, BackupError>
 pub fn restore_backup(db: &HostDb, password: &str, container: &[u8]) -> Result<(), BackupError> {
     let (plaintext, compression) = open(password, container)?;
     let frame = match compression {
-        COMPRESSION_GZIP => gunzip(&plaintext)?,
+        COMPRESSION_GZIP => Zeroizing::new(gunzip(&plaintext)?),
         COMPRESSION_NONE => plaintext,
         other => {
             return Err(BackupError::Format(format!(
@@ -377,7 +385,7 @@ mod tests {
         let container = seal(password, msg, COMPRESSION_NONE).expect("seal");
         let (plaintext, comp) = open(password, &container).expect("open");
         assert_eq!(comp, COMPRESSION_NONE);
-        plaintext
+        plaintext.to_vec()
     }
 
     #[test]
@@ -541,7 +549,7 @@ mod tests {
                 passphrase: Some("passphrase".to_string()),
             },
         );
-        let encoded = serde_json::to_vec(&credentials).expect("encode credentials");
+        let encoded = Zeroizing::new(serde_json::to_vec(&credentials).expect("encode credentials"));
         let decoded: BTreeMap<String, StoredCredential> =
             serde_json::from_slice(&encoded).expect("decode credentials");
         assert!(matches!(
@@ -551,5 +559,15 @@ mod tests {
                 passphrase: Some(passphrase),
             }) if key_data == "private-key-data" && passphrase == "passphrase"
         ));
+    }
+
+    #[test]
+    fn decrypted_backup_plaintext_uses_zeroizing_ownership() {
+        fn assert_zeroizing(_: &Zeroizing<Vec<u8>>) {}
+
+        let container = seal("pw", b"sensitive-payload", COMPRESSION_NONE).unwrap();
+        let (plaintext, _) = open("pw", &container).unwrap();
+        assert_zeroizing(&plaintext);
+        assert_eq!(plaintext.as_slice(), b"sensitive-payload");
     }
 }
