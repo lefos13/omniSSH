@@ -1,7 +1,7 @@
 /*
  * E2E tests for theme toggling and narrow/responsive layout controls.
  * Verifies unconditional dark/light theme switching in appearance settings,
- * and asserts narrow viewport layout usability before restoring window dimensions.
+ * and asserts narrow viewport (720px) layout measurements and absence of horizontal overflow.
  */
 
 import { expect } from "chai";
@@ -23,7 +23,7 @@ describe("theme and narrow layout", () => {
         await resetApp();
     });
 
-    it("unconditionally switches theme modes and supports narrow layout viewport", async () => {
+    it("unconditionally switches theme modes and supports narrow layout viewport without overflow", async () => {
         await openSettingsAppearance();
 
         // 1. Unconditionally switch to light theme
@@ -52,11 +52,16 @@ describe("theme and narrow layout", () => {
         const darkTheme = await browser.execute(() => document.documentElement.dataset.theme);
         expect(darkTheme).to.equal("dark");
 
-        // 3. Narrow layout responsiveness test
+        // 3. Narrow layout responsiveness test at 720px width
         const originalSize = await browser.getWindowSize();
         try {
-            // Resize to narrow viewport (720x600)
             await browser.setWindowSize(720, 600);
+
+            // Assert no horizontal scroll overflow on document at 720px width
+            const noHorizontalOverflow = await browser.execute(() => {
+                return document.documentElement.scrollWidth <= document.documentElement.clientWidth;
+            });
+            expect(noHorizontalOverflow).to.equal(true);
 
             // Verify sidebar toggle operates cleanly under narrow width
             const initialExpanded = await sidebarExpanded();
@@ -67,9 +72,9 @@ describe("theme and narrow layout", () => {
             );
             expect(await sidebarExpanded()).to.equal(!initialExpanded);
 
-            // Verify appearance controls remain accessible in narrow layout
-            const appearanceNav = await $("[data-testid='settings-nav-appearance']");
-            expect(await appearanceNav.isDisplayed()).to.equal(true);
+            // Verify appearance controls remain accessible and displayed within viewport
+            const themeControl = await $("[data-testid='s-light-theme']");
+            expect(await themeControl.isDisplayedInViewport()).to.equal(true);
         } finally {
             // Restore original window dimensions
             await browser.setWindowSize(originalSize.width, originalSize.height);

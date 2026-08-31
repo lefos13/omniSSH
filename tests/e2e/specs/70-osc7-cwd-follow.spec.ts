@@ -1,8 +1,8 @@
 /*
  * E2E tests for OSC 7 CWD follow and explicit cd dispatch in linked explorer.
  * Verifies that:
- * 1. Explicit cd button in linked explorer dispatches a cd command to the terminal
- *    and changes the terminal's working directory.
+ * 1. Navigating linked explorer to /tmp and clicking "cd here" dispatches a cd command
+ *    to the terminal, proven by terminal $PWD reflecting /tmp with a unique marker.
  * 2. Enabling session-local Bash OSC 7 integration and changing directories in the
  *    terminal automatically synchronizes and updates the linked explorer's path/breadcrumb.
  */
@@ -21,6 +21,7 @@ import {
     waitForAnyTerminal,
     waitForTerminalText,
 } from "../helpers/terminal.js";
+import { openEntry } from "../helpers/sftp-ops.js";
 
 const SSHD_PASS_HOST = process.env.SSHD_PASS_HOST ?? "sshd-pass";
 const SSHD_PASS_PORT = Number(process.env.SSHD_PASS_PORT ?? 2222);
@@ -56,18 +57,44 @@ describe("OSC 7 CWD follow and explicit cd", () => {
         const syncStatusBtn = await $("[data-testid='linked-explorer-sync-status']");
         await syncStatusBtn.waitForDisplayed({ timeout: 15_000 });
 
-        const followToggleBtn = await $("[data-testid='linked-explorer-follow-toggle']");
-        await followToggleBtn.waitForDisplayed({ timeout: 10_000 });
+        // Wait for directory rows in linked explorer
+        await browser.waitUntil(
+            async () => (await $$("[data-entry-row='true']")).length > 0,
+            { timeout: 15_000, timeoutMsg: "linked explorer rows did not load" },
+        );
 
-        // 2. Test explicit cd dispatch to terminal
-        // Initial home directory is /config in linuxserver/openssh-server
+        // 2. Navigate linked explorer to /tmp via UI to test explicit cd
+        // Click root '/' in breadcrumb
+        const rootCrumb = await $("[aria-label='Current path'] button");
+        await rootCrumb.waitForClickable({ timeout: 5_000 });
+        await rootCrumb.click();
+
+        await browser.waitUntil(
+            async () => (await $$("[data-entry-row='true']")).length > 0,
+            { timeout: 15_000 },
+        );
+
+        // Double-click 'tmp' directory
+        await openEntry("tmp");
+
+        // Wait until linked explorer breadcrumb indicates /tmp
+        await browser.waitUntil(
+            async () => (await $("[aria-label='Current path'] button*=tmp")).isExisting(),
+            { timeout: 10_000, timeoutMsg: "linked explorer did not enter /tmp" },
+        );
+
+        // Click "cd here in terminal" button
         const cdTerminalBtn = await $("[data-testid='linked-explorer-cd-terminal']");
         await cdTerminalBtn.waitForClickable({ timeout: 10_000 });
         await cdTerminalBtn.click();
 
-        // Prove explicit cd was executed in terminal with unique marker
-        const cdMarker = `cd-marker-${Date.now()}`;
-        await runCommand(sessionId, `pwd # ${cdMarker}`, "/config");
+        // Prove explicit cd changed terminal PWD to /tmp using a unique marker
+        const cdMarker = `cd_marker_${Date.now()}`;
+        await runCommand(
+            sessionId,
+            `printf "${cdMarker}:%s\\n" "$PWD"`,
+            `${cdMarker}:/tmp`,
+        );
 
         // 3. Test OSC 7 CWD synchronization
         // Open sync menu and enable session-local Bash integration
@@ -77,10 +104,15 @@ describe("OSC 7 CWD follow and explicit cd", () => {
         await bashOption.click();
 
         // Create a distinct target directory and navigate into it in the terminal
-        const uniqueDirName = `sync-dir-${Date.now()}`;
-        await runCommand(sessionId, `mkdir -p /config/${uniqueDirName} && cd /config/${uniqueDirName}`, uniqueDirName);
+        const uniqueDirName = `sync_dir_${Date.now()}`;
+        const oscMarker = `osc_marker_${Date.now()}`;
+        await runCommand(
+            sessionId,
+            `mkdir -p /config/${uniqueDirName} && cd /config/${uniqueDirName} && printf "${oscMarker}:%s\\n" "$PWD"`,
+            `${oscMarker}:/config/${uniqueDirName}`,
+        );
 
-        // Verify OSC 7 hook caused the linked explorer breadcrumb/path to update
+        // Verify OSC 7 hook caused the linked explorer breadcrumb/path to update to uniqueDirName
         await browser.waitUntil(
             async () => {
                 const pathBarButtons = await $$("[aria-label='Current path'] button");

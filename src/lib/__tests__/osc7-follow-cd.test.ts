@@ -68,12 +68,16 @@ describe("OSC 7 CWD follow and explicit cd helpers", () => {
       expect(parseOsc7Cwd("file://localhost///")?.path).toBe("/");
     });
 
-    it("rejects invalid schemes, relative paths, and non-strings", () => {
+    it("rejects invalid schemes, paths missing leading slashes, and non-strings", () => {
       expect(parseOsc7Cwd("http://localhost/var/log")).toBeNull();
-      expect(parseOsc7Cwd("file://localhost/../relative")).not.toBeNull(); // decoded path starts with /
-      expect(parseOsc7Cwd("file://localhost")).toBeNull(); // no leading slash path
+      expect(parseOsc7Cwd("file://localhost")).toBeNull();
+      expect(parseOsc7Cwd("file://localhost?query")).toBeNull();
       expect(parseOsc7Cwd("" as string)).toBeNull();
       expect(parseOsc7Cwd(null as unknown as string)).toBeNull();
+    });
+
+    it("handles paths containing dot-segment traversals while requiring leading slash", () => {
+      expect(parseOsc7Cwd("file://localhost/../relative")?.path).toBe("/../relative");
     });
   });
 

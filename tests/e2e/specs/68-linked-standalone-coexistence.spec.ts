@@ -1,7 +1,8 @@
 /*
  * E2E tests for linked explorer and standalone explorer coexistence.
  * Verifies that a terminal tab with an active linked explorer side panel can coexist
- * alongside a standalone Explorer tab without interference across tab switches.
+ * alongside a standalone Explorer tab without interference across tab switches,
+ * asserting connected transport metadata and directory listings on both sides.
  */
 
 import { expect } from "chai";
@@ -61,6 +62,15 @@ describe("linked and standalone explorer coexistence", () => {
         const resizeHandle = await $("[data-testid='linked-explorer-resize-handle']");
         await resizeHandle.waitForDisplayed({ timeout: 15_000 });
 
+        // Before switching away, require connected transport, entries, and absence of error
+        const linkedTransport = await $("[data-explorer-transport='sftp']");
+        await linkedTransport.waitForDisplayed({ timeout: 15_000 });
+        expect((await $$("[data-testid='linked-explorer-error']")).length).to.equal(0);
+        await browser.waitUntil(
+            async () => (await $$("[data-entry-row='true']")).length > 0,
+            { timeout: 15_000, timeoutMsg: "linked explorer directory listing never rendered" },
+        );
+
         // 4. Switch back to Hosts dashboard and open a standalone Explorer tab
         const hostsTab = await $("[data-tab-label='Hosts']");
         await hostsTab.waitForClickable({ timeout: 5_000 });
@@ -77,7 +87,7 @@ describe("linked and standalone explorer coexistence", () => {
         expect(await tabCountOfType("terminal")).to.equal(1);
         expect(await tabCountOfType("sftp")).to.equal(1);
 
-        // 6. Switch back to Terminal tab and verify linked panel is still open
+        // 6. Switch back to Terminal tab and verify linked panel is still connected with listings
         const terminalTab = await $("[data-tab-type='terminal']");
         await terminalTab.waitForClickable({ timeout: 5_000 });
         await terminalTab.click();
@@ -86,10 +96,16 @@ describe("linked and standalone explorer coexistence", () => {
         await activeResizeHandle.waitForDisplayed({ timeout: 10_000 });
         expect(await activeResizeHandle.isDisplayed()).to.equal(true);
 
-        // 7. Switch to Standalone Explorer tab and verify it renders
+        const reLinkedTransport = await $("[data-explorer-transport='sftp']");
+        await reLinkedTransport.waitForDisplayed({ timeout: 10_000 });
+        expect((await $$("[data-testid='linked-explorer-error']")).length).to.equal(0);
+        expect((await $$("[data-entry-row='true']")).length).to.be.greaterThan(0);
+
+        // 7. Switch to Standalone Explorer tab and verify it renders separately
         const sftpTab = await $("[data-tab-type='sftp']");
         await sftpTab.waitForClickable({ timeout: 5_000 });
         await sftpTab.click();
         await waitForExplorer();
+        expect((await $$("[data-entry-row='true']")).length).to.be.greaterThan(0);
     });
 });

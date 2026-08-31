@@ -47,18 +47,14 @@ describe("Theme and narrow layout constraints", () => {
   });
 
   describe("Theme and appearance configuration", () => {
-    it("switches theme mode and sets data-theme attribute on documentElement", () => {
+    it("switches theme mode and updates store state", () => {
       const store = useSettingsStore.getState();
 
       store.setThemeMode("light");
-      document.documentElement.dataset.theme = "light";
       expect(useSettingsStore.getState().themeMode).toBe("light");
-      expect(document.documentElement.dataset.theme).toBe("light");
 
       store.setThemeMode("dark");
-      document.documentElement.dataset.theme = "dark";
       expect(useSettingsStore.getState().themeMode).toBe("dark");
-      expect(document.documentElement.dataset.theme).toBe("dark");
     });
 
     it("updates accent hue and custom accent colors", () => {
@@ -73,14 +69,12 @@ describe("Theme and narrow layout constraints", () => {
 
     it("generates contrast-tuned terminal theme palettes for dark and light modes", () => {
       document.documentElement.dataset.theme = "dark";
-      useSettingsStore.getState().setThemeMode("dark");
       const darkTheme = getTerminalTheme();
       expect(darkTheme.background).toBeDefined();
       expect(darkTheme.foreground).toBeDefined();
       expect(darkTheme.green).toBeDefined();
 
       document.documentElement.dataset.theme = "light";
-      useSettingsStore.getState().setThemeMode("light");
       const lightTheme = getTerminalTheme();
       expect(lightTheme.background).toBeDefined();
       expect(lightTheme.foreground).toBeDefined();

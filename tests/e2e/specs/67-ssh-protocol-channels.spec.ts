@@ -1,7 +1,8 @@
 /*
  * E2E tests for two protocol channels multiplexed over one SSH connection.
  * Verifies that a single SSH connection can concurrently support an interactive
- * terminal shell session and a linked SFTP explorer side panel with live directory listings.
+ * terminal shell session and a linked SFTP explorer side panel with live directory listings,
+ * explicitly asserting connected transport metadata and absence of errors.
  */
 
 import { expect } from "chai";
@@ -55,6 +56,17 @@ describe("two protocol channels over one SSH session", () => {
         await resizeHandle.waitForDisplayed({ timeout: 15_000 });
         expect(await resizeHandle.isDisplayed()).to.equal(true);
 
+        // Explicitly wait for connected transport container (sftp)
+        const linkedExplorerContainer = await $("[data-explorer-transport='sftp']");
+        await linkedExplorerContainer.waitForDisplayed({
+            timeout: 15_000,
+            timeoutMsg: "data-explorer-transport='sftp' not found on linked panel",
+        });
+        expect(await linkedExplorerContainer.isDisplayed()).to.equal(true);
+
+        // Verify no error banner in linked explorer
+        expect((await $$("[data-testid='linked-explorer-error']")).length).to.equal(0);
+
         // Verify the linked explorer protocol channel completes listing
         await browser.waitUntil(
             async () => (await $$("[data-entry-row='true']")).length > 0,
@@ -70,5 +82,6 @@ describe("two protocol channels over one SSH session", () => {
         // Re-verify both the terminal and explorer listing remain concurrently present
         expect(await resizeHandle.isDisplayed()).to.equal(true);
         expect((await $$("[data-entry-row='true']")).length).to.be.greaterThan(0);
+        expect((await $$("[data-testid='linked-explorer-error']")).length).to.equal(0);
     });
 });
