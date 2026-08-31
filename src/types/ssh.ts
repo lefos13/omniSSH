@@ -171,6 +171,75 @@ export interface ImportResult {
   errors: string[];
 }
 
+/* Termius IPC exposes only bounded metadata and opaque identifiers. Credential
+ * material is deliberately absent from these frontend contracts and remains
+ * inside the Rust preview/commit workflow. */
+export interface TermiusPreviewRequest {
+  source_path?: string | null;
+  metadata_only: boolean;
+}
+
+export interface TermiusCommitRequest {
+  preview_token: string;
+  selected_ids: string[];
+  include_credentials: boolean;
+  credentials_confirmed: boolean;
+}
+
+export interface TermiusHostPreview {
+  id: string;
+  label: string;
+  address: string;
+  username: string;
+  port: number;
+  group_id: string | null;
+  notes: string | null;
+  startup_command: string | null;
+  start_directory: string | null;
+  key_path: string | null;
+  proxy: string | null;
+  credential_available: boolean;
+  has_password: boolean;
+  has_private_key: boolean;
+  already_exists: boolean;
+  warnings: string[];
+}
+
+export interface TermiusGroupPreview {
+  id: string;
+  name: string;
+  host_count: number;
+}
+
+export interface TermiusPreviewCounts {
+  hosts: number;
+  groups: number;
+  credential_available: number;
+  already_exists: number;
+}
+
+export interface TermiusPreviewResponse {
+  preview_token: string;
+  metadata_only: boolean;
+  hosts: TermiusHostPreview[];
+  groups: TermiusGroupPreview[];
+  counts: TermiusPreviewCounts;
+  warnings: string[];
+}
+
+export interface TermiusCommitResponse {
+  imported_hosts: number;
+  imported_groups: number;
+  skipped_hosts: number;
+  credentials_stored: number;
+  warnings: string[];
+}
+
+export interface TermiusImportError {
+  kind: string;
+  message: string;
+}
+
 export type StoredCredential =
   | { type: "Password"; password: string }
   | { type: "KeyPassphrase"; passphrase: string };

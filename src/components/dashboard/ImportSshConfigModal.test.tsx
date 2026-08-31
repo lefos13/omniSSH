@@ -136,3 +136,220 @@ describe("ImportSshConfigModal — MobaXterm source", () => {
     expect((saveCall?.[1] as { entries: unknown[] }).entries).toHaveLength(1);
   });
 });
+
+/* Termius tests exercise the metadata-only default and the narrow IPC payload
+ * so credentials cannot accidentally cross the React boundary during a UI
+ * refactor. */
+describe("ImportSshConfigModal — Termius source", () => {
+  const termiusPreview = {
+    preview_token: "opaque-preview-token",
+    metadata_only: true,
+    hosts: [
+      {
+        id: "opaque-host-1",
+        label: "Production",
+        address: "prod.example",
+        username: "alice",
+        port: 22,
+        group_id: "opaque-group-1",
+        notes: "Deployment host",
+        startup_command: null,
+        start_directory: "/srv/app",
+        key_path: "/Users/alice/.ssh/id_ed25519",
+        proxy: null,
+        credential_available: true,
+        has_password: true,
+        has_private_key: false,
+        already_exists: false,
+        warnings: [],
+      },
+      {
+        id: "opaque-host-2",
+        label: "Existing",
+        address: "existing.example",
+        username: "bob",
+        port: 2222,
+        group_id: null,
+        notes: null,
+        startup_command: null,
+        start_directory: null,
+        key_path: null,
+        proxy: null,
+        credential_available: false,
+        has_password: false,
+        has_private_key: false,
+        already_exists: true,
+        warnings: ["Proxy settings were preserved but not linked automatically"],
+      },
+    ],
+    groups: [{ id: "opaque-group-1", name: "Production", host_count: 1 }],
+    counts: { hosts: 2, groups: 1, credential_available: 1, already_exists: 1 },
+    warnings: ["Some Termius records could not be read"],
+  };
+
+  beforeEach(() => {
+    invoke.mockReset();
+    dialogOpen.mockReset();
+    invoke.mockImplementation(async (command: string) => {
+      if (command === "import_preview_termius") return termiusPreview;
+      if (command === "import_commit_termius") {
+        return {
+          imported_hosts: 1,
+          imported_groups: 1,
+          skipped_hosts: 0,
+          credentials_stored: 0,
+          warnings: [],
+        };
+      }
+      return undefined;
+    });
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
+  });
+
+  it("defaults to metadata-only preview and auto-selects new opaque host ids", async () => {
+    render(<ImportSshConfigModal initialSource="termius" onClose={() => {}} onImported={() => {}} />);
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith(
+      "import_preview_termius",
+      { request: { source_path: null, metadata_only: true } },
+    ));
+    expect(screen.getByTestId("import-termius-host-opaque-host-1")).toBeInTheDocument();
+    expect(screen.getAllByRole("checkbox")[0]).toBeChecked();
+    expect(screen.getAllByRole("checkbox")[1]).not.toBeChecked();
+    expect(screen.queryByText("fixture-password")).not.toBeInTheDocument();
+    expect(screen.getByTestId("import-termius-source")).toHaveFocus();
+  });
+
+  it("requires explicit credential opt-in and confirmation before commit", async () => {
+    render(<ImportSshConfigModal initialSource="termius" onClose={() => {}} onImported={() => {}} />);
+    await screen.findByTestId("import-termius-submit");
+
+    const submit = screen.getByTestId("import-termius-submit");
+    expect(submit).toBeEnabled();
+    fireEvent.click(screen.getByTestId("import-termius-credentials"));
+    expect(submit).toBeDisabled();
+    fireEvent.click(screen.getByTestId("import-termius-credentials-confirm"));
+    expect(submit).toBeEnabled();
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith(
+      "import_commit_termius",
+      {
+        request: {
+          preview_token: "opaque-preview-token",
+          selected_ids: ["opaque-host-1"],
+          include_credentials: true,
+          credentials_confirmed: true,
+        },
+      },
+    ));
+    expect(screen.getByTestId("import-result")).toHaveFocus();
+  });
+
+  it("keeps source and browse controls locked while a commit is pending", async () => {
+    let resolveCommit!: (value: {
+      imported_hosts: number;
+      imported_groups: number;
+      skipped_hosts: number;
+      credentials_stored: number;
+      warnings: string[];
+    }) => void;
+    invoke.mockImplementation((command: string) => {
+      if (command === "import_preview_termius") return Promise.resolve(termiusPreview);
+      if (command === "import_commit_termius") {
+        return new Promise((resolve) => { resolveCommit = resolve; });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    render(<ImportSshConfigModal initialSource="termius" onClose={() => {}} onImported={() => {}} />);
+    await screen.findByTestId("import-termius-host-opaque-host-1");
+    fireEvent.click(screen.getByTestId("import-termius-submit"));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith(
+      "import_commit_termius",
+      expect.anything(),
+    ));
+
+    expect(screen.getByTestId("import-ssh-config-source")).toBeDisabled();
+    expect(screen.getByTestId("import-mobaxterm-source")).toBeDisabled();
+    expect(screen.getByTestId("import-termius-source")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Browse" })).toBeDisabled();
+
+    resolveCommit({
+      imported_hosts: 1,
+      imported_groups: 1,
+      skipped_hosts: 0,
+      credentials_stored: 0,
+      warnings: [],
+    });
+    await screen.findByTestId("import-result");
+  });
+
+  it("ignores a file dialog result after switching import sources", async () => {
+    let resolveBrowse!: (value: string) => void;
+    dialogOpen.mockImplementation(() => new Promise<string>((resolve) => {
+      resolveBrowse = resolve;
+    }));
+    invoke.mockImplementation(async (command: string) => {
+      if (command === "import_preview_termius") return termiusPreview;
+      return undefined;
+    });
+
+    render(<ImportSshConfigModal initialSource="mobaxterm" onClose={() => {}} onImported={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Browse for MobaXterm file" }));
+    fireEvent.click(screen.getByTestId("import-termius-source"));
+    await screen.findByTestId("import-termius-host-opaque-host-1");
+
+    resolveBrowse("/tmp/stale-mobaxterm.ini");
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(invoke).not.toHaveBeenCalledWith(
+      "import_parse_mobaxterm",
+      { path: "/tmp/stale-mobaxterm.ini" },
+    );
+  });
+
+  it("commits selected opaque ids without any credential fields", async () => {
+    render(<ImportSshConfigModal initialSource="termius" onClose={() => {}} onImported={() => {}} />);
+    await screen.findByTestId("import-termius-submit");
+    fireEvent.click(screen.getAllByRole("checkbox")[0]);
+    fireEvent.click(screen.getAllByRole("checkbox")[1]);
+    fireEvent.click(screen.getByTestId("import-termius-submit"));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith(
+      "import_commit_termius",
+      {
+        request: {
+          preview_token: "opaque-preview-token",
+          selected_ids: ["opaque-host-2"],
+          include_credentials: false,
+          credentials_confirmed: false,
+        },
+      },
+    ));
+    const commitPayload = invoke.mock.calls.find((call) => call[0] === "import_commit_termius")?.[1] as Record<string, unknown>;
+    const requestKeys = JSON.stringify(commitPayload).match(/"([^"\\]+)"\s*:/g) ?? [];
+    expect(requestKeys.join(" ")).not.toMatch(/password|private_key|passphrase|secret/i);
+  });
+
+  it("clears an expired preview and asks the user to scan again", async () => {
+    invoke.mockImplementation(async (command: string) => {
+      if (command === "import_preview_termius") return termiusPreview;
+      if (command === "import_commit_termius") throw { kind: "preview_expired", message: "Termius import preview expired" };
+      return undefined;
+    });
+    render(<ImportSshConfigModal initialSource="termius" onClose={() => {}} onImported={() => {}} />);
+    await screen.findByTestId("import-termius-submit");
+    fireEvent.click(screen.getByTestId("import-termius-submit"));
+
+    expect(await screen.findByText(/preview expired/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("import-termius-host-opaque-host-1")).not.toBeInTheDocument();
+    expect(screen.getByTestId("import-termius-rescan")).toBeInTheDocument();
+  });
+
+  it("explains that Termius must be closed when the source is locked", async () => {
+    invoke.mockRejectedValue({ kind: "source_running", message: "Termius must be closed before importing" });
+    render(<ImportSshConfigModal initialSource="termius" onClose={() => {}} onImported={() => {}} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/close Termius completely/i);
+  });
+});
