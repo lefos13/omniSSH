@@ -56,7 +56,7 @@ pub fn save_imported_hosts(
     // Seeded with pre-existing groups so identical group paths reuse existing groups.
     let mut group_cache: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
-    let existing_groups = db.list_groups().unwrap_or_default();
+    let existing_groups = db.list_groups()?;
     let mut next_sort_order: i32 = existing_groups
         .iter()
         .map(|g| g.sort_order)
@@ -144,7 +144,7 @@ pub fn save_imported_hosts(
             startup_command: entry.startup_command.clone(),
             proxy_jump: entry.proxy_jump.clone(),
             proxy_jump_host_id: None,
-            start_directory: None,
+            start_directory: entry.start_directory.clone(),
             keep_alive_interval: entry.keep_alive_interval,
             default_shell: None,
             font_size: None,
@@ -476,6 +476,7 @@ mod tests {
             group_path: None,
             startup_command: None,
             notes: None,
+            start_directory: None,
         }
     }
 
@@ -525,6 +526,25 @@ mod tests {
 
         let error = save_imported_hosts(&fixture.db, &[]).expect_err("host read must fail");
         assert!(error.to_string().contains("no such table"));
+    }
+
+    /* A missing group index must stop the batch before a host is written;
+     * falling back to an empty group list would lose the requested grouping. */
+    #[test]
+    fn propagates_group_index_errors_without_writing_hosts() {
+        let fixture = test_db();
+        let connection =
+            rusqlite::Connection::open(fixture.path.join("anyscp.db")).expect("open test database");
+        connection
+            .execute_batch("DROP TABLE host_groups")
+            .expect("drop group table");
+
+        let mut entry = sample_import_entry("must-not-save");
+        entry.group_path = Some("Imported".to_string());
+        let error = save_imported_hosts(&fixture.db, &[entry]).expect_err("group read must fail");
+
+        assert!(error.to_string().contains("no such table"));
+        assert!(fixture.db.list_hosts().expect("list hosts").is_empty());
     }
 
     #[test]
@@ -635,6 +655,7 @@ mod tests {
         assert!(hosts[0].group_id.is_none());
         assert!(hosts[0].startup_command.is_none());
         assert!(hosts[0].notes.is_none());
+        assert!(hosts[0].start_directory.is_none());
     }
 
     #[test]
@@ -643,6 +664,7 @@ mod tests {
         let mut h = sample_import_entry("devbox");
         h.startup_command = Some("tmux attach || tmux".to_string());
         h.notes = Some("Development jump machine".to_string());
+        h.start_directory = Some("/srv/www".to_string());
 
         let result = save_imported_hosts(&fixture.db, &[h]).expect("save_imported_hosts");
         assert_eq!(result.imported, 1);
@@ -654,6 +676,7 @@ mod tests {
             Some("tmux attach || tmux")
         );
         assert_eq!(hosts[0].notes.as_deref(), Some("Development jump machine"));
+        assert_eq!(hosts[0].start_directory.as_deref(), Some("/srv/www"));
     }
 
     #[test]
@@ -704,6 +727,7 @@ mod tests {
         assert!(entry.group_path.is_none());
         assert!(entry.startup_command.is_none());
         assert!(entry.notes.is_none());
+        assert!(entry.start_directory.is_none());
 
         let json_camel_case = r#"{
             "host_alias": "srv2",
@@ -712,12 +736,14 @@ mod tests {
             "port": 2222,
             "groupPath": "Cloud / AWS",
             "startupCommand": "bash",
-            "notes": "EC2 instance"
+            "notes": "EC2 instance",
+            "startDirectory": "/srv/app"
         }"#;
         let entry_camel: SshConfigImportEntry =
             serde_json::from_str(json_camel_case).expect("deserialize camelCase");
         assert_eq!(entry_camel.group_path.as_deref(), Some("Cloud / AWS"));
         assert_eq!(entry_camel.startup_command.as_deref(), Some("bash"));
         assert_eq!(entry_camel.notes.as_deref(), Some("EC2 instance"));
+        assert_eq!(entry_camel.start_directory.as_deref(), Some("/srv/app"));
     }
 }

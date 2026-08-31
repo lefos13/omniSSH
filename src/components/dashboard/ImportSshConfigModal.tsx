@@ -31,6 +31,7 @@ export function toImportEntry(entry: SshConfigEntry): SshConfigImportEntry {
     group_path: entry.group_path ?? entry.groupPath ?? null,
     startup_command: entry.startup_command ?? entry.startupCommand ?? null,
     notes: entry.notes ?? null,
+    start_directory: entry.start_directory ?? entry.startDirectory ?? null,
   };
 }
 

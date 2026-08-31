@@ -33,6 +33,8 @@ pub struct SshConfigEntry {
     pub notes: Option<String>,
     #[serde(default)]
     pub warnings: Vec<String>,
+    #[serde(default)]
+    pub start_directory: Option<String>,
 }
 
 pub type MobaXtermEntry = SshConfigEntry;
@@ -55,6 +57,8 @@ pub struct SshConfigImportEntry {
     pub startup_command: Option<String>,
     #[serde(default)]
     pub notes: Option<String>,
+    #[serde(default, alias = "startDirectory")]
+    pub start_directory: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,6 +167,7 @@ pub fn parse_ssh_config(
             startup_command: None,
             notes: None,
             warnings: Vec::new(),
+            start_directory: None,
         });
     }
 
@@ -285,7 +290,9 @@ mod tests {
         let result = tracing::subscriber::with_default(subscriber, || {
             parse_ssh_config(config_path.to_str(), &[])
         });
-        assert!(result.is_ok());
+        let entries = result.expect("parse SSH config");
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].start_directory.is_none());
 
         let logged = String::from_utf8(output.lock().expect("capture lock").clone())
             .expect("UTF-8 log output");

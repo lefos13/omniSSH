@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::Read;
+use std::path::{Path, PathBuf};
 
 use crate::types::SshError;
 
@@ -27,14 +28,16 @@ pub fn parse_mobaxterm(
         .take((MAX_MOBAXTERM_FILE_BYTES + 1) as u64)
         .read_to_end(&mut bytes)
         .map_err(|_| SshError::IoError("Cannot read MobaXterm import file".to_string()))?;
-    parse_mobaxterm_bytes(&bytes, existing_hosts)
+    parse_mobaxterm_with_source_root(&bytes, existing_hosts, source_drive_root(path).as_deref())
 }
 
-/// Parse MobaXterm file bytes. This is public for deterministic parser tests;
-/// production callers should use [`parse_mobaxterm`] so Rust owns file reads.
-pub fn parse_mobaxterm_bytes(
+/* Resolve portable MobaXterm key markers using the selected file's drive when
+ * possible, while leaving the original marker available as provenance when
+ * the path does not identify a drive root. */
+pub fn parse_mobaxterm_with_source_root(
     bytes: &[u8],
     existing_hosts: &[(String, String, u16)],
+    source_drive_root: Option<&Path>,
 ) -> Result<Vec<SshConfigEntry>, SshError> {
     if bytes.len() > MAX_MOBAXTERM_FILE_BYTES {
         return Err(SshError::IoError(
@@ -43,7 +46,26 @@ pub fn parse_mobaxterm_bytes(
     }
 
     let text = decode_mobaxterm_bytes(bytes)?;
-    parse_bookmark_sections(&text, existing_hosts)
+    parse_bookmark_sections(&text, existing_hosts, source_drive_root)
+}
+
+/// Parse MobaXterm file bytes. This is public for deterministic parser tests;
+/// production callers should use [`parse_mobaxterm`] so Rust owns file reads.
+#[allow(dead_code)]
+pub fn parse_mobaxterm_bytes(
+    bytes: &[u8],
+    existing_hosts: &[(String, String, u16)],
+) -> Result<Vec<SshConfigEntry>, SshError> {
+    parse_mobaxterm_with_source_root(bytes, existing_hosts, None)
+}
+
+fn source_drive_root(path: &str) -> Option<PathBuf> {
+    let path = path.replace('/', "\\");
+    let bytes = path.as_bytes();
+    if bytes.len() >= 3 && bytes[1] == b':' && bytes[2] == b'\\' {
+        return Some(PathBuf::from(&path[..3]));
+    }
+    None
 }
 
 fn decode_mobaxterm_bytes(bytes: &[u8]) -> Result<String, SshError> {
@@ -98,6 +120,7 @@ fn cp1252_codepoint(byte: u8) -> u32 {
 fn parse_bookmark_sections(
     text: &str,
     existing_hosts: &[(String, String, u16)],
+    source_drive_root: Option<&Path>,
 ) -> Result<Vec<SshConfigEntry>, SshError> {
     let existing_keys: HashSet<(String, String, u16)> = existing_hosts.iter().cloned().collect();
     let mut seen_keys = HashSet::new();
@@ -142,7 +165,8 @@ fn parse_bookmark_sections(
             continue;
         }
 
-        let Some(mut entry) = parse_session_record(key, value, current_group_path.as_deref())
+        let Some(mut entry) =
+            parse_session_record(key, value, current_group_path.as_deref(), source_drive_root)
         else {
             continue;
         };
@@ -199,6 +223,7 @@ fn parse_session_record(
     label: &str,
     encoded: &str,
     group_path: Option<&str>,
+    source_drive_root: Option<&Path>,
 ) -> Option<SshConfigEntry> {
     let encoded = encoded
         .strip_prefix("; logout")
@@ -222,8 +247,8 @@ fn parse_session_record(
         .collect::<Vec<_>>();
     let session_type = fields.first()?.trim();
     match session_type {
-        "0" => parse_ssh_record(label, &fields, group_path, comments),
-        "7" => parse_sftp_record(label, &fields, group_path, comments),
+        "0" => parse_ssh_record(label, &fields, group_path, comments, source_drive_root),
+        "7" => parse_sftp_record(label, &fields, group_path, comments, source_drive_root),
         _ => None,
     }
 }
@@ -233,6 +258,7 @@ fn parse_ssh_record(
     fields: &[&str],
     group_path: Option<&str>,
     comments: &str,
+    source_drive_root: Option<&Path>,
 ) -> Option<SshConfigEntry> {
     let hostname = required_field(fields, 1)?;
     let user = normalize_username(field(fields, 3));
@@ -247,7 +273,11 @@ fn parse_ssh_record(
         hostname: Some(hostname.to_string()),
         user: Some(user),
         port: Some(port),
-        identity_file: nonempty_field(fields, 14),
+        identity_file: resolve_key_path(
+            nonempty_field(fields, 14),
+            source_drive_root,
+            &mut warnings,
+        ),
         proxy_jump,
         keep_alive_interval: None,
         is_pattern: false,
@@ -256,6 +286,7 @@ fn parse_ssh_record(
         startup_command: decode_optional_value(field(fields, 7)),
         notes: decode_optional_value(comments),
         warnings,
+        start_directory: None,
     })
 }
 
@@ -264,6 +295,7 @@ fn parse_sftp_record(
     fields: &[&str],
     group_path: Option<&str>,
     comments: &str,
+    source_drive_root: Option<&Path>,
 ) -> Option<SshConfigEntry> {
     let hostname = required_field(fields, 1)?;
     let mut warnings = Vec::new();
@@ -275,7 +307,11 @@ fn parse_sftp_record(
         hostname: Some(hostname.to_string()),
         user: Some(normalize_username(field(fields, 3))),
         port: Some(port),
-        identity_file: nonempty_field(fields, 9),
+        identity_file: resolve_key_path(
+            nonempty_field(fields, 9),
+            source_drive_root,
+            &mut warnings,
+        ),
         proxy_jump: None,
         keep_alive_interval: None,
         is_pattern: false,
@@ -284,6 +320,7 @@ fn parse_sftp_record(
         startup_command: None,
         notes: decode_optional_value(comments),
         warnings,
+        start_directory: decode_optional_value(field(fields, 6)),
     })
 }
 
@@ -299,6 +336,38 @@ fn required_field<'a>(fields: &'a [&str], index: usize) -> Option<&'a str> {
 fn nonempty_field(fields: &[&str], index: usize) -> Option<String> {
     let value = field(fields, index);
     (!value.is_empty()).then(|| value.to_string())
+}
+
+/* Portable `_CurrentDrive_` markers are resolved only when the selected file
+ * identifies a Windows drive. Otherwise the original path stays visible as
+ * provenance and a static warning tells the user it needs correction. */
+fn resolve_key_path(
+    value: Option<String>,
+    source_drive_root: Option<&Path>,
+    warnings: &mut Vec<String>,
+) -> Option<String> {
+    let value = value?;
+    let marker = "_CurrentDrive_";
+    let Some(prefix) = value.get(..marker.len()) else {
+        return Some(value);
+    };
+    if !prefix.eq_ignore_ascii_case(marker) {
+        return Some(value);
+    }
+    let remainder = &value[marker.len()..];
+    let Some(root) = source_drive_root else {
+        add_warning(
+            warnings,
+            "Portable MobaXterm key path uses _CurrentDrive_; correct the key path before connecting.",
+        );
+        return Some(value);
+    };
+    let remainder = remainder.trim_start_matches(['\\', '/']);
+    let root = root
+        .to_string_lossy()
+        .trim_end_matches(['\\', '/'])
+        .to_string();
+    Some(format!("{root}\\{remainder}"))
 }
 
 fn normalize_username(value: &str) -> String {
@@ -425,7 +494,12 @@ fn add_warning(warnings: &mut Vec<String>, warning: &'static str) {
  * MobaXterm's versioned bookmark record format before the parser is added. */
 #[cfg(test)]
 mod tests {
-    use super::{parse_mobaxterm_bytes, MAX_MOBAXTERM_ENTRIES};
+    use std::path::Path;
+
+    use super::{
+        parse_mobaxterm_bytes, parse_mobaxterm_with_source_root, source_drive_root,
+        MAX_MOBAXTERM_ENTRIES,
+    };
 
     const SSH_RECORD: &str =
         "#109#0%target.example%2222%alice%%-1%-1%echo __PTVIRG__ ready%gateway.example%2200%jump%%-1%0%C:\\keys\\target.ppk%gateway-key%0%0%0%0%0%0%0%0%0%0%0%0%0%0%0%0%0%0%0%0#MobaFont%10%0%0%0%15%236,236,236%30,30,30%180,180,192%0%-1%0%%xterm%-1%0%_Std_Colors_0_%80%24%0%0%-1#0#production server#-1";
@@ -462,7 +536,7 @@ mod tests {
     fn keeps_username_less_sftp_sessions_as_root_and_reads_cp1252() {
         let mut contents = b"[Bookmarks]\r\nSubRep=\r\nSftp ".to_vec();
         contents.push(0x80);
-        contents.extend_from_slice(b"=#140#7%files.example%22%%%0%0%/srv/files%0%C:\\keys\\files.ppk%0%0%0%0%0%0%0%0#MobaFont%10%0%0%0%15%0%0%0%0%0%0%0%0%0%0#0#Caf");
+        contents.extend_from_slice(b"=#140#7%files.example%22%%%0%/srv/files%0%0%C:\\keys\\files.ppk%0%0%0%0%0%0%0%0#MobaFont%10%0%0%0%15%0%0%0%0%0%0%0%0%0%0#0#Caf");
         contents.push(0xe9);
         contents.extend_from_slice(b"#-1\r\n");
         let entries = parse_mobaxterm_bytes(&contents, &[]).expect("parse CP1252");
@@ -472,6 +546,7 @@ mod tests {
         assert_eq!(entries[0].hostname.as_deref(), Some("files.example"));
         assert_eq!(entries[0].user.as_deref(), Some("root"));
         assert_eq!(entries[0].port, Some(22));
+        assert_eq!(entries[0].start_directory.as_deref(), Some("/srv/files"));
         assert_eq!(entries[0].notes.as_deref(), Some("Café"));
         assert_eq!(
             entries[0].identity_file.as_deref(),
@@ -550,5 +625,48 @@ mod tests {
 
         let error = parse_mobaxterm_bytes(contents.as_bytes(), &[]).expect_err("entry limit");
         assert!(error.to_string().contains("too many sessions"));
+    }
+
+    #[test]
+    fn resolves_current_drive_key_against_selected_windows_file() {
+        let mut fields = vec!["0", "target.example", "22", "root"];
+        fields.resize(15, "");
+        fields[14] = r"_CurrentDrive_\keys\target.ppk";
+        let record = format!("#109#{}#MobaFont#0#-1", fields.join("%"));
+        let contents = format!("[Bookmarks]\nTarget={record}\n");
+        let entries =
+            parse_mobaxterm_with_source_root(contents.as_bytes(), &[], Some(Path::new(r"C:\")))
+                .expect("parse marker");
+        assert_eq!(
+            entries[0].identity_file.as_deref(),
+            Some(r"C:\keys\target.ppk")
+        );
+    }
+
+    #[test]
+    fn derives_drive_root_from_selected_windows_file_path() {
+        assert_eq!(
+            source_drive_root(r"D:\portable\MobaXterm.ini").as_deref(),
+            Some(Path::new(r"D:\"))
+        );
+        assert!(source_drive_root("/tmp/MobaXterm.ini").is_none());
+    }
+
+    #[test]
+    fn preserves_current_drive_key_when_source_root_is_unavailable() {
+        let mut fields = vec!["0", "target.example", "22", "root"];
+        fields.resize(15, "");
+        fields[14] = r"_CurrentDrive_\keys\target.ppk";
+        let record = format!("#109#{}#MobaFont#0#-1", fields.join("%"));
+        let contents = format!("[Bookmarks]\nTarget={record}\n");
+        let entries = parse_mobaxterm_bytes(contents.as_bytes(), &[]).expect("parse marker");
+        assert_eq!(
+            entries[0].identity_file.as_deref(),
+            Some(r"_CurrentDrive_\keys\target.ppk")
+        );
+        assert!(entries[0]
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("_CurrentDrive_")));
     }
 }
