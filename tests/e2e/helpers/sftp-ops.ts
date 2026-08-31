@@ -3,8 +3,64 @@
 
 /** Wait until the explorer toolbar is rendered (refresh button visible). */
 export async function waitForExplorer(timeoutMs = 30_000): Promise<void> {
-    const refresh = await $("[data-testid='explorer-refresh']");
-    await refresh.waitForDisplayed({ timeout: timeoutMs });
+    await browser.waitUntil(
+        async () => {
+            const refreshes = await $$('[data-testid="explorer-refresh"]');
+            for (const refresh of refreshes) {
+                if (await refresh.isDisplayed()) return true;
+            }
+            return false;
+        },
+        { timeout: timeoutMs, timeoutMsg: "no visible explorer toolbar rendered" },
+    );
+}
+
+/*
+ * AppShell keeps explorer tabs mounted while switching tabs, so unscoped
+ * selectors can read a hidden tab's rows or path. Resolve the visible session
+ * container first and let multi-tab tests assert the active explorer's state.
+ */
+export async function waitForActiveExplorer(
+    timeoutMs = 30_000,
+): Promise<WebdriverIO.Element> {
+    await browser.waitUntil(
+        async () => {
+            const containers = await $$('[data-explorer-session-id]');
+            for (const container of containers) {
+                if (await container.isDisplayed()) return true;
+            }
+            return false;
+        },
+        {
+            timeout: timeoutMs,
+            timeoutMsg: "no visible explorer session container rendered",
+        },
+    );
+
+    const containers = await $$('[data-explorer-session-id]');
+    for (const container of containers) {
+        if (await container.isDisplayed()) return container;
+    }
+    throw new Error("visible explorer session container disappeared");
+}
+
+/** Wait for an entry inside the currently visible explorer tab or panel. */
+export async function waitForActiveEntry(
+    name: string,
+    timeoutMs = 10_000,
+): Promise<WebdriverIO.Element> {
+    const container = await waitForActiveExplorer(timeoutMs);
+    const entry = await container.$(`[data-entry-name='${name}']`);
+    await entry.waitForExist({ timeout: timeoutMs });
+    return entry;
+}
+
+/** Read the last breadcrumb segment from the currently visible explorer. */
+export async function activeExplorerPath(timeoutMs = 10_000): Promise<string> {
+    const container = await waitForActiveExplorer(timeoutMs);
+    const buttons = await container.$$('[aria-label="Current path"] button');
+    const last = buttons.at(-1);
+    return last ? await last.getText() : "";
 }
 
 /** Find a directory entry by its display name. Waits up to timeoutMs. */

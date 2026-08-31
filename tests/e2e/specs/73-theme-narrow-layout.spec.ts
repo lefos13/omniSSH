@@ -6,6 +6,7 @@
 
 import { expect } from "chai";
 import { resetApp } from "../helpers/reset.js";
+import { waitForDashboard } from "../helpers/dashboard.js";
 import { clickCollapseToggle, sidebarExpanded } from "../helpers/sidebar.js";
 
 async function openSettingsAppearance(): Promise<void> {
@@ -21,6 +22,7 @@ async function openSettingsAppearance(): Promise<void> {
 describe("theme and narrow layout", () => {
     beforeEach(async () => {
         await resetApp();
+        await waitForDashboard();
     });
 
     it("unconditionally switches theme modes and supports narrow layout viewport without overflow", async () => {
@@ -56,6 +58,8 @@ describe("theme and narrow layout", () => {
         const originalSize = await browser.getWindowSize();
         try {
             await browser.setWindowSize(720, 600);
+            const viewport = await browser.getWindowSize();
+            expect(viewport.width).to.equal(720);
 
             // Assert no horizontal scroll overflow on document at 720px width
             const noHorizontalOverflow = await browser.execute(() => {

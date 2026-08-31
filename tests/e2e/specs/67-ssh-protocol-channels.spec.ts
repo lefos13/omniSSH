@@ -19,6 +19,7 @@ import {
     waitForAnyTerminal,
     waitForTerminalText,
 } from "../helpers/terminal.js";
+import { activeExplorerPath, waitForActiveExplorer } from "../helpers/sftp-ops.js";
 
 const SSHD_PASS_HOST = process.env.SSHD_PASS_HOST ?? "sshd-pass";
 const SSHD_PASS_PORT = Number(process.env.SSHD_PASS_PORT ?? 2222);
@@ -56,24 +57,25 @@ describe("two protocol channels over one SSH session", () => {
         await resizeHandle.waitForDisplayed({ timeout: 15_000 });
         expect(await resizeHandle.isDisplayed()).to.equal(true);
 
-        // Explicitly wait for connected transport container (sftp)
-        const linkedExplorerContainer = await $("[data-explorer-transport='sftp']");
-        await linkedExplorerContainer.waitForDisplayed({
-            timeout: 15_000,
-            timeoutMsg: "data-explorer-transport='sftp' not found on linked panel",
-        });
-        expect(await linkedExplorerContainer.isDisplayed()).to.equal(true);
+        // Explicitly wait for the visible connected transport container (sftp).
+        const linkedExplorerContainer = await waitForActiveExplorer();
+        expect(await linkedExplorerContainer.getAttribute("data-explorer-transport")).to.equal("sftp");
+        const linkedSessionId = await linkedExplorerContainer.getAttribute("data-explorer-session-id");
+        expect(linkedSessionId).to.be.a("string").and.not.be.empty;
+        expect(linkedSessionId).not.to.equal(sessionId);
 
         // Verify no error banner in linked explorer
-        expect((await $$("[data-testid='linked-explorer-error']")).length).to.equal(0);
+        expect((await linkedExplorerContainer.$$('[data-testid="linked-explorer-error"]')).length).to.equal(0);
 
         // Verify the linked explorer protocol channel completes listing
         await browser.waitUntil(
-            async () => (await $$("[data-entry-row='true']")).length > 0,
+            async () => (await linkedExplorerContainer.$$('[data-entry-row="true"]')).length > 0,
             { timeout: 15_000, timeoutMsg: "linked explorer directory listing never rendered" },
         );
-        const entries = await $$("[data-entry-row='true']");
+        const entries = await linkedExplorerContainer.$$('[data-entry-row="true"]');
         expect(entries.length).to.be.greaterThan(0);
+        expect(await entries[0].getAttribute("data-entry-name")).to.match(/\S/);
+        expect(await activeExplorerPath()).to.equal("config");
 
         // Run terminal commands concurrently while linked explorer is open
         const marker = `multiplex-${Date.now()}`;
@@ -81,7 +83,8 @@ describe("two protocol channels over one SSH session", () => {
 
         // Re-verify both the terminal and explorer listing remain concurrently present
         expect(await resizeHandle.isDisplayed()).to.equal(true);
-        expect((await $$("[data-entry-row='true']")).length).to.be.greaterThan(0);
-        expect((await $$("[data-testid='linked-explorer-error']")).length).to.equal(0);
+        expect(await linkedExplorerContainer.getAttribute("data-explorer-session-id")).to.equal(linkedSessionId);
+        expect((await linkedExplorerContainer.$$('[data-entry-row="true"]')).length).to.be.greaterThan(0);
+        expect((await linkedExplorerContainer.$$('[data-testid="linked-explorer-error"]')).length).to.equal(0);
     });
 });

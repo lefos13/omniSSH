@@ -21,7 +21,11 @@ import {
     waitForAnyTerminal,
     waitForTerminalText,
 } from "../helpers/terminal.js";
-import { openEntry } from "../helpers/sftp-ops.js";
+import {
+    activeExplorerPath,
+    openEntry,
+    waitForActiveExplorer,
+} from "../helpers/sftp-ops.js";
 
 const SSHD_PASS_HOST = process.env.SSHD_PASS_HOST ?? "sshd-pass";
 const SSHD_PASS_PORT = Number(process.env.SSHD_PASS_PORT ?? 2222);
@@ -56,10 +60,15 @@ describe("OSC 7 CWD follow and explicit cd", () => {
 
         const syncStatusBtn = await $("[data-testid='linked-explorer-sync-status']");
         await syncStatusBtn.waitForDisplayed({ timeout: 15_000 });
+        const explorerContainer = await waitForActiveExplorer();
+        expect(await explorerContainer.getAttribute("data-explorer-transport")).to.equal("sftp");
+        const explorerSessionId = await explorerContainer.getAttribute("data-explorer-session-id");
+        expect(explorerSessionId).to.be.a("string").and.not.be.empty;
+        expect((await explorerContainer.$$('[data-testid="linked-explorer-error"]')).length).to.equal(0);
 
         // Wait for directory rows in linked explorer
         await browser.waitUntil(
-            async () => (await $$("[data-entry-row='true']")).length > 0,
+            async () => (await explorerContainer.$$('[data-entry-row="true"]')).length > 0,
             { timeout: 15_000, timeoutMsg: "linked explorer rows did not load" },
         );
 
@@ -70,7 +79,7 @@ describe("OSC 7 CWD follow and explicit cd", () => {
         await rootCrumb.click();
 
         await browser.waitUntil(
-            async () => (await $$("[data-entry-row='true']")).length > 0,
+            async () => (await explorerContainer.$$('[data-entry-row="true"]')).length > 0,
             { timeout: 15_000 },
         );
 
@@ -79,14 +88,7 @@ describe("OSC 7 CWD follow and explicit cd", () => {
 
         // Wait until linked explorer breadcrumb indicates /tmp
         await browser.waitUntil(
-            async () => {
-                const pathBarButtons = await $$("[aria-label='Current path'] button");
-                for (const btn of pathBarButtons) {
-                    const text = await btn.getText();
-                    if (text === "tmp") return true;
-                }
-                return false;
-            },
+            async () => (await activeExplorerPath()) === "tmp",
             { timeout: 10_000, timeoutMsg: "linked explorer did not enter /tmp" },
         );
 
@@ -121,14 +123,7 @@ describe("OSC 7 CWD follow and explicit cd", () => {
 
         // Verify OSC 7 hook caused the linked explorer breadcrumb/path to update to uniqueDirName
         await browser.waitUntil(
-            async () => {
-                const pathBarButtons = await $$("[aria-label='Current path'] button");
-                for (const btn of pathBarButtons) {
-                    const text = await btn.getText();
-                    if (text === uniqueDirName) return true;
-                }
-                return false;
-            },
+            async () => (await activeExplorerPath()) === uniqueDirName,
             {
                 timeout: 15_000,
                 timeoutMsg: `linked explorer breadcrumb did not update to ${uniqueDirName} via OSC 7 follow`,
@@ -137,5 +132,7 @@ describe("OSC 7 CWD follow and explicit cd", () => {
 
         // Verify the synced indicator shows active status
         expect(await syncStatusBtn.getText()).to.include("Synced");
+        expect(await explorerContainer.getAttribute("data-explorer-session-id")).to.equal(explorerSessionId);
+        expect((await explorerContainer.$$('[data-testid="linked-explorer-error"]')).length).to.equal(0);
     });
 });

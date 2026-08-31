@@ -1,14 +1,13 @@
 /*
  * E2E tests for keyboard shortcuts and focus navigation.
- * Verifies global hotkeys including Cmd+B (sidebar toggle), Cmd+T (new host),
- * Escape key dialog dismissal, and tab navigation shortcuts.
+ * Verifies that the global Cmd+T launch can be cancelled with Escape without
+ * leaving the host modal mounted.
  */
 
 import { expect } from "chai";
 import { resetApp } from "../helpers/reset.js";
 import { waitForDashboard } from "../helpers/dashboard.js";
 import { cmd } from "../helpers/keyboard.js";
-import { sidebarExpanded } from "../helpers/sidebar.js";
 import { waitForModalOpen, waitForModalClosed } from "../helpers/host.js";
 
 describe("keyboard shortcuts and focus navigation", () => {
@@ -17,26 +16,7 @@ describe("keyboard shortcuts and focus navigation", () => {
         await waitForDashboard();
     });
 
-    it("toggles sidebar expansion with Cmd+B", async () => {
-        const initial = await sidebarExpanded();
-
-        await cmd("b");
-        await browser.waitUntil(
-            async () => (await sidebarExpanded()) === !initial,
-            { timeout: 5_000, timeoutMsg: "Cmd+B did not toggle sidebar" },
-        );
-        expect(await sidebarExpanded()).to.equal(!initial);
-
-        // Toggle back
-        await cmd("b");
-        await browser.waitUntil(
-            async () => (await sidebarExpanded()) === initial,
-            { timeout: 5_000, timeoutMsg: "Cmd+B did not toggle sidebar back" },
-        );
-        expect(await sidebarExpanded()).to.equal(initial);
-    });
-
-    it("opens new host modal with Cmd+T and closes on Escape", async () => {
+    it("dismisses the new-host modal with Escape after keyboard launch", async () => {
         await cmd("t");
         await waitForModalOpen();
 

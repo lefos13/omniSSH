@@ -18,7 +18,11 @@ import {
 } from "../helpers/host.js";
 import { waitForAnyTerminal, waitForTerminalText } from "../helpers/terminal.js";
 import { tabCountOfType, waitForTabCount } from "../helpers/tabs.js";
-import { waitForExplorer } from "../helpers/sftp-ops.js";
+import {
+    activeExplorerPath,
+    waitForActiveExplorer,
+    waitForExplorer,
+} from "../helpers/sftp-ops.js";
 
 const SSHD_PASS_HOST = process.env.SSHD_PASS_HOST ?? "sshd-pass";
 const SSHD_PASS_PORT = Number(process.env.SSHD_PASS_PORT ?? 2222);
@@ -63,13 +67,18 @@ describe("linked and standalone explorer coexistence", () => {
         await resizeHandle.waitForDisplayed({ timeout: 15_000 });
 
         // Before switching away, require connected transport, entries, and absence of error
-        const linkedTransport = await $("[data-explorer-transport='sftp']");
-        await linkedTransport.waitForDisplayed({ timeout: 15_000 });
-        expect((await $$("[data-testid='linked-explorer-error']")).length).to.equal(0);
+        const linkedTransport = await waitForActiveExplorer();
+        expect(await linkedTransport.getAttribute("data-explorer-transport")).to.equal("sftp");
+        const linkedSessionId = await linkedTransport.getAttribute("data-explorer-session-id");
+        expect(linkedSessionId).to.be.a("string").and.not.be.empty;
+        expect((await linkedTransport.$$('[data-testid="linked-explorer-error"]')).length).to.equal(0);
         await browser.waitUntil(
-            async () => (await $$("[data-entry-row='true']")).length > 0,
+            async () => (await linkedTransport.$$('[data-entry-row="true"]')).length > 0,
             { timeout: 15_000, timeoutMsg: "linked explorer directory listing never rendered" },
         );
+        const linkedEntries = await linkedTransport.$$('[data-entry-row="true"]');
+        expect(await linkedEntries[0].getAttribute("data-entry-name")).to.match(/\S/);
+        expect(await activeExplorerPath()).to.equal("config");
 
         // 4. Switch back to Hosts dashboard and open a standalone Explorer tab
         const hostsTab = await $("[data-tab-label='Hosts']");
@@ -81,6 +90,19 @@ describe("linked and standalone explorer coexistence", () => {
         await explorerBtn.waitForClickable({ timeout: 10_000 });
         await explorerBtn.click();
         await waitForExplorer();
+
+        const standaloneExplorer = await waitForActiveExplorer();
+        expect(await standaloneExplorer.getAttribute("data-explorer-transport")).to.equal("sftp");
+        const standaloneSessionId = await standaloneExplorer.getAttribute("data-explorer-session-id");
+        expect(standaloneSessionId).to.be.a("string").and.not.be.empty;
+        expect(standaloneSessionId).not.to.equal(linkedSessionId);
+        await browser.waitUntil(
+            async () => (await standaloneExplorer.$$('[data-entry-row="true"]')).length > 0,
+            { timeout: 15_000, timeoutMsg: "standalone explorer directory listing never rendered" },
+        );
+        const standaloneEntries = await standaloneExplorer.$$('[data-entry-row="true"]');
+        expect(await standaloneEntries[0].getAttribute("data-entry-name")).to.match(/\S/);
+        expect(await activeExplorerPath()).to.equal("config");
 
         // 5. Verify tab count: Hosts + Terminal + Standalone SFTP
         await waitForTabCount(3);
@@ -96,24 +118,30 @@ describe("linked and standalone explorer coexistence", () => {
         await activeResizeHandle.waitForDisplayed({ timeout: 10_000 });
         expect(await activeResizeHandle.isDisplayed()).to.equal(true);
 
-        const reLinkedTransport = await $("[data-explorer-transport='sftp']");
-        await reLinkedTransport.waitForDisplayed({ timeout: 10_000 });
-        expect((await $$("[data-testid='linked-explorer-error']")).length).to.equal(0);
+        const activeLinkedExplorer = await waitForActiveExplorer();
+        expect(await activeLinkedExplorer.getAttribute("data-explorer-transport")).to.equal("sftp");
+        expect(await activeLinkedExplorer.getAttribute("data-explorer-session-id")).to.equal(linkedSessionId);
+        expect((await activeLinkedExplorer.$$('[data-testid="linked-explorer-error"]')).length).to.equal(0);
         await browser.waitUntil(
-            async () => (await $$("[data-entry-row='true']")).length > 0,
+            async () => (await activeLinkedExplorer.$$('[data-entry-row="true"]')).length > 0,
             { timeout: 15_000, timeoutMsg: "linked explorer directory listing missing after switch back" },
         );
-        expect((await $$("[data-entry-row='true']")).length).to.be.greaterThan(0);
+        expect((await activeLinkedExplorer.$$('[data-entry-row="true"]')).length).to.be.greaterThan(0);
+        expect(await activeExplorerPath()).to.equal("config");
 
         // 7. Switch to Standalone Explorer tab and verify it renders separately
         const sftpTab = await $("[data-tab-type='sftp']");
         await sftpTab.waitForClickable({ timeout: 5_000 });
         await sftpTab.click();
         await waitForExplorer();
+        const activeStandaloneExplorer = await waitForActiveExplorer();
+        expect(await activeStandaloneExplorer.getAttribute("data-explorer-transport")).to.equal("sftp");
+        expect(await activeStandaloneExplorer.getAttribute("data-explorer-session-id")).to.equal(standaloneSessionId);
         await browser.waitUntil(
-            async () => (await $$("[data-entry-row='true']")).length > 0,
+            async () => (await activeStandaloneExplorer.$$('[data-entry-row="true"]')).length > 0,
             { timeout: 15_000, timeoutMsg: "standalone explorer directory listing missing after switch back" },
         );
-        expect((await $$("[data-entry-row='true']")).length).to.be.greaterThan(0);
+        expect((await activeStandaloneExplorer.$$('[data-entry-row="true"]')).length).to.be.greaterThan(0);
+        expect(await activeExplorerPath()).to.equal("config");
     });
 });
