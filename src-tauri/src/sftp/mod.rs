@@ -163,7 +163,6 @@ pub struct TransferInfo {
 
 pub struct SftpSessionWrapper {
     pub sftp: Arc<Mutex<russh_sftp::client::SftpSession>>,
-    #[allow(dead_code)]
     pub ssh_session_id: String,
 }
 
@@ -193,8 +192,20 @@ impl SftpManager {
             .ok_or_else(|| SftpError::SessionNotFound(id.to_string()))
     }
 
-    pub fn remove_session(&self, id: &str) {
-        self.sessions.remove(id);
+    pub fn remove_session(&self, id: &str) -> Option<SftpSessionWrapper> {
+        self.sessions.remove(id).map(|(_, session)| session)
+    }
+
+    pub fn remove_sessions_for_ssh(&self, ssh_session_id: &str) -> Vec<SftpSessionWrapper> {
+        let ids: Vec<String> = self
+            .sessions
+            .iter()
+            .filter(|entry| entry.value().ssh_session_id == ssh_session_id)
+            .map(|entry| entry.key().clone())
+            .collect();
+        ids.into_iter()
+            .filter_map(|id| self.sessions.remove(&id).map(|(_, session)| session))
+            .collect()
     }
 
     pub fn insert_transfer(&self, id: String, token: CancellationToken) {

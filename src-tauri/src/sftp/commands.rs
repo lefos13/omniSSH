@@ -9,7 +9,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 
-use crate::ssh::manager::SshManager;
+use crate::ssh::manager::{ProtocolSessionKind, SshManager};
 
 use super::transfer_manager::TransferManager;
 use super::{
@@ -98,6 +98,7 @@ async fn delete_dir_recursive(
 pub async fn sftp_open(
     session_id: String,
     use_sudo: Option<bool>,
+    owns_ssh: Option<bool>,
     ssh_manager: State<'_, SshManager>,
     sftp_manager: State<'_, Arc<SftpManager>>,
 ) -> Result<String, SftpError> {
@@ -188,12 +189,19 @@ pub async fn sftp_open(
 
     // 5. Store and return a fresh ID.
     let sftp_id = uuid::Uuid::new_v4().to_string();
+    let ssh_session_id = session_id.clone();
     sftp_manager.insert_session(
         sftp_id.clone(),
         SftpSessionWrapper {
             sftp: Arc::new(tokio::sync::Mutex::new(sftp)),
             ssh_session_id: session_id,
         },
+    );
+    ssh_manager.register_protocol_session(
+        ProtocolSessionKind::Sftp,
+        sftp_id.clone(),
+        ssh_session_id,
+        owns_ssh,
     );
 
     let sudo = use_sudo.unwrap_or(false);
@@ -204,22 +212,31 @@ pub async fn sftp_open(
 
 /// Close and remove an SFTP session.
 #[tauri::command]
-#[instrument(skip(sftp_manager), fields(sftp_session_id = %sftp_session_id))]
+#[instrument(skip(sftp_manager, ssh_manager, app_handle), fields(sftp_session_id = %sftp_session_id))]
 pub async fn sftp_close(
     sftp_session_id: String,
     sftp_manager: State<'_, Arc<SftpManager>>,
+    ssh_manager: State<'_, SshManager>,
+    app_handle: AppHandle,
 ) -> Result<(), SftpError> {
-    // Grab the Arc before removing from the map.
-    let sftp_arc = {
-        let session_ref = sftp_manager.get_session(&sftp_session_id)?;
-        session_ref.sftp.clone()
-    };
-
-    sftp_manager.remove_session(&sftp_session_id);
+    /* Remove ownership bookkeeping before closing the channel so a concurrent
+     * close observes the session as gone and cannot retain a stale owner. */
+    let session = sftp_manager
+        .remove_session(&sftp_session_id)
+        .ok_or_else(|| SftpError::SessionNotFound(sftp_session_id.clone()))?;
+    let sftp_arc = session.sftp.clone();
+    let ssh_session_id = session.ssh_session_id;
+    let should_disconnect = ssh_manager
+        .remove_protocol_session(ProtocolSessionKind::Sftp, &sftp_session_id)
+        .unwrap_or(false);
 
     // Best-effort close — ignore errors (server may have already terminated).
     let sftp = sftp_arc.lock().await;
     let _ = sftp.close().await;
+
+    if should_disconnect {
+        let _ = ssh_manager.disconnect(&ssh_session_id, app_handle).await;
+    }
 
     tracing::info!(sftp_session_id = %sftp_session_id, "SFTP session closed");
     crate::telemetry::capture("sftp_closed", serde_json::json!({}));

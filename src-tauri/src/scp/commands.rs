@@ -14,7 +14,7 @@ use tauri::{AppHandle, Emitter, State};
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 
-use crate::ssh::manager::SshManager;
+use crate::ssh::manager::{ProtocolSessionKind, SshManager};
 
 use super::transfer_manager::ScpTransferManager;
 use super::{
@@ -35,6 +35,7 @@ use super::{
 #[instrument(skip(ssh_manager, scp_manager), fields(ssh_session_id = %session_id))]
 pub async fn scp_open(
     session_id: String,
+    owns_ssh: Option<bool>,
     ssh_manager: State<'_, SshManager>,
     scp_manager: State<'_, Arc<ScpManager>>,
 ) -> Result<String, ScpError> {
@@ -60,6 +61,7 @@ pub async fn scp_open(
         .unwrap_or(super::listing::Flavor::Posix);
 
     let scp_id = uuid::Uuid::new_v4().to_string();
+    let ssh_session_id = session_id.clone();
     scp_manager.insert_session(
         scp_id.clone(),
         ScpSessionWrapper {
@@ -67,6 +69,12 @@ pub async fn scp_open(
             ssh_handle: handle,
             flavor,
         },
+    );
+    ssh_manager.register_protocol_session(
+        ProtocolSessionKind::Scp,
+        scp_id.clone(),
+        ssh_session_id,
+        owns_ssh,
     );
 
     tracing::info!(scp_session_id = %scp_id, flavor = %flavor.as_str(), "SCP session opened");
@@ -77,15 +85,29 @@ pub async fn scp_open(
     Ok(scp_id)
 }
 
-/// Forget an SCP session. (No remote teardown — SCP is connectionless on top
-/// of the shared SSH session, which is closed separately.)
+/// Forget an SCP session and release the shared SSH connection when this was
+/// its last owning reference. SCP has no persistent protocol channel to close.
 #[tauri::command]
-#[instrument(skip(scp_manager), fields(scp_session_id = %scp_session_id))]
+#[instrument(skip(scp_manager, ssh_manager, app_handle), fields(scp_session_id = %scp_session_id))]
 pub async fn scp_close(
     scp_session_id: String,
     scp_manager: State<'_, Arc<ScpManager>>,
+    ssh_manager: State<'_, SshManager>,
+    app_handle: AppHandle,
 ) -> Result<(), ScpError> {
-    scp_manager.remove_session(&scp_session_id);
+    /* SCP has no persistent protocol channel, so close only removes its
+     * registration and releases an SSH connection when this was its last owner. */
+    let Some(session) = scp_manager.remove_session(&scp_session_id) else {
+        return Ok(());
+    };
+    let should_disconnect = ssh_manager
+        .remove_protocol_session(ProtocolSessionKind::Scp, &scp_session_id)
+        .unwrap_or(false);
+    if should_disconnect {
+        let _ = ssh_manager
+            .disconnect(&session.ssh_session_id, app_handle)
+            .await;
+    }
     tracing::info!(scp_session_id = %scp_session_id, "SCP session closed");
     crate::telemetry::capture("scp_closed", serde_json::json!({}));
     Ok(())

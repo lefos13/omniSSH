@@ -1,4 +1,6 @@
 use crate::db::HostDb;
+use crate::scp::ScpManager;
+use crate::sftp::SftpManager;
 use crate::ssh::keys::SshKeyInfo;
 use crate::ssh::manager::SshManager;
 use crate::types::{AuthMethod, HostConfig, SessionId, SshError};
@@ -30,6 +32,33 @@ pub enum HostHealthStatus {
 
 const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 
+/*
+ * Remove protocol wrappers before the shared SSH handle is torn down so SFTP
+ * channels can receive a best-effort close and no protocol record outlives it.
+ */
+async fn close_dependent_protocol_sessions(
+    session_id: &str,
+    ssh_manager: &SshManager,
+    sftp_manager: &Arc<SftpManager>,
+    scp_manager: &Arc<ScpManager>,
+) {
+    for session in sftp_manager.remove_sessions_for_ssh(session_id) {
+        let sftp = session.sftp.lock().await;
+        if let Err(error) = sftp.close().await {
+            tracing::debug!(
+                ssh_session_id = %session_id,
+                error = %error,
+                "SFTP channel already closed during SSH disconnect"
+            );
+        }
+    }
+
+    /* SCP opens short-lived channels per operation, so there is no retained
+     * protocol channel to close after its session record is removed. */
+    let _ = scp_manager.remove_sessions_for_ssh(session_id);
+    ssh_manager.remove_protocol_sessions_for_ssh(session_id);
+}
+
 #[tauri::command]
 pub async fn ssh_connect(
     host_config: HostConfig,
@@ -56,8 +85,12 @@ pub async fn ssh_cancel_connect(
 pub async fn ssh_disconnect(
     session_id: String,
     state: State<'_, SshManager>,
+    sftp_manager: State<'_, Arc<SftpManager>>,
+    scp_manager: State<'_, Arc<ScpManager>>,
     app_handle: AppHandle,
 ) -> Result<(), SshError> {
+    close_dependent_protocol_sessions(&session_id, &state, &sftp_manager, &scp_manager).await;
+
     let result = state.disconnect(&session_id, app_handle).await;
     if result.is_ok() {
         crate::telemetry::capture("ssh_disconnected", serde_json::json!({}));

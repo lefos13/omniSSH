@@ -3,9 +3,10 @@ use crate::types::{
 };
 use dashmap::DashMap;
 use russh::client;
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use tauri::{AppHandle, Emitter};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -36,6 +37,94 @@ struct BareConn {
     _jump_handles: Vec<client::Handle<SshClientHandler>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum ProtocolSessionKind {
+    Sftp,
+    Scp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionOwnership {
+    ssh_session_id: String,
+    owns_ssh: bool,
+}
+
+#[derive(Debug, Default)]
+struct ConnectionOwnership {
+    explorer_owned: bool,
+}
+
+/*
+ * Keep one registry for every protocol session riding an SSH connection.
+ * Per-transport inheritance remains intact, while final-reference decisions
+ * retain explorer ownership even when the owning channel closes first.
+ */
+#[derive(Debug, Default)]
+struct SessionOwnershipBook {
+    sessions: HashMap<(ProtocolSessionKind, String), SessionOwnership>,
+    connections: HashMap<String, ConnectionOwnership>,
+}
+
+impl SessionOwnershipBook {
+    fn record(
+        &mut self,
+        protocol: ProtocolSessionKind,
+        protocol_session_id: String,
+        ssh_session_id: String,
+        requested: Option<bool>,
+    ) -> SessionOwnership {
+        let owns_ssh = requested == Some(true)
+            || self.sessions.iter().any(|((kind, _), record)| {
+                *kind == protocol && record.ssh_session_id == ssh_session_id && record.owns_ssh
+            });
+        let record = SessionOwnership {
+            ssh_session_id: ssh_session_id.clone(),
+            owns_ssh,
+        };
+        self.sessions
+            .insert((protocol, protocol_session_id), record.clone());
+        self.connections
+            .entry(ssh_session_id)
+            .or_default()
+            .explorer_owned |= owns_ssh;
+        record
+    }
+
+    fn has_ssh_session(&self, ssh_session_id: &str) -> bool {
+        self.sessions
+            .values()
+            .any(|record| record.ssh_session_id == ssh_session_id)
+    }
+
+    fn remove(
+        &mut self,
+        protocol: ProtocolSessionKind,
+        protocol_session_id: &str,
+    ) -> Option<(SessionOwnership, bool)> {
+        let record = self
+            .sessions
+            .remove(&(protocol, protocol_session_id.to_string()))?;
+        let ssh_session_id = record.ssh_session_id.clone();
+        let has_references = self.has_ssh_session(&ssh_session_id);
+        let explorer_owned = self
+            .connections
+            .get(&ssh_session_id)
+            .map(|connection| connection.explorer_owned)
+            .unwrap_or(record.owns_ssh);
+        let should_disconnect = explorer_owned && !has_references;
+        if !has_references {
+            self.connections.remove(&ssh_session_id);
+        }
+        Some((record, should_disconnect))
+    }
+
+    fn remove_sessions_for_ssh(&mut self, ssh_session_id: &str) {
+        self.sessions
+            .retain(|_, record| record.ssh_session_id != ssh_session_id);
+        self.connections.remove(ssh_session_id);
+    }
+}
+
 /// Manages all active SSH sessions. Stored as Tauri managed state.
 pub struct SshManager {
     sessions: DashMap<String, SshSession>,
@@ -46,6 +135,8 @@ pub struct SshManager {
     /// running; cancelling its token aborts the attempt before any session is
     /// registered, so no ghost session or lingering handle is left behind.
     pending_connects: DashMap<String, CancellationToken>,
+    /// Ownership and reference tracking shared by SFTP and SCP sessions.
+    protocol_ownership: StdMutex<SessionOwnershipBook>,
 }
 
 impl SshManager {
@@ -54,7 +145,44 @@ impl SshManager {
             sessions: DashMap::new(),
             bare_handles: DashMap::new(),
             pending_connects: DashMap::new(),
+            protocol_ownership: StdMutex::new(SessionOwnershipBook::default()),
         }
+    }
+
+    pub(crate) fn register_protocol_session(
+        &self,
+        protocol: ProtocolSessionKind,
+        protocol_session_id: String,
+        ssh_session_id: String,
+        requested: Option<bool>,
+    ) {
+        let mut ownership = self
+            .protocol_ownership
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        ownership.record(protocol, protocol_session_id, ssh_session_id, requested);
+    }
+
+    pub(crate) fn remove_protocol_session(
+        &self,
+        protocol: ProtocolSessionKind,
+        protocol_session_id: &str,
+    ) -> Option<bool> {
+        let mut ownership = self
+            .protocol_ownership
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        ownership
+            .remove(protocol, protocol_session_id)
+            .map(|(_, should_disconnect)| should_disconnect)
+    }
+
+    pub(crate) fn remove_protocol_sessions_for_ssh(&self, ssh_session_id: &str) {
+        let mut ownership = self
+            .protocol_ownership
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        ownership.remove_sessions_for_ssh(ssh_session_id);
     }
 
     /// Register a cancellation token for an in-flight connection attempt and
@@ -538,5 +666,163 @@ mod tests {
         assert!(manager.cancel_connect("attempt-1"));
         assert!(active.is_cancelled());
         assert!(!orphaned.is_cancelled());
+    }
+}
+
+/*
+ * Exercise the shared registry directly so mixed SFTP/SCP ownership decisions
+ * remain independent of live russh handles and Tauri command state.
+ */
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+
+    #[test]
+    fn ownership_records_requested_value() {
+        let mut book = SessionOwnershipBook::default();
+
+        assert_eq!(
+            book.record(
+                ProtocolSessionKind::Sftp,
+                "sftp-1".into(),
+                "ssh-1".into(),
+                Some(true),
+            ),
+            SessionOwnership {
+                ssh_session_id: "ssh-1".into(),
+                owns_ssh: true,
+            }
+        );
+    }
+
+    #[test]
+    fn ownership_inherits_within_the_same_transport() {
+        let mut book = SessionOwnershipBook::default();
+        book.record(
+            ProtocolSessionKind::Sftp,
+            "sftp-1".into(),
+            "ssh-1".into(),
+            Some(true),
+        );
+
+        let inherited = book.record(
+            ProtocolSessionKind::Sftp,
+            "sftp-2".into(),
+            "ssh-1".into(),
+            Some(false),
+        );
+        assert!(inherited.owns_ssh);
+    }
+
+    #[test]
+    fn ownership_preserves_a_cross_transport_reference() {
+        let mut book = SessionOwnershipBook::default();
+        book.record(
+            ProtocolSessionKind::Sftp,
+            "sftp-1".into(),
+            "ssh-1".into(),
+            Some(true),
+        );
+        book.record(
+            ProtocolSessionKind::Scp,
+            "scp-1".into(),
+            "ssh-1".into(),
+            Some(false),
+        );
+
+        let (removed, should_disconnect) = book
+            .remove(ProtocolSessionKind::Sftp, "sftp-1")
+            .expect("owned SFTP record");
+        assert!(removed.owns_ssh);
+        assert!(!should_disconnect);
+        assert!(book.has_ssh_session("ssh-1"));
+    }
+
+    #[test]
+    fn last_cross_transport_reference_disconnects_after_owner_closes_first() {
+        let mut book = SessionOwnershipBook::default();
+        book.record(
+            ProtocolSessionKind::Sftp,
+            "sftp-1".into(),
+            "ssh-1".into(),
+            Some(true),
+        );
+        book.record(
+            ProtocolSessionKind::Scp,
+            "scp-1".into(),
+            "ssh-1".into(),
+            Some(false),
+        );
+
+        assert!(
+            !book
+                .remove(ProtocolSessionKind::Sftp, "sftp-1")
+                .expect("SFTP record")
+                .1
+        );
+        assert!(
+            book.remove(ProtocolSessionKind::Scp, "scp-1")
+                .expect("SCP record")
+                .1
+        );
+    }
+
+    #[test]
+    fn last_cross_transport_reference_disconnects_after_non_owner_closes_first() {
+        let mut book = SessionOwnershipBook::default();
+        book.record(
+            ProtocolSessionKind::Sftp,
+            "sftp-1".into(),
+            "ssh-1".into(),
+            Some(true),
+        );
+        book.record(
+            ProtocolSessionKind::Scp,
+            "scp-1".into(),
+            "ssh-1".into(),
+            Some(false),
+        );
+
+        assert!(
+            !book
+                .remove(ProtocolSessionKind::Scp, "scp-1")
+                .expect("SCP record")
+                .1
+        );
+        assert!(
+            book.remove(ProtocolSessionKind::Sftp, "sftp-1")
+                .expect("SFTP record")
+                .1
+        );
+    }
+
+    #[test]
+    fn terminal_owned_references_never_disconnect_ssh() {
+        let mut book = SessionOwnershipBook::default();
+        book.record(
+            ProtocolSessionKind::Sftp,
+            "sftp-1".into(),
+            "ssh-1".into(),
+            Some(false),
+        );
+        book.record(
+            ProtocolSessionKind::Scp,
+            "scp-1".into(),
+            "ssh-1".into(),
+            None,
+        );
+
+        assert!(
+            !book
+                .remove(ProtocolSessionKind::Scp, "scp-1")
+                .expect("SCP record")
+                .1
+        );
+        assert!(
+            !book
+                .remove(ProtocolSessionKind::Sftp, "sftp-1")
+                .expect("SFTP record")
+                .1
+        );
     }
 }

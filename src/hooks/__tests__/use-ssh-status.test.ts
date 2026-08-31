@@ -82,6 +82,28 @@ describe("useSshStatus", () => {
     expect(useTabStore.getState().tabs.has("sftp-2")).toBe(true);
   });
 
+  it("closes SCP fallback sessions through the SCP command", async () => {
+    useSftpStore.getState().openSession("scp-1", "ssh-1", "host-1");
+    useTabStore.getState().addTab({
+      type: "sftp",
+      id: "scp-1",
+      label: "host-1",
+      transport: "scp",
+    });
+
+    renderHook(() => useSshStatus());
+    await vi.waitFor(() => expect(statusListener).toBeDefined());
+
+    await act(async () => {
+      emitStatus("ssh-1", "Disconnected");
+      await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("scp_close", { scpSessionId: "scp-1" }));
+      await vi.waitFor(() => expect(useSftpStore.getState().sessions.has("scp-1")).toBe(false));
+    });
+
+    expect(invoke).not.toHaveBeenCalledWith("sftp_close", { sftpSessionId: "scp-1" });
+    expect(useTabStore.getState().tabs.has("scp-1")).toBe(false);
+  });
+
   it("does not clean explorer sessions for Error events", async () => {
     useSftpStore.getState().openSession("sftp-1", "ssh-1", "host-1");
     useTabStore.getState().addTab({ type: "sftp", id: "sftp-1", label: "host-1" });
