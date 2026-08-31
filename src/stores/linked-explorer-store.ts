@@ -149,7 +149,7 @@ export const useLinkedExplorerStore = create<LinkedExplorerState>((set, get) => 
       return { bindings: next };
     }),
 
-  ensureConnected: async (tabId, sshSessionId) => {
+  ensureConnected: (tabId, sshSessionId) => {
     const state = get();
     const existing = state.bindings.get(tabId);
 
@@ -160,7 +160,7 @@ export const useLinkedExplorerStore = create<LinkedExplorerState>((set, get) => 
       existing.status === "connected" &&
       useSftpStore.getState().sessions.has(existing.sftpSessionId)
     ) {
-      return existing;
+      return Promise.resolve(existing);
     }
 
     // Idempotent: return in-flight promise if one is already running for this exact pair
@@ -174,7 +174,7 @@ export const useLinkedExplorerStore = create<LinkedExplorerState>((set, get) => 
     }
 
     const sshSession = useSessionStore.getState().sessions.get(sshSessionId);
-    if (!sshSession) return null;
+    if (!sshSession) return Promise.resolve(null);
 
     // Track monotonic generation to detect stale completions if closed/rebound mid-flight
     const currentGeneration = bumpGeneration(tabId);
@@ -191,104 +191,110 @@ export const useLinkedExplorerStore = create<LinkedExplorerState>((set, get) => 
     };
     get().setBinding(tabId, connectingBinding);
 
-    const connectPromise = (async (): Promise<LinkedExplorerBinding | null> => {
-      let sftpSessionId = "";
-      let transport: Transport = "sftp";
-
+    let connectPromise!: Promise<LinkedExplorerBinding | null>;
+    connectPromise = (async (): Promise<LinkedExplorerBinding | null> => {
       try {
-        sftpSessionId = await invoke<string>("sftp_open", { sessionId: sshSessionId });
-        transport = "sftp";
-      } catch (sftpErr) {
+        let sftpSessionId = "";
+        let transport: Transport = "sftp";
+
         try {
-          sftpSessionId = await invoke<string>("scp_open", { sessionId: sshSessionId });
-          transport = "scp";
-        } catch (scpErr) {
-          // If tab closed or generation changed, don't set error
-          if (tabGenerations.get(tabId) !== currentGeneration) {
-            return null;
+          sftpSessionId = await invoke<string>("sftp_open", { sessionId: sshSessionId });
+          transport = "sftp";
+        } catch (sftpErr) {
+          try {
+            sftpSessionId = await invoke<string>("scp_open", { sessionId: sshSessionId });
+            transport = "scp";
+          } catch (scpErr) {
+            // If tab closed or generation changed, don't set error
+            if (tabGenerations.get(tabId) !== currentGeneration) {
+              return null;
+            }
+
+            const errorMsg =
+              sftpErr instanceof Error
+                ? sftpErr.message
+                : typeof sftpErr === "string"
+                  ? sftpErr
+                  : scpErr instanceof Error
+                    ? scpErr.message
+                    : "Failed to open SFTP/SCP session";
+
+            const errorBinding: LinkedExplorerBinding = {
+              tabId,
+              sshSessionId,
+              sftpSessionId: "",
+              transport: "sftp",
+              status: "error",
+              error: errorMsg,
+            };
+            get().setBinding(tabId, errorBinding);
+            return errorBinding;
           }
+        }
 
-          const errorMsg =
-            sftpErr instanceof Error
-              ? sftpErr.message
-              : typeof sftpErr === "string"
-                ? sftpErr
-                : scpErr instanceof Error
-                  ? scpErr.message
-                  : "Failed to open SFTP/SCP session";
+        // Check if connection became stale during await (panel closed or rebound)
+        const isStale =
+          tabGenerations.get(tabId) !== currentGeneration ||
+          !get().openTabIds.has(tabId);
 
-          const errorBinding: LinkedExplorerBinding = {
-            tabId,
+        if (isStale) {
+          // Immediately close the late-opened channel so it doesn't leak
+          const closeCmd = transport === "scp" ? "scp_close" : "sftp_close";
+          const key = transport === "scp" ? "scpSessionId" : "sftpSessionId";
+          try {
+            await invoke(closeCmd, { [key]: sftpSessionId });
+          } catch {
+            /* ignore */
+          }
+          return null;
+        }
+
+        // Register in sftp-store with transport metadata (startDirectory left undefined)
+        useSftpStore
+          .getState()
+          .openSession(
+            sftpSessionId,
             sshSessionId,
-            sftpSessionId: "",
-            transport: "sftp",
-            status: "error",
-            error: errorMsg,
-          };
-          get().setBinding(tabId, errorBinding);
-          return errorBinding;
-        }
-      }
+            sshSession.label,
+            sshSession.hostConfig.username,
+            false,
+            undefined,
+            transport,
+          );
 
-      // Check if connection became stale during await (panel closed or rebound)
-      const isStale =
-        tabGenerations.get(tabId) !== currentGeneration ||
-        !get().openTabIds.has(tabId);
-
-      if (isStale) {
-        // Immediately close the late-opened channel so it doesn't leak
-        const closeCmd = transport === "scp" ? "scp_close" : "sftp_close";
-        const key = transport === "scp" ? "scpSessionId" : "sftpSessionId";
-        try {
-          await invoke(closeCmd, { [key]: sftpSessionId });
-        } catch {
-          /* ignore */
-        }
-        return null;
-      }
-
-      // Register in sftp-store with transport metadata (startDirectory left undefined)
-      useSftpStore
-        .getState()
-        .openSession(
-          sftpSessionId,
+        const connectedBinding: LinkedExplorerBinding = {
+          tabId,
           sshSessionId,
-          sshSession.label,
-          sshSession.hostConfig.username,
-          false,
-          undefined,
+          sftpSessionId,
           transport,
-        );
+          status: "connected",
+          error: null,
+        };
+        get().setBinding(tabId, connectedBinding);
+        return connectedBinding;
+      } finally {
+        // Only delete this connectionKey if the in-flight entry still holds our promise.
+        // If clearInFlightForTab removed it and a newer promise was inserted, leave the newer promise intact.
+        if (inFlightConnections.get(connectionKey) === connectPromise) {
+          inFlightConnections.delete(connectionKey);
+        }
 
-      const connectedBinding: LinkedExplorerBinding = {
-        tabId,
-        sshSessionId,
-        sftpSessionId,
-        transport,
-        status: "connected",
-        error: null,
-      };
-      get().setBinding(tabId, connectedBinding);
-      return connectedBinding;
+        const remaining = (inFlightCounts.get(tabId) ?? 1) - 1;
+        if (remaining <= 0) {
+          inFlightCounts.delete(tabId);
+          // Only delete generation state after all in-flight entries for that tab have settled
+          // and the tab is no longer open/managed.
+          if (!get().openTabIds.has(tabId) && !useSessionStore.getState().tabs.has(tabId)) {
+            tabGenerations.delete(tabId);
+          }
+        } else {
+          inFlightCounts.set(tabId, remaining);
+        }
+      }
     })();
 
     inFlightConnections.set(connectionKey, connectPromise);
-    try {
-      return await connectPromise;
-    } finally {
-      inFlightConnections.delete(connectionKey);
-      const remaining = (inFlightCounts.get(tabId) ?? 1) - 1;
-      if (remaining <= 0) {
-        inFlightCounts.delete(tabId);
-        // Only delete generation state after all in-flight entries for that tab have settled
-        // and the tab is no longer open/managed.
-        if (!get().openTabIds.has(tabId) && !useSessionStore.getState().tabs.has(tabId)) {
-          tabGenerations.delete(tabId);
-        }
-      } else {
-        inFlightCounts.set(tabId, remaining);
-      }
-    }
+    return connectPromise;
   },
 
   disconnectBinding: async (tabId) => {
@@ -328,25 +334,38 @@ export const useLinkedExplorerStore = create<LinkedExplorerState>((set, get) => 
 }));
 
 /*
- * Subscribe to session-store to clean up linked SFTP/SCP sessions and openTabIds
- * when the owning terminal tab or SSH session is closed/removed.
+ * Subscribe to session-store to clean up linked SFTP/SCP sessions, openTabIds,
+ * and generation entries when the owning terminal tab or SSH session is closed/removed.
  */
 useSessionStore.subscribe((sessionState) => {
   const currentSessions = sessionState.sessions;
   const currentTabs = sessionState.tabs;
   const store = useLinkedExplorerStore.getState();
 
-  // Clean up openTabIds for any terminal tab that no longer exists
+  // 1. Clean up openTabIds for any terminal tab that no longer exists
   for (const tabId of store.openTabIds) {
     if (!currentTabs.has(tabId)) {
       store.closeLinkedExplorer(tabId);
     }
   }
 
-  // Clean up bindings where the owning tab or SSH session no longer exists
+  // 2. Clean up bindings where the owning tab or SSH session no longer exists
   for (const [tabId, binding] of store.bindings.entries()) {
     if (!currentTabs.has(tabId) || !currentSessions.has(binding.sshSessionId)) {
       void store.disconnectBinding(tabId);
     }
   }
+
+  // 3. Prune tabGenerations for any removed tabs when no in-flight promises remain
+  for (const tabId of tabGenerations.keys()) {
+    if (!currentTabs.has(tabId) && (inFlightCounts.get(tabId) ?? 0) <= 0) {
+      tabGenerations.delete(tabId);
+    }
+  }
 });
+
+/** Test helper to inspect internal generation map state */
+export const _testTabGenerations = {
+  size: () => tabGenerations.size,
+  get: (tabId: string) => tabGenerations.get(tabId),
+};

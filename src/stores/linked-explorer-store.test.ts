@@ -11,7 +11,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invoke(...args),
 }));
 
-import { useLinkedExplorerStore } from "./linked-explorer-store";
+import { useLinkedExplorerStore, _testTabGenerations } from "./linked-explorer-store";
 import { useSessionStore } from "./session-store";
 import { useSftpStore } from "./sftp-store";
 import type { HostConfig } from "../types";
@@ -306,16 +306,21 @@ describe("linked-explorer-store", () => {
     expect(invoke).toHaveBeenCalledWith("sftp_close", { sftpSessionId: "sftp-stale-old" });
     expect(useSftpStore.getState().sessions.has("sftp-stale-old")).toBe(false);
 
+    // While fresh connect is still pending, call ensureConnected a third time
+    const p3 = useLinkedExplorerStore.getState().ensureConnected("tab-1", "ssh-race");
+    expect(p3).toBe(p2);
+    expect(callCount).toBe(2); // no third sftp_open
+
     // Resolve new connect
     d2.resolve("sftp-fresh-new");
-    const r2 = await p2;
+    const [r2, r3] = await Promise.all([p2, p3]);
     expect(r2).not.toBeNull();
     expect(r2?.sftpSessionId).toBe("sftp-fresh-new");
+    expect(r3?.sftpSessionId).toBe("sftp-fresh-new");
     expect(r2?.status).toBe("connected");
     expect(useSftpStore.getState().sessions.has("sftp-fresh-new")).toBe(true);
     expect(useLinkedExplorerStore.getState().bindings.get("tab-1")?.sftpSessionId).toBe("sftp-fresh-new");
   });
-
   it("automatically cleans up linked session when terminal session is removed", async () => {
     useSessionStore.getState().addSession("ssh-auto", dummyHost);
     invoke.mockResolvedValue("sftp-auto");
@@ -343,5 +348,22 @@ describe("linked-explorer-store", () => {
 
     // openTabIds must be cleaned up
     expect(useLinkedExplorerStore.getState().openTabIds.has("ssh-open-only")).toBe(false);
+  });
+
+  it("prunes generation entries when a terminal tab is removed after its panel was closed", async () => {
+    useSessionStore.getState().addSession("ssh-gen-prune", dummyHost);
+    invoke.mockResolvedValue("sftp-gen-prune");
+
+    useLinkedExplorerStore.getState().openLinkedExplorer("ssh-gen-prune");
+    await useLinkedExplorerStore.getState().ensureConnected("ssh-gen-prune", "ssh-gen-prune");
+
+    // Close panel while terminal tab is still alive
+    useLinkedExplorerStore.getState().closeLinkedExplorer("ssh-gen-prune");
+
+    // Later remove the terminal tab
+    useSessionStore.getState().removeSession("ssh-gen-prune");
+
+    // Subscription must prune generation state for the removed tab
+    expect(_testTabGenerations.get("ssh-gen-prune")).toBeUndefined();
   });
 });
