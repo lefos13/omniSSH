@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="screens/header.png" alt="OmniSCP" width="100%"/>
+  <img src="screens/header.png" alt="OmniSSH" width="100%"/>
 </p>
 
-<h1 align="center">OmniSCP</h1>
+<h1 align="center">OmniSSH</h1>
 
 <p align="center">
   <strong>The modern, privacy-first desktop workspace for SSH Terminals, SFTP/SCP File Management, S3 Cloud Storage, and Multi-Source Session Management.</strong>
@@ -31,15 +31,15 @@
 ---
 
 > ### 📢 Fork & Attribution Notice
-> **OmniSCP** is an actively developed fork of [**anySCP**](https://github.com/macnev2013/anySCP), originally created and architected by **[Nevil Macwan (@macnev2013)](https://github.com/macnev2013)** under the MIT License.
+> **OmniSSH** is an actively developed fork of [**anySCP**](https://github.com/macnev2013/anySCP), originally created and architected by **[Nevil Macwan (@macnev2013)](https://github.com/macnev2013)** under the MIT License.
 >
-> We extend our sincere gratitude to Nevil and the original contributors for designing the foundational architecture, Tauri v2 backend, and sleek interface. OmniSCP builds upon this foundation with multi-channel SSH multiplexing, real-time OSC 7 linked terminal file exploration, universal connection importers (MobaXterm & offline Termius LevelDB decryption), and enhanced file transfer capabilities.
+> We extend our sincere gratitude to Nevil and the original contributors for designing the foundational architecture, Tauri v2 backend, and sleek interface. OmniSSH builds upon this foundation with multi-channel SSH multiplexing, real-time OSC 7 linked terminal file exploration, universal connection importers (MobaXterm & offline Termius LevelDB decryption), and enhanced file transfer capabilities.
 
 ---
 
 ## 🚀 Overview
 
-**OmniSCP** is a high-performance, cross-platform desktop application that unifies your remote infrastructure workflows into a single privacy-first tool:
+**OmniSSH** is a high-performance, cross-platform desktop application that unifies your remote infrastructure workflows into a single privacy-first tool:
 
 - **GPU-Accelerated SSH Terminals** with split panes, regex search, and command snippet automation.
 - **Linked Terminal Explorer** that follows your shell's working directory in real time via **OSC 7** notifications.
@@ -53,7 +53,7 @@
 
 ## ⚡ Comparison
 
-| Feature / Capability | OmniSCP | Termius | WinSCP | MobaXterm | PuTTY | Cyberduck |
+| Feature / Capability | OmniSSH | Termius | WinSCP | MobaXterm | PuTTY | Cyberduck |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | **SSH Terminal** | **Yes (WebGL)** | Yes | No | Yes (X11) | Yes | No |
 | **Linked Terminal File Explorer** | **Yes (OSC 7)** | No | No | Yes | No | No |
@@ -95,7 +95,7 @@
 * **Tabbed Remote Browsing**: Open multiple remote servers and directories in concurrent tabs.
 * **Drag-and-Drop Operations**: Drag files and folders from your native desktop (Finder/Explorer) directly into the remote file tree.
 * **Conflict Resolution**: Smart overwrite dialog with file size/timestamp comparison and batch actions (Overwrite, Skip, Cancel).
-* **Remote Editing in VS Code**: Open remote files directly in your local editor—OmniSCP automatically watches and uploads changes upon saving.
+* **Remote Editing in VS Code**: Open remote files directly in your local editor—OmniSSH automatically watches and uploads changes upon saving.
 * **Protocol Fallback**: Automatically switches between SFTP and SCP transports depending on remote server capabilities.
 * **Transfer Queue Management**: Real-time progress indicators, transfer speed calculation, ETA, and concurrent file worker pools.
 
@@ -144,7 +144,7 @@ Download the latest binaries for your platform from the [Releases](https://githu
 * **macOS (Apple Silicon & Intel)**: `.dmg`
   > *Note for macOS*: If Gatekeeper prompts with an unverified developer warning, run:
   > ```bash
-  > xattr -cr /Applications/OmniSCP.app
+  > xattr -cr /Applications/OmniSSH.app
   > ```
 * **Windows**: `.msi` or `.exe` installer
 * **Linux**: `.AppImage` or `.deb` package
@@ -185,7 +185,7 @@ pnpm tauri build
 
 ## 🏗 Architecture
 
-OmniSCP is built with a strict separation between a fast, memory-safe Rust backend and a reactive TypeScript/React user interface:
+OmniSSH is built with a strict separation between a fast, memory-safe Rust backend and a reactive TypeScript/React user interface:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -211,7 +211,7 @@ OmniSCP is built with a strict separation between a fast, memory-safe Rust backe
 
 ## 🧪 Testing & Verification
 
-OmniSCP includes an extensive automated test suite spanning unit tests, integration contracts, and real Tauri end-to-end containerized automation:
+OmniSSH includes an extensive automated test suite spanning unit tests, integration contracts, and real Tauri end-to-end containerized automation:
 
 ```bash
 # Run frontend unit & component tests
