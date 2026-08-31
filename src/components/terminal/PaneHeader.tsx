@@ -1,6 +1,7 @@
-import { Columns2, Rows2, Maximize2, Minimize2, X } from "lucide-react";
+import { Columns2, Rows2, Maximize2, Minimize2, X, FolderOpen } from "lucide-react";
 import { useSessionStore } from "../../stores/session-store";
 import { useTabStore } from "../../stores/tab-store";
+import { useLinkedExplorerStore } from "../../stores/linked-explorer-store";
 
 interface PaneHeaderProps {
   sessionId: string;
@@ -18,6 +19,8 @@ export function PaneHeader({ sessionId, tabId }: PaneHeaderProps) {
     const tab = s.tabs.get(tabId);
     return tab ? tab.layout.type === "split" : false;
   });
+  const isLinkedOpen = useLinkedExplorerStore((s) => s.openTabIds.has(tabId));
+  const toggleLinkedExplorer = useLinkedExplorerStore((s) => s.toggleLinkedExplorer);
 
   if (!session) return null;
 
@@ -103,6 +106,23 @@ export function PaneHeader({ sessionId, tabId }: PaneHeaderProps) {
           isActive ? "opacity-60 group-hover/pane:opacity-100" : "opacity-0 group-hover/pane:opacity-100",
         ].join(" ")}
       >
+        {/* Linked Explorer toggle */}
+        <button
+          type="button"
+          onClick={() => toggleLinkedExplorer(tabId)}
+          className={[
+            btnClass,
+            isLinkedOpen
+              ? "text-accent hover:text-accent-hover hover:bg-accent/10"
+              : "text-text-muted hover:text-text-primary hover:bg-bg-muted",
+          ].join(" ")}
+          data-testid="pane-linked-explorer-toggle"
+          aria-label={isLinkedOpen ? "Close file explorer" : "Open file explorer"}
+          title={isLinkedOpen ? "Close file explorer (⇧⌘E)" : "Open file explorer (⇧⌘E)"}
+        >
+          <FolderOpen size={13} strokeWidth={1.8} aria-hidden="true" />
+        </button>
+
         {/* Split horizontal */}
         <button type="button" onClick={() => handleSplit("horizontal")} className={btnClass}
           aria-label="Split right" title="Split right (⌘D)">

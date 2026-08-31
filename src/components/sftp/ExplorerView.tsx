@@ -27,9 +27,19 @@ interface ExplorerViewProps {
    *  stay mounted (issue #17), so document-level listeners are gated to the
    *  active instance to avoid every open explorer reacting to one event. */
   isActive?: boolean;
+  /** Optional callback to change directory in the linked terminal session. */
+  onCdToTerminal?: (path: string) => void;
+  /** External path navigation request (e.g. from OSC 7 CWD synchronization). */
+  externalNavigatePath?: string | null;
 }
 
-export function ExplorerView({ sessionId, transport = "sftp", isActive = true }: ExplorerViewProps) {
+export function ExplorerView({
+  sessionId,
+  transport = "sftp",
+  isActive = true,
+  onCdToTerminal,
+  externalNavigatePath,
+}: ExplorerViewProps) {
   const session = useSftpStore((s) => s.sessions.get(sessionId));
   const setEntries = useSftpStore((s) => s.setEntries);
   const setLoading = useSftpStore((s) => s.setLoading);
@@ -256,6 +266,14 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
     },
     [sessionId, transport, setLoading, setEntries, setError],
   );
+  // ─── External path navigation (OSC 7 CWD sync) ───────────────────────────
+
+  useEffect(() => {
+    if (externalNavigatePath && externalNavigatePath !== currentPathRef.current) {
+      void loadDirectory(externalNavigatePath);
+    }
+  }, [externalNavigatePath, loadDirectory]);
+
 
   // ─── Sudo toggle (SFTP only) ──────────────────────────────────────────────
 
@@ -782,6 +800,7 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
         sudoMode={sudoMode}
         sudoBusy={togglingSudo}
         onToggleSudo={transport === "sftp" && !isRoot ? () => void handleToggleSudo() : undefined}
+        onCdToTerminal={onCdToTerminal && session ? () => onCdToTerminal(session.currentPath) : undefined}
       />
 
       {/* Error banner */}
@@ -823,6 +842,7 @@ export function ExplorerView({ sessionId, transport = "sftp", isActive = true }:
         currentPath={session.currentPath}
         loading={session.loading}
         busy={busy}
+        onCdToTerminal={onCdToTerminal}
       />
 
       {isDragOver && (

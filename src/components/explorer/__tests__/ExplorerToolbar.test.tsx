@@ -11,6 +11,7 @@ function renderToolbar(over: {
   segments?: { label: string; path: string }[];
   onNavigate?: (p: string) => void;
   loading?: boolean;
+  onCdToTerminal?: () => void;
 } = {}) {
   const onNavigate = over.onNavigate ?? vi.fn();
   render(
@@ -30,6 +31,7 @@ function renderToolbar(over: {
       onNewFile={vi.fn()}
       onNavigate={onNavigate}
       onUpload={vi.fn()}
+      onCdToTerminal={over.onCdToTerminal}
     />,
   );
   return { onNavigate };
@@ -119,5 +121,20 @@ describe("ExplorerToolbar — editable path bar", () => {
     renderToolbar({ loading: true });
     fireEvent.click(pathBar());
     expect(screen.queryByTestId("explorer-path-input")).toBeNull();
+  });
+
+  it("renders cd-to-terminal button when onCdToTerminal is provided and invokes callback on click", () => {
+    const onCdToTerminal = vi.fn();
+    renderToolbar({ onCdToTerminal });
+
+    const cdBtn = screen.getByTestId("explorer-cd-terminal");
+    expect(cdBtn).toBeInTheDocument();
+    fireEvent.click(cdBtn);
+    expect(onCdToTerminal).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not render cd-to-terminal button when onCdToTerminal is absent", () => {
+    renderToolbar();
+    expect(screen.queryByTestId("explorer-cd-terminal")).not.toBeInTheDocument();
   });
 });

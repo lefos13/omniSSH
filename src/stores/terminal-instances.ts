@@ -199,6 +199,7 @@ function createEntry(sessionId: string): TerminalEntry {
 
   term.attachCustomKeyEventHandler((e) => {
     if (e.metaKey && e.shiftKey && e.key === "s") return false;
+    if (e.metaKey && e.shiftKey && e.key.toLowerCase() === "e") return false;
     if (e.metaKey && !e.shiftKey && e.key === "t") return false;
     if (e.metaKey && !e.shiftKey && e.key === "b") return false;
     if (e.metaKey && !e.shiftKey && e.key === "w") return false;

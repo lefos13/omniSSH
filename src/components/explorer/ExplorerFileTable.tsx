@@ -25,6 +25,7 @@ import {
   Info,
   Link2,
   AlertTriangle,
+  Terminal as TerminalIcon,
 } from "lucide-react";
 import { ModalShell, BTN_GHOST, BTN_DANGER } from "../shared/ModalShell";
 import type {
@@ -92,6 +93,7 @@ interface ExplorerFileTableProps {
   currentPath?: string;
   loading?: boolean;
   busy?: boolean;
+  onCdToTerminal?: (path: string) => void;
 }
 
 interface ContextMenuState {
@@ -361,6 +363,7 @@ export function ExplorerFileTable({
   onDragOut,
   currentPath,
   loading,
+  onCdToTerminal,
 }: ExplorerFileTableProps) {
   const caps = provider.capabilities;
   const editors = useSettingsStore((s) => s.editors);
@@ -796,6 +799,13 @@ export function ExplorerFileTable({
             document.dispatchEvent(new CustomEvent("explorer:new-folder")),
         });
       }
+      if (onCdToTerminal && currentPath) {
+        items.push({
+          label: "cd in Terminal",
+          icon: TerminalIcon,
+          onClick: () => onCdToTerminal(currentPath),
+        });
+      }
       return items;
     }
 
@@ -919,6 +929,13 @@ export function ExplorerFileTable({
       icon: Copy,
       onClick: () => void navigator.clipboard.writeText(entry.id),
     });
+    if (onCdToTerminal && entry.entryType === "Directory") {
+      items.push({
+        label: "cd in Terminal",
+        icon: TerminalIcon,
+        onClick: () => onCdToTerminal(entry.id),
+      });
+    }
 
     if (caps.canCopyPaste) {
       items.push({

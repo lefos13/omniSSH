@@ -6,12 +6,13 @@ import { useTerminalAutoFocus } from "../../hooks/use-terminal-autofocus";
 import { useSettingsStore } from "../../stores/settings-store";
 import { useUpdaterStore } from "../../stores/updater-store";
 import { useUiStore } from "../../stores/ui-store";
+import { useLinkedExplorerStore } from "../../stores/linked-explorer-store";
 import { useKeyboardShortcuts } from "../../hooks/use-keyboard-shortcuts";
 import { useSshStatus } from "../../hooks/use-ssh-status";
 import { useSftpTransfers } from "../../hooks/use-sftp-transfers";
 import type { ShortcutDef } from "../../hooks/use-keyboard-shortcuts";
 import { Sidebar } from "../sidebar";
-import { TerminalArea } from "../terminal";
+import { TerminalTabContainer } from "../terminal";
 import { UnifiedTabBar } from "./UnifiedTabBar";
 
 import { HostsDashboard, HostEditModal } from "../dashboard";
@@ -261,6 +262,25 @@ export function AppShell() {
             .tabs.get(useTabStore.getState().activeTabId ?? "")?.type ===
           "terminal",
       },
+      // ─── Linked explorer toggle ───────────────────────────────────
+      {
+        key: "e",
+        meta: true,
+        shift: true,
+        action: () => {
+          const activeTabId = useTabStore.getState().activeTabId;
+          if (!activeTabId) return;
+          const tab = useTabStore.getState().tabs.get(activeTabId);
+          if (tab?.type === "terminal") {
+            useLinkedExplorerStore.getState().toggleLinkedExplorer(activeTabId);
+          }
+        },
+        when: () =>
+          useTabStore
+            .getState()
+            .tabs.get(useTabStore.getState().activeTabId ?? "")?.type ===
+          "terminal",
+      },
       // ─── Snippet palette ─────────────────────────────────────────
       {
         key: "k",
@@ -429,7 +449,11 @@ export function AppShell() {
                     key={tabId}
                     className={`absolute inset-0 p-2 ${isVisible ? "z-10 visible" : "z-0 invisible"}`}
                   >
-                    <TerminalArea node={termTab.layout} tabId={tabId} />
+                    <TerminalTabContainer
+                      tabId={tabId}
+                      layout={termTab.layout}
+                      isActive={isVisible}
+                    />
                   </div>
                 );
               })}
