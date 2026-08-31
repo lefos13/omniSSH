@@ -1,7 +1,7 @@
 /*
  * E2E tests for multiple independent explorer connections.
  * Verifies that two separate SFTP explorer sessions configured with distinct start
- * directories (/etc vs /tmp) maintain isolated session IDs, directory listings,
+ * directories (/etc vs /tmp) maintain isolated, nonempty session IDs, directory listings,
  * and path states across tab switches without cross-contamination.
  */
 
@@ -50,7 +50,7 @@ describe("two independent explorer connections", () => {
         await waitForDashboard();
     });
 
-    it("opens two independent SFTP explorer tabs and maintains separate directory states", async () => {
+    it("opens two independent SFTP explorer tabs and maintains separate session IDs and directory states", async () => {
         // 1. Save host 1 (/etc) and host 2 (/tmp)
         const host1Id = await saveHostWithStartDir("host-etc", "/etc");
         const host2Id = await saveHostWithStartDir("host-tmp", "/tmp");
@@ -75,6 +75,12 @@ describe("two independent explorer connections", () => {
         });
         expect(lastCrumb1).to.equal("etc");
 
+        // Capture session ID from explorer container
+        const container1 = await $("[data-explorer-session-id]");
+        await container1.waitForDisplayed({ timeout: 10_000 });
+        const sessionId1 = await container1.getAttribute("data-explorer-session-id");
+        expect(sessionId1).to.be.a("string").and.not.be.empty;
+
         // 3. Switch back to Hosts dashboard
         const hostsTab = await $("[data-tab-label='Hosts']");
         await hostsTab.waitForClickable({ timeout: 5_000 });
@@ -97,30 +103,37 @@ describe("two independent explorer connections", () => {
         });
         expect(lastCrumb2).to.equal("tmp");
 
+        // Capture session ID from second explorer container
+        const container2 = await $("[data-explorer-session-id]");
+        await container2.waitForDisplayed({ timeout: 10_000 });
+        const sessionId2 = await container2.getAttribute("data-explorer-session-id");
+        expect(sessionId2).to.be.a("string").and.not.be.empty;
+        expect(sessionId1).not.to.equal(sessionId2);
+
         // Total 3 tabs: Hosts + 2 SFTP explorer tabs
         await waitForTabCount(3);
         expect(await tabCountOfType("sftp")).to.equal(2);
 
-        // Verify the two SFTP tabs have distinct testid IDs
-        const sftpTabs = await $$("[data-tab-type='sftp']");
-        const tab1Id = await sftpTabs[0].getAttribute("data-testid");
-        const tab2Id = await sftpTabs[1].getAttribute("data-testid");
-        expect(tab1Id).not.to.equal(tab2Id);
-
-        // 5. Switch back to Host 1 explorer tab and verify it remains in /etc with passwd
+        // 5. Switch back to Host 1 explorer tab and verify it preserves sessionId1 and /etc
         const tab1 = await $(`[data-tab-label='host-etc']`);
         await tab1.waitForClickable({ timeout: 5_000 });
         await tab1.click();
         await waitForExplorer();
 
+        const activeContainer1 = await $("[data-explorer-session-id]");
+        expect(await activeContainer1.getAttribute("data-explorer-session-id")).to.equal(sessionId1);
+
         const passwdEntryAgain = await waitForEntry("passwd");
         expect(await passwdEntryAgain.isExisting()).to.equal(true);
 
-        // 6. Switch back to Host 2 explorer tab and verify it remains in /tmp
+        // 6. Switch back to Host 2 explorer tab and verify it preserves sessionId2 and /tmp
         const tab2 = await $(`[data-tab-label='host-tmp']`);
         await tab2.waitForClickable({ timeout: 5_000 });
         await tab2.click();
         await waitForExplorer();
+
+        const activeContainer2 = await $("[data-explorer-session-id]");
+        expect(await activeContainer2.getAttribute("data-explorer-session-id")).to.equal(sessionId2);
 
         const finalCrumb2 = await browser.execute(() => {
             const buttons = Array.from(
