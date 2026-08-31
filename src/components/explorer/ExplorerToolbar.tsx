@@ -9,6 +9,7 @@ import {
   Home,
   Loader2,
   Shield,
+  Terminal as TerminalIcon,
 } from "lucide-react";
 import type { FileSystemProvider } from "../../types/explorer";
 
@@ -35,6 +36,7 @@ interface ExplorerToolbarProps {
   sudoMode?: boolean;
   sudoBusy?: boolean;
   onToggleSudo?: () => void;
+  onCdToTerminal?: () => void;
 }
 
 // cache icons so they render once
@@ -97,6 +99,7 @@ export const ExplorerToolbar = memo(function ExplorerToolbar({
   sudoMode,
   sudoBusy,
   onToggleSudo,
+  onCdToTerminal,
 }: ExplorerToolbarProps) {
   const caps = provider.capabilities;
   const providerType = provider.type;
@@ -324,6 +327,19 @@ export const ExplorerToolbar = memo(function ExplorerToolbar({
           className={loading ? "motion-safe:animate-spin" : ""}
         />
       </button>
+      {/* cd in Terminal */}
+      {onCdToTerminal && (
+        <button
+          data-testid="explorer-cd-terminal"
+          onClick={onCdToTerminal}
+          disabled={loading}
+          title="Change terminal directory to this folder"
+          aria-label="cd in Terminal"
+          className={ICON_BTN_CLASS}
+        >
+          <TerminalIcon size={15} strokeWidth={1.8} aria-hidden="true" />
+        </button>
+      )}
 
       {onToggleSudo && (
         <button

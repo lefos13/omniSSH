@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { SftpEntry, SftpClipboard } from "../types";
-
+import type { Transport } from "../lib/explorer-transport";
 // ─── Session shape ────────────────────────────────────────────────────────────
 
 export interface SftpSession {
@@ -18,6 +18,7 @@ export interface SftpSession {
   error: string | null;
   sortBy: "name" | "size" | "modified";
   sortAsc: boolean;
+  transport?: Transport;
 }
 
 // ─── Store shape ──────────────────────────────────────────────────────────────
@@ -27,7 +28,7 @@ interface SftpState {
   activeSftpSessionId: string | null;
   clipboard: SftpClipboard | null;
 
-  openSession: (sftpSessionId: string, sshSessionId: string, label: string, username?: string, sudoMode?: boolean, startDirectory?: string) => void;
+  openSession: (sftpSessionId: string, sshSessionId: string, label: string, username?: string, sudoMode?: boolean, startDirectory?: string, transport?: Transport) => void;
   closeSession: (sftpSessionId: string) => void;
   /** Replace an existing session's ID in-place (used by sudo toggle). */
   swapSession: (oldId: string, newId: string, sudoMode: boolean) => void;
@@ -50,7 +51,7 @@ export const useSftpStore = create<SftpState>((set) => ({
   activeSftpSessionId: null,
   clipboard: null,
 
-  openSession: (sftpSessionId, sshSessionId, label, username, sudoMode, startDirectory) =>
+  openSession: (sftpSessionId, sshSessionId, label, username, sudoMode, startDirectory, transport) =>
     set((state) => {
       const next = new Map(state.sessions);
       next.set(sftpSessionId, {
@@ -66,6 +67,7 @@ export const useSftpStore = create<SftpState>((set) => ({
         error: null,
         sortBy: "name",
         sortAsc: true,
+        transport: transport ?? "sftp",
       });
       return { sessions: next, activeSftpSessionId: sftpSessionId };
     }),
@@ -89,7 +91,7 @@ export const useSftpStore = create<SftpState>((set) => ({
       next.delete(oldId);
       // Keep currentPath (via ...old) so the remounted view reloads the same
       // directory; only the entries are cleared pending the fresh listing.
-      next.set(newId, { ...old, sftpSessionId: newId, sudoMode, entries: [], loading: false, error: null });
+      next.set(newId, { ...old, sftpSessionId: newId, sudoMode, transport: old.transport ?? "sftp", entries: [], loading: false, error: null });
       const newActive = state.activeSftpSessionId === oldId ? newId : state.activeSftpSessionId;
       // Re-point an outstanding clipboard so a pending cut/copy still pastes
       // after the session id changes.
