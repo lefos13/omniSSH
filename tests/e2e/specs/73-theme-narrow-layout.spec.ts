@@ -72,8 +72,8 @@ describe("theme and narrow layout", () => {
             );
             expect(await sidebarExpanded()).to.equal(!initialExpanded);
 
-            // Verify appearance controls remain accessible and displayed within viewport
-            const themeControl = await $("[data-testid='s-light-theme']");
+            // Verify appearance theme control element remains displayed within viewport
+            const themeControl = await $("#s-light-theme");
             expect(await themeControl.isDisplayedInViewport()).to.equal(true);
         } finally {
             // Restore original window dimensions

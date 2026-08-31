@@ -79,7 +79,14 @@ describe("OSC 7 CWD follow and explicit cd", () => {
 
         // Wait until linked explorer breadcrumb indicates /tmp
         await browser.waitUntil(
-            async () => (await $("[aria-label='Current path'] button*=tmp")).isExisting(),
+            async () => {
+                const pathBarButtons = await $$("[aria-label='Current path'] button");
+                for (const btn of pathBarButtons) {
+                    const text = await btn.getText();
+                    if (text === "tmp") return true;
+                }
+                return false;
+            },
             { timeout: 10_000, timeoutMsg: "linked explorer did not enter /tmp" },
         );
 
