@@ -345,12 +345,13 @@ pub enum TermiusImportError {
     CredentialsConfirmationRequired,
     #[error("selected Termius credentials are unavailable")]
     CredentialsUnavailable,
+    #[error("Termius encrypted metadata could not be decrypted")]
+    MetadataUnavailable,
     #[error("Termius import could not be completed")]
     CommitFailed,
     #[error("Termius credential cleanup is pending")]
     CleanupPending,
 }
-
 impl Serialize for TermiusImportError {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -369,6 +370,7 @@ impl Serialize for TermiusImportError {
             Self::InvalidSelection => "invalid_selection",
             Self::CredentialsConfirmationRequired => "credentials_confirmation_required",
             Self::CredentialsUnavailable => "credentials_unavailable",
+            Self::MetadataUnavailable => "metadata_unavailable",
             Self::CommitFailed => "commit_failed",
             Self::CleanupPending => "cleanup_pending",
         };
@@ -855,6 +857,7 @@ impl Drop for SourceRowsGuard {
     fn drop(&mut self) {
         for row in &mut self.0.rows {
             row.value_bytes.zeroize();
+            zeroize_idb_key(&mut row.idb_key);
         }
     }
 }
@@ -970,10 +973,228 @@ fn default_metadata_only() -> bool {
     true
 }
 
-fn normalize_source_rows(source: SourceRows) -> Result<NormalizedImport, String> {
+/* Termius records may contain encrypted metadata fields (e.g. host label/address,
+ * username, notes, group names, startup commands, and relationship IDs) alongside
+ * credential secrets. Decryption keys are discovered against authenticated envelope
+ * samples before building the index. Metadata fields are decrypted for preview,
+ * while credential fields remain retained as ciphertext until explicit commit. */
+fn is_metadata_field_name(name: &str) -> bool {
+    [
+        SOURCE_ID_ALIASES,
+        HOST_ENTITY_ID_ALIASES,
+        CONFIG_ENTITY_ID_ALIASES,
+        IDENTITY_ENTITY_ID_ALIASES,
+        KEY_ENTITY_ID_ALIASES,
+        GROUP_ENTITY_ID_ALIASES,
+        PROXY_ENTITY_ID_ALIASES,
+        LOCAL_ID_ALIASES,
+        LABEL_ALIASES,
+        ADDRESS_ALIASES,
+        USERNAME_ALIASES,
+        PORT_ALIASES,
+        GROUP_ALIASES,
+        GROUP_NAME_ALIASES,
+        PARENT_GROUP_ALIASES,
+        KEY_PATH_ALIASES,
+        NOTES_ALIASES,
+        STARTUP_ALIASES,
+        START_DIRECTORY_ALIASES,
+        PROXY_ALIASES,
+        HOST_CONFIG_REFERENCE_ALIASES,
+        IDENTITY_REFERENCE_ALIASES,
+        SSH_KEY_REFERENCE_ALIASES,
+        PROXY_REFERENCE_ALIASES,
+        PROXY_TARGET_ALIASES,
+        UPDATED_AT_ALIASES,
+    ]
+    .into_iter()
+    .flatten()
+    .any(|alias| name.eq_ignore_ascii_case(alias))
+}
+
+fn collect_encrypted_samples(
+    value: &Value,
+    samples: &mut Vec<SecretText>,
+    limit: usize,
+    approved: bool,
+) {
+    if samples.len() >= limit {
+        return;
+    }
+    match value {
+        Value::String(s) if approved => {
+            if envelope::parse(s).is_ok_and(|parsed| parsed.is_some())
+                && !samples.iter().any(|sample| sample.value == *s)
+            {
+                samples.push(SecretText { value: s.clone() });
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_encrypted_samples(item, samples, limit, approved);
+                if samples.len() >= limit {
+                    break;
+                }
+            }
+        }
+        Value::Object(map) => {
+            for (field_name, field_value) in map {
+                collect_encrypted_samples(
+                    field_value,
+                    samples,
+                    limit,
+                    is_metadata_field_name(field_name) && !is_secret_field_name(field_name),
+                );
+                if samples.len() >= limit {
+                    break;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_encrypted_idb_key_samples(key: &IdbKey, samples: &mut Vec<SecretText>, limit: usize) {
+    if samples.len() >= limit {
+        return;
+    }
+    match key {
+        IdbKey::String(value) if envelope::parse(value).is_ok_and(|parsed| parsed.is_some()) => {
+            if !samples.iter().any(|sample| sample.value == *value) {
+                samples.push(SecretText {
+                    value: value.clone(),
+                });
+            }
+        }
+        IdbKey::Array(values) => {
+            for value in values {
+                collect_encrypted_idb_key_samples(value, samples, limit);
+                if samples.len() >= limit {
+                    break;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_secret_field_name(name: &str) -> bool {
+    PASSWORD_ALIASES
+        .iter()
+        .chain(PRIVATE_KEY_ALIASES)
+        .chain(PASSPHRASE_ALIASES)
+        .any(|alias| name.eq_ignore_ascii_case(alias))
+}
+
+fn decrypt_metadata_string(
+    s: &mut String,
+    key: Option<&[u8; 32]>,
+) -> Result<(), TermiusImportError> {
+    match envelope::parse(s) {
+        Ok(Some(_)) => {
+            let Some(key) = key else {
+                return Err(TermiusImportError::MetadataUnavailable);
+            };
+            let mut plaintext =
+                crypto::decrypt(key, s).map_err(|_| TermiusImportError::MetadataUnavailable)?;
+            let text = std::str::from_utf8(&plaintext)
+                .map(str::to_string)
+                .map_err(|_| TermiusImportError::MetadataUnavailable);
+            plaintext.zeroize();
+            let text = text?;
+            let mut encrypted = std::mem::replace(s, text);
+            encrypted.zeroize();
+            Ok(())
+        }
+        Err(_) => Err(TermiusImportError::MetadataUnavailable),
+        Ok(None) => Ok(()),
+    }
+}
+
+fn decrypt_metadata_value(
+    value: &mut Value,
+    key: Option<&[u8; 32]>,
+    approved: bool,
+) -> Result<(), TermiusImportError> {
+    match value {
+        Value::Object(map) => {
+            for (field_name, field_val) in map.iter_mut() {
+                decrypt_metadata_value(
+                    field_val,
+                    key,
+                    is_metadata_field_name(field_name) && !is_secret_field_name(field_name),
+                )?;
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                decrypt_metadata_value(item, key, approved)?;
+            }
+        }
+        Value::String(s) if approved => {
+            decrypt_metadata_string(s, key)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn decrypt_idb_key(
+    key: &mut IdbKey,
+    decrypt_key: Option<&[u8; 32]>,
+) -> Result<(), TermiusImportError> {
+    if let IdbKey::String(s) = key {
+        decrypt_metadata_string(s, decrypt_key)?;
+    }
+    Ok(())
+}
+
+fn find_source_decryption_key(
+    source: &SourceRows,
+) -> Result<Option<SecretKey>, TermiusImportError> {
+    let mut samples = Vec::new();
+    for row in &source.rows {
+        collect_encrypted_idb_key_samples(&row.idb_key, &mut samples, 16);
+        if let Some(mut value) = decode_row_value(row) {
+            collect_encrypted_samples(&value, &mut samples, 16, false);
+            zeroize_value(&mut value);
+            if samples.len() >= 16 {
+                break;
+            }
+        }
+    }
+    if samples.is_empty() {
+        return Ok(None);
+    }
+    match localkey::find_local_key(|candidate| {
+        samples.iter().any(|sample| {
+            let Ok(mut plaintext) = crypto::decrypt(candidate, &sample.value) else {
+                return false;
+            };
+            plaintext.zeroize();
+            true
+        })
+    }) {
+        Ok(key) => Ok(Some(SecretKey(key))),
+        Err(localkey::LocalKeyError::NotFound) => Ok(None),
+    }
+}
+
+fn normalize_source_rows(source: SourceRows) -> Result<NormalizedImport, TermiusImportError> {
+    if source.rows.len() > MAX_PREVIEW_ROWS {
+        return Err(TermiusImportError::PreviewLimit);
+    }
+    let key = find_source_decryption_key(&source)?;
+    normalize_source_rows_with_key(source, key.as_ref().map(|k| &k.0))
+}
+
+fn normalize_source_rows_with_key(
+    source: SourceRows,
+    key: Option<&[u8; 32]>,
+) -> Result<NormalizedImport, TermiusImportError> {
     let mut source = SourceRowsGuard(source);
     if source.0.rows.len() > MAX_PREVIEW_ROWS {
-        return Err("normalization limit exceeded".to_string());
+        return Err(TermiusImportError::PreviewLimit);
     }
 
     let mut indexes = SourceIndexes::new();
@@ -987,6 +1208,13 @@ fn normalize_source_rows(source: SourceRows) -> Result<NormalizedImport, String>
             skipped_records = true;
             continue;
         };
+
+        if let Err(error) = decrypt_idb_key(&mut row.idb_key, key)
+            .and_then(|()| decrypt_metadata_value(&mut value, key, false))
+        {
+            zeroize_value(&mut value);
+            return Err(error);
+        }
 
         let accepted = if HOST_DATABASES.contains(&row.database_name.as_str()) {
             indexes
@@ -1052,14 +1280,14 @@ fn normalize_source_rows(source: SourceRows) -> Result<NormalizedImport, String>
         }
     }
     if groups.len() > MAX_PREVIEW_GROUPS {
-        return Err("group normalization limit exceeded".to_string());
+        return Err(TermiusImportError::PreviewLimit);
     }
 
     let mut hosts = Vec::new();
     for record in indexes.hosts.values_in_source_order() {
         if let Some(host) = normalize_host_record(record, &indexes, &mut groups, &mut warnings) {
             if hosts.len() >= MAX_PREVIEW_HOSTS {
-                return Err("host normalization limit exceeded".to_string());
+                return Err(TermiusImportError::PreviewLimit);
             }
             hosts.push(host);
         } else {
@@ -1537,7 +1765,6 @@ fn embedded_group(object: &BTreeMap<String, Value>) -> Option<NormalizedGroup> {
         parent_source_id: parent_reference.and_then(|reference| reference.first_value()),
     })
 }
-
 fn insert_group(
     groups: &mut Vec<NormalizedGroup>,
     group: NormalizedGroup,
@@ -1813,6 +2040,15 @@ fn zeroize_value(value: &mut Value) {
         Value::String(value) => value.zeroize(),
         Value::Array(values) => values.iter_mut().for_each(zeroize_value),
         Value::Object(values) => values.values_mut().for_each(zeroize_value),
+        _ => {}
+    }
+}
+
+fn zeroize_idb_key(key: &mut IdbKey) {
+    match key {
+        IdbKey::String(value) => value.zeroize(),
+        IdbKey::Array(values) => values.iter_mut().for_each(zeroize_idb_key),
+        IdbKey::Binary(value) => value.zeroize(),
         _ => {}
     }
 }
@@ -2346,8 +2582,7 @@ pub async fn import_preview_termius(
             .or_else(datadir::resolve)
             .ok_or(TermiusImportError::SourceUnavailable)?;
         let source_rows = source::read_source(&leveldb_path).map_err(map_source_error)?;
-        let normalized =
-            normalize_source_rows(source_rows).map_err(|_| TermiusImportError::PreviewLimit)?;
+        let normalized = normalize_source_rows(source_rows)?;
         let existing = db
             .list_hosts()
             .map_err(|_| TermiusImportError::CommitFailed)?;
@@ -2680,6 +2915,368 @@ mod tests {
         assert!(preview.hosts[0].credential_available);
         assert!(preview.hosts[0].has_password);
         assert!(preview.hosts[0].has_private_key);
+    }
+
+    #[test]
+    fn preview_decrypts_encrypted_metadata_without_exposing_credentials_in_preview() {
+        let label = encrypted(b"Production Server");
+        let address = encrypted(b"server.example");
+        let username = encrypted(b"alice");
+        let group_name = encrypted(b"Production Group");
+        let notes = encrypted(b"production bastion notes");
+        let start_dir = encrypted(b"/opt/app");
+        let startup_cmd = encrypted(b"tmux attach");
+        let key_path = encrypted(b"/home/alice/.ssh/id_ed25519");
+        let password = encrypted(b"fixture-password");
+        let private_key = encrypted(b"-----BEGIN OPENSSH PRIVATE KEY-----\nfixture-key");
+        let passphrase = encrypted(b"fixture-passphrase");
+
+        let rows = source(vec![
+            row(
+                "groups",
+                "group-1",
+                v8_object(&[
+                    ("id", v8_string("group-1")),
+                    ("name", v8_string(&group_name)),
+                ]),
+            ),
+            row(
+                "hosts",
+                "source-host-1",
+                v8_object(&[
+                    ("id", v8_string("source-host-1")),
+                    ("name", v8_string(&label)),
+                    ("host", v8_string(&address)),
+                    ("userName", v8_string(&username)),
+                    ("groupId", v8_string("group-1")),
+                    ("sshPort", vec![b'U', 0x9a, 0x11]),
+                    ("password", v8_string(&password)),
+                    ("private_key", v8_string(&private_key)),
+                    ("keyPassphrase", v8_string(&passphrase)),
+                    ("note", v8_string(&notes)),
+                    ("start_directory", v8_string(&start_dir)),
+                    ("startup_command", v8_string(&startup_cmd)),
+                    ("key_path", v8_string(&key_path)),
+                ]),
+            ),
+        ]);
+
+        let normalized =
+            normalize_source_rows_with_key(rows, Some(&KEY)).expect("normalize fixture with key");
+        assert_eq!(normalized.hosts.len(), 1);
+        let host = &normalized.hosts[0];
+        assert_eq!(host.label, "Production Server");
+        assert_eq!(host.address, "server.example");
+        assert_eq!(host.username, "alice");
+        assert_eq!(host.notes.as_deref(), Some("production bastion notes"));
+        assert_eq!(host.start_directory.as_deref(), Some("/opt/app"));
+        assert_eq!(host.startup_command.as_deref(), Some("tmux attach"));
+        assert_eq!(
+            host.key_path.as_deref(),
+            Some("/home/alice/.ssh/id_ed25519")
+        );
+        assert_eq!(normalized.groups.len(), 1);
+        assert_eq!(normalized.groups[0].name, "Production Group");
+
+        // Credentials must remain ciphertext envelopes in normalized host
+        assert_eq!(
+            host.password.as_ref().map(|s| s.value.as_str()),
+            Some(password.as_str())
+        );
+        assert_eq!(
+            host.private_key.as_ref().map(|s| s.value.as_str()),
+            Some(private_key.as_str())
+        );
+        assert_eq!(
+            host.passphrase.as_ref().map(|s| s.value.as_str()),
+            Some(passphrase.as_str())
+        );
+
+        let preview = preview_for_test(&normalized, &[]);
+        assert_eq!(preview.hosts[0].label, "Production Server");
+        assert_eq!(preview.hosts[0].address, "server.example");
+        assert_eq!(preview.hosts[0].username, "alice");
+        assert_eq!(
+            preview.hosts[0].notes.as_deref(),
+            Some("production bastion notes")
+        );
+        assert_eq!(
+            preview.hosts[0].start_directory.as_deref(),
+            Some("/opt/app")
+        );
+        assert_eq!(
+            preview.hosts[0].startup_command.as_deref(),
+            Some("tmux attach")
+        );
+        assert_eq!(
+            preview.hosts[0].key_path.as_deref(),
+            Some("/home/alice/.ssh/id_ed25519")
+        );
+        assert_eq!(preview.groups[0].name, "Production Group");
+
+        let serialized = serde_json::to_string(&preview).expect("serialize preview");
+        assert!(serialized.contains("Production Server"));
+        assert!(serialized.contains("server.example"));
+        assert!(serialized.contains("alice"));
+        assert!(serialized.contains("Production Group"));
+
+        // No ciphertext envelope strings in preview
+        assert!(!serialized.contains(&label));
+        assert!(!serialized.contains(&address));
+        assert!(!serialized.contains(&username));
+        assert!(!serialized.contains(&group_name));
+        assert!(!serialized.contains(&password));
+        assert!(!serialized.contains(&private_key));
+        assert!(!serialized.contains(&passphrase));
+
+        // No raw secrets in preview
+        assert!(!serialized.contains("fixture-password"));
+        assert!(!serialized.contains("fixture-key"));
+        assert!(!serialized.contains("fixture-passphrase"));
+    }
+
+    #[test]
+    fn preview_fails_closed_when_encrypted_metadata_cannot_be_decrypted() {
+        let label = encrypted(b"Secret Production");
+        let address = encrypted(b"secret.example");
+        let rows = source(vec![row(
+            "hosts",
+            "source-host-1",
+            v8_object(&[("name", v8_string(&label)), ("host", v8_string(&address))]),
+        )]);
+
+        // With no key provided, it must fail closed and never return host with ciphertext address
+        let result = normalize_source_rows_with_key(rows, None);
+        assert!(matches!(
+            result,
+            Err(TermiusImportError::MetadataUnavailable)
+        ));
+    }
+
+    #[test]
+    fn v1_chain_resolves_encrypted_structural_ids_and_timestamps() {
+        let host_id = encrypted(b"host-uuid-1");
+        let cfg_id = encrypted(b"cfg-uuid-1");
+        let identity_id = encrypted(b"identity-uuid-1");
+        let key_id = encrypted(b"key-uuid-1");
+        let group_id = encrypted(b"group-uuid-1");
+        let timestamp = encrypted(b"2025-06-01T12:00:00Z");
+        let port_str = encrypted(b"2222");
+
+        let rows = source(vec![
+            row(
+                "groups",
+                "group-storage",
+                v8_object(&[
+                    ("id", v8_string(&group_id)),
+                    ("name", v8_string(&encrypted(b"Infrastructure"))),
+                    ("updated_at", v8_string(&timestamp)),
+                ]),
+            ),
+            row(
+                "hosts",
+                "host-storage",
+                v8_object(&[
+                    ("id", v8_string(&host_id)),
+                    ("name", v8_string(&encrypted(b"Encrypted Chain Host"))),
+                    ("address", v8_string(&encrypted(b"chain.example"))),
+                    ("groupId", v8_string(&group_id)),
+                    ("ssh_config", v8_string(&cfg_id)),
+                    ("updated_at", v8_string(&timestamp)),
+                ]),
+            ),
+            row(
+                "ssh_configs",
+                "cfg-storage",
+                v8_object(&[
+                    ("id", v8_string(&cfg_id)),
+                    ("port", v8_string(&port_str)),
+                    ("identity", v8_string(&identity_id)),
+                    ("updated_at", v8_string(&timestamp)),
+                ]),
+            ),
+            row(
+                "ssh_identities",
+                "identity-storage",
+                v8_object(&[
+                    ("id", v8_string(&identity_id)),
+                    ("username", v8_string(&encrypted(b"chain-user"))),
+                    ("password", v8_string(&encrypted(b"chain-pass"))),
+                    ("ssh_key", v8_string(&key_id)),
+                    ("updated_at", v8_string(&timestamp)),
+                ]),
+            ),
+            row(
+                "keys",
+                "key-storage",
+                v8_object(&[
+                    ("id", v8_string(&key_id)),
+                    (
+                        "private_key",
+                        v8_string(&encrypted(
+                            b"-----BEGIN OPENSSH PRIVATE KEY-----\nchain-key",
+                        )),
+                    ),
+                    ("updated_at", v8_string(&timestamp)),
+                ]),
+            ),
+        ]);
+
+        let normalized =
+            normalize_source_rows_with_key(rows, Some(&KEY)).expect("normalize encrypted chain");
+        assert_eq!(normalized.hosts.len(), 1);
+        let host = &normalized.hosts[0];
+        assert_eq!(host.label, "Encrypted Chain Host");
+        assert_eq!(host.address, "chain.example");
+        assert_eq!(host.username, "chain-user");
+        assert_eq!(host.port, 2222);
+        assert!(
+            host.warnings.is_empty(),
+            "unexpected host warnings: {:?}",
+            host.warnings
+        );
+        assert!(
+            normalized.warnings.is_empty(),
+            "unexpected import warnings: {:?}",
+            normalized.warnings
+        );
+    }
+
+    #[test]
+    fn corrupted_metadata_ciphertexts_are_not_emitted_as_plaintext() {
+        // An envelope with unknown header version
+        let mut raw = vec![0x04, 0x99]; // unknown version
+        raw.extend([0x24; 24]);
+        raw.extend([0x42; 32]);
+        let corrupted = STANDARD.encode(raw);
+
+        let rows = source(vec![row(
+            "hosts",
+            "source-host-bad",
+            v8_object(&[
+                ("name", v8_string(&corrupted)),
+                ("host", v8_string(&corrupted)),
+            ]),
+        )]);
+
+        let result = normalize_source_rows_with_key(rows, Some(&KEY));
+        assert!(matches!(
+            result,
+            Err(TermiusImportError::MetadataUnavailable)
+        ));
+    }
+
+    #[test]
+    fn encrypted_proxy_metadata_decrypted_and_validated() {
+        let valid_proxy = encrypted(b"jumpuser@jumphost.example:2222");
+        let unsafe_proxy = encrypted(b"alice:secretpass@jumphost.example:2222");
+
+        let rows = source(vec![
+            row(
+                "hosts",
+                "host-safe-proxy",
+                v8_object(&[
+                    ("id", v8_string("host-safe-proxy")),
+                    ("name", v8_string("Safe Proxy Host")),
+                    ("host", v8_string("safe.example")),
+                    ("proxy", v8_string(&valid_proxy)),
+                ]),
+            ),
+            row(
+                "hosts",
+                "host-unsafe-proxy",
+                v8_object(&[
+                    ("id", v8_string("host-unsafe-proxy")),
+                    ("name", v8_string("Unsafe Proxy Host")),
+                    ("host", v8_string("unsafe.example")),
+                    ("proxy", v8_string(&unsafe_proxy)),
+                ]),
+            ),
+        ]);
+
+        let normalized =
+            normalize_source_rows_with_key(rows, Some(&KEY)).expect("normalize proxies");
+        assert_eq!(normalized.hosts.len(), 2);
+        let safe_host = normalized
+            .hosts
+            .iter()
+            .find(|h| h.label == "Safe Proxy Host")
+            .unwrap();
+        assert_eq!(
+            safe_host.proxy.as_deref(),
+            Some("jumpuser@jumphost.example:2222")
+        );
+
+        let unsafe_host = normalized
+            .hosts
+            .iter()
+            .find(|h| h.label == "Unsafe Proxy Host")
+            .unwrap();
+        assert!(unsafe_host.proxy.is_none());
+        assert!(unsafe_host.warnings.iter().any(|w| w == WARN_PROXY_UNSAFE));
+    }
+
+    #[test]
+    fn encrypted_group_relationships_hierarchy_resolved() {
+        let parent_id = encrypted(b"parent-group-id");
+        let parent_name = encrypted(b"Parent Infrastructure");
+        let child_id = encrypted(b"child-group-id");
+        let child_name = encrypted(b"Child Production");
+
+        let rows = source(vec![
+            row(
+                "groups",
+                "grp-parent",
+                v8_object(&[
+                    ("id", v8_string(&parent_id)),
+                    ("name", v8_string(&parent_name)),
+                ]),
+            ),
+            row(
+                "groups",
+                "grp-child",
+                v8_object(&[
+                    ("id", v8_string(&child_id)),
+                    ("name", v8_string(&child_name)),
+                    ("parentId", v8_string(&parent_id)),
+                ]),
+            ),
+            row(
+                "hosts",
+                "host-in-child",
+                v8_object(&[
+                    ("id", v8_string("host-1")),
+                    ("name", v8_string("Grouped Host")),
+                    ("host", v8_string("grouped.example")),
+                    ("groupId", v8_string(&child_id)),
+                ]),
+            ),
+        ]);
+
+        let normalized =
+            normalize_source_rows_with_key(rows, Some(&KEY)).expect("normalize groups");
+        assert_eq!(normalized.groups.len(), 2);
+        let parent = normalized
+            .groups
+            .iter()
+            .find(|g| g.source_id == "parent-group-id")
+            .unwrap();
+        assert_eq!(parent.name, "Parent Infrastructure");
+        let child = normalized
+            .groups
+            .iter()
+            .find(|g| g.source_id == "child-group-id")
+            .unwrap();
+        assert_eq!(child.name, "Parent Infrastructure / Child Production");
+        assert_eq!(child.parent_source_id, None);
+
+        let host = &normalized.hosts[0];
+        assert_eq!(host.group_source_id.as_deref(), Some("child-group-id"));
+        assert!(
+            normalized.warnings.is_empty(),
+            "warnings: {:?}",
+            normalized.warnings
+        );
     }
 
     #[test]

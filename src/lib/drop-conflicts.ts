@@ -24,3 +24,21 @@ export function conflictingNames(localPaths: string[], existingNames: Set<string
   }
   return out;
 }
+
+/**
+ * Format a date as YYYYMMDD for backup file extensions.
+ */
+export function formatBackupDate(date: Date = new Date()): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}${m}${d}`;
+}
+
+/*
+ * Produce the backup filename for an existing conflicting item:
+ * <filename>.<YYYYMMDD>.bak (e.g. "oldfilename.jpeg.20260830.bak").
+ */
+export function backupFilename(filename: string, date: Date = new Date()): string {
+  return `${filename}.${formatBackupDate(date)}.bak`;
+}

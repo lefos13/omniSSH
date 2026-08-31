@@ -352,4 +352,20 @@ describe("ImportSshConfigModal — Termius source", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/close Termius completely/i);
   });
+
+  it("explains when Termius encrypted metadata cannot be decrypted", async () => {
+    invoke.mockRejectedValue({
+      kind: "metadata_unavailable",
+      message: "Termius encrypted metadata could not be decrypted",
+    });
+    render(
+      <ImportSshConfigModal
+        initialSource="termius"
+        onClose={() => {}}
+        onImported={() => {}}
+      />,
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/encrypted metadata could not be decrypted/i);
+  });
 });

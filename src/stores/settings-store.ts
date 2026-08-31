@@ -7,6 +7,7 @@ export type PasteButton = "none" | "right" | "middle";
 /** What double-clicking a file in the Explorer does. */
 export type DoubleClickAction = "download" | "open";
 
+export type HostsViewMode = "cards" | "list";
 /** Full custom accent colour in oklch components (lightness, chroma, hue). */
 export interface AccentCustom { l: number; c: number; h: number }
 
@@ -31,6 +32,8 @@ interface SettingsState {
   interfaceFont: string;
   interfaceMonoFont: string;
 
+  // Dashboard
+  hostsViewMode: HostsViewMode;
   // Updates
   autoUpdate: boolean;
   skippedUpdateVersion: string | null;
@@ -68,6 +71,7 @@ interface SettingsState {
   setInterfaceMonoFont: (font: string) => void;
   setAutoUpdate: (enabled: boolean) => void;
   setSkippedUpdateVersion: (version: string) => void;
+  setHostsViewMode: (mode: HostsViewMode) => void;
   setTerminalFontSize: (size: number) => void;
   setTerminalFontFamily: (family: string) => void;
   setTerminalCursorStyle: (style: CursorStyle) => void;
@@ -94,6 +98,7 @@ const DEFAULTS = {
   interfaceMonoFont: "'JetBrains Mono', 'Fira Code', ui-monospace, monospace",
   autoUpdate: true,
   skippedUpdateVersion: null as string | null,
+  hostsViewMode: "cards" as HostsViewMode,
   terminalFontSize: 14,
   terminalFontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace",
   terminalCursorStyle: "bar" as CursorStyle,
@@ -257,6 +262,11 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     set({ skippedUpdateVersion: version });
     persist("app_skipped_update", version);
   },
+  setHostsViewMode: (mode) => {
+    set({ hostsViewMode: mode });
+    persist("hosts_view_mode", mode);
+  },
+
 
   setTerminalFontSize: (size) => {
     const clamped = Math.max(8, Math.min(42, size));
@@ -378,6 +388,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
           case "app_interface_mono_font": updates.interfaceMonoFont = value || DEFAULTS.interfaceMonoFont; break;
           case "app_auto_update": updates.autoUpdate = value !== "false"; break;
           case "app_skipped_update": updates.skippedUpdateVersion = value || null; break;
+          case "hosts_view_mode": updates.hostsViewMode = value === "list" ? "list" : "cards"; break;
           case "editors_config": {
             try {
               const parsed = JSON.parse(value) as { editors?: EditorConfig[]; defaultEditorId?: string | null };

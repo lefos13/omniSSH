@@ -131,7 +131,7 @@ export const useS3Store = create<S3State>((set, get) => ({
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const conns = await invoke<S3Connection[]>("s3_list_connections");
-      set({ connections: conns });
+      set({ connections: conns ?? [] });
     } catch { /* best-effort */ }
   },
 

@@ -10,7 +10,7 @@ import { DropOverwriteDialog } from "./DropOverwriteDialog";
 import { createSftpProvider, toExplorerEntry } from "../../providers/sftp-provider";
 import { closeExplorerSession, explorerInvoke, transferEventName, type Transport } from "../../lib/explorer-transport";
 import { editorLaunchErrorMessage } from "../../lib/editor-errors";
-import { conflictingNames } from "../../lib/drop-conflicts";
+import { conflictingNames, backupFilename } from "../../lib/drop-conflicts";
 import { toast } from "../../stores/toast-store";
 import type { EditorConfig } from "../../stores/settings-store";
 
@@ -92,6 +92,38 @@ export function ExplorerView({
     isProcessingDrop.current = false;
     if (pd) void uploadDropped(pd.localPaths, pd.remoteDir);
   }, [pendingDrop, uploadDropped]);
+  /*
+   * Rename conflicting remote entries to <name>.<YYYYMMDD>.bak before
+   * enqueuing the dropped files for upload, preserving previous versions.
+   */
+  const backupAndUpload = useCallback(async () => {
+    const pd = pendingDrop;
+    setPendingDrop(null);
+    isProcessingDrop.current = false;
+    if (!pd) return;
+
+    try {
+      const date = new Date();
+      for (const name of pd.conflicts) {
+        const oldPath = provider.joinPath(pd.remoteDir, name);
+        const newName = backupFilename(name, date);
+        const newPath = provider.joinPath(pd.remoteDir, newName);
+        await explorerInvoke(transport, "rename", sessionId, { oldPath, newPath });
+      }
+      const sessionPath = useSftpStore.getState().sessions.get(sessionId)?.currentPath;
+      if (sessionPath) {
+        try {
+          const entries = await explorerInvoke<SftpEntry[]>(transport, "list_dir", sessionId, { path: sessionPath });
+          setEntries(sessionId, sessionPath, entries);
+        } catch {
+          // best-effort reload; transfer completion also triggers reload
+        }
+      }
+      await uploadDropped(pd.localPaths, pd.remoteDir);
+    } catch (err) {
+      toast.error(`Backup failed: ${errorMessage(err)}`);
+    }
+  }, [pendingDrop, provider, transport, sessionId, setEntries, uploadDropped]);
 
   const cancelOverwrite = useCallback(() => {
     setPendingDrop(null);
@@ -857,6 +889,7 @@ export function ExplorerView({
           conflicts={pendingDrop.conflicts}
           targetDir={pendingDrop.remoteDir}
           onConfirm={confirmOverwrite}
+          onBackupAndCopy={backupAndUpload}
           onCancel={cancelOverwrite}
         />
       )}

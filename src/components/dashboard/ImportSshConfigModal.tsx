@@ -58,6 +58,8 @@ function termiusErrorMessage(error: unknown): string {
       return "Confirm credential import before continuing.";
     case "credentials_unavailable":
       return "Selected Termius credentials are unavailable. Import metadata only or scan again.";
+    case "metadata_unavailable":
+      return "Termius encrypted metadata could not be decrypted. Ensure Termius is configured on this device, or scan again.";
     case "invalid_selection":
       return "The selected Termius hosts are no longer available. Scan again before importing.";
     default:

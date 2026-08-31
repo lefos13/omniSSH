@@ -1,10 +1,12 @@
 import { AlertTriangle } from "lucide-react";
-import { ModalShell, BTN_GHOST, BTN_PRIMARY } from "../shared/ModalShell";
+import { ModalShell, BTN_GHOST, BTN_SECONDARY, BTN_PRIMARY } from "../shared/ModalShell";
+import { formatBackupDate, backupFilename } from "../../lib/drop-conflicts";
 
 interface DropOverwriteDialogProps {
   conflicts: string[];
   targetDir: string;
   onConfirm: () => void;
+  onBackupAndCopy?: () => void;
   onCancel: () => void;
 }
 
@@ -18,6 +20,7 @@ export function DropOverwriteDialog({
   conflicts,
   targetDir,
   onConfirm,
+  onBackupAndCopy,
   onCancel,
 }: DropOverwriteDialogProps) {
   const count = conflicts.length;
@@ -29,7 +32,7 @@ export function DropOverwriteDialog({
       title={count === 1 ? "Overwrite item?" : `Overwrite ${count} items?`}
       icon={AlertTriangle}
       iconVariant="danger"
-      maxWidth="sm"
+      maxWidth="md"
       testId="explorer-overwrite-confirm"
       footer={
         <>
@@ -37,6 +40,16 @@ export function DropOverwriteDialog({
           <button autoFocus data-testid="explorer-overwrite-cancel" type="button" onClick={onCancel} className={BTN_GHOST}>
             Cancel
           </button>
+          {onBackupAndCopy && (
+            <button
+              data-testid="explorer-overwrite-backup-button"
+              type="button"
+              onClick={onBackupAndCopy}
+              className={BTN_SECONDARY}
+            >
+              {count === 1 ? "Backup & Copy" : `Backup & Copy ${count}`}
+            </button>
+          )}
           <button data-testid="explorer-overwrite-confirm-button" type="button" onClick={onConfirm} className={BTN_PRIMARY}>
             {count === 1 ? "Overwrite" : `Overwrite ${count}`}
           </button>
@@ -58,9 +71,23 @@ export function DropOverwriteDialog({
             ))}
           </ul>
         )}
-        <p className="text-[length:var(--text-2xs)] text-text-muted">
-          Files are replaced; folders are merged, replacing only same-named files inside.
-        </p>
+        <div className="flex flex-col gap-1 text-[length:var(--text-2xs)] text-text-muted">
+          <p>
+            <strong className="text-text-secondary font-medium">Backup &amp; Copy:</strong>{" "}
+            {count === 1 ? (
+              <>
+                Renames existing file to <span className="font-mono text-text-secondary">{backupFilename(conflicts[0])}</span> before uploading.
+              </>
+            ) : (
+              <>
+                Renames existing files to <span className="font-mono text-text-secondary">&lt;name&gt;.{formatBackupDate()}.bak</span> before uploading.
+              </>
+            )}
+          </p>
+          <p>
+            <strong className="text-text-secondary font-medium">Overwrite:</strong> Files are replaced; folders are merged, replacing only same-named files inside.
+          </p>
+        </div>
         <p className="font-mono text-[length:var(--text-2xs)] text-text-muted truncate">{targetDir}</p>
       </div>
     </ModalShell>

@@ -10,7 +10,8 @@ use std::cmp::Ordering;
 
 pub const IDB_COMPARATOR_NAME: &str = "idb_cmp1";
 
-const GLOBAL_MAX_SIMPLE_TYPE: u8 = 6;
+const GLOBAL_MAX_SIMPLE_TYPE: u8 = 7;
+const GLOBAL_SCOPES_PREFIX_TYPE: u8 = 50;
 const DATABASE_MAX_SIMPLE_TYPE: u8 = 6;
 const OBJECT_STORE_DATA_INDEX: u64 = 1;
 const EXISTS_ENTRY_INDEX: u64 = 2;
@@ -170,6 +171,7 @@ fn compare_global_metadata(a: &[u8], b: &[u8]) -> Option<Ordering> {
     }
 
     match type_a {
+        GLOBAL_SCOPES_PREFIX_TYPE => Some(a[1..].cmp(&b[1..])),
         100 => compare_one_varint(&a[1..], &b[1..]),
         201 => {
             let (origin_a, used_a) = decode_string_with_length(&a[1..])?;
@@ -548,6 +550,20 @@ mod tests {
         let z = global_database_name("origin", "z");
         let aa = global_database_name("origin", "aa");
         assert_eq!(IdbComparator.cmp(&z, &aa), Ordering::Greater);
+    }
+
+    #[test]
+    fn compares_chromium_scope_suffixes_bytewise() {
+        let mut lower = prefix(0, 0, 0);
+        lower.extend([50, 1, 0x7f]);
+        let mut higher = prefix(0, 0, 0);
+        higher.extend([50, 1, 0x80]);
+
+        assert_eq!(
+            compare_global_metadata(&[50, 1, 0x7f], &[50, 1, 0x80]),
+            Some(Ordering::Less)
+        );
+        assert_eq!(IdbComparator.cmp(&lower, &higher), Ordering::Less);
     }
 
     #[test]

@@ -166,3 +166,51 @@ describe("settings-store — interface monospace font", () => {
     expect(useSettingsStore.getState().interfaceMonoFont).toBe(DEFAULT_MONO);
   });
 });
+
+describe("settings-store — hosts view mode", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    useSettingsStore.setState({ hostsViewMode: "cards" });
+  });
+
+  it("defaults to cards view mode", () => {
+    expect(useSettingsStore.getState().hostsViewMode).toBe("cards");
+  });
+
+  it("sets and persists the list view mode", async () => {
+    useSettingsStore.getState().setHostsViewMode("list");
+    expect(useSettingsStore.getState().hostsViewMode).toBe("list");
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("save_setting", {
+        key: "hosts_view_mode",
+        value: "list",
+      }),
+    );
+  });
+
+  it("loads a persisted hosts view mode, falling back to cards for unknown value", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "load_all_settings") {
+        return [
+          ["hosts_view_mode", "list"],
+          ["editors_seeded", "true"],
+        ];
+      }
+      return undefined;
+    });
+    await useSettingsStore.getState().loadSettings();
+    expect(useSettingsStore.getState().hostsViewMode).toBe("list");
+
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "load_all_settings") {
+        return [
+          ["hosts_view_mode", "invalid-mode"],
+          ["editors_seeded", "true"],
+        ];
+      }
+      return undefined;
+    });
+    await useSettingsStore.getState().loadSettings();
+    expect(useSettingsStore.getState().hostsViewMode).toBe("cards");
+  });
+});

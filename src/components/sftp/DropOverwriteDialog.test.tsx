@@ -5,16 +5,18 @@ import { DropOverwriteDialog } from "./DropOverwriteDialog";
 
 function renderDialog(over: Partial<React.ComponentProps<typeof DropOverwriteDialog>> = {}) {
   const onConfirm = vi.fn();
+  const onBackupAndCopy = vi.fn();
   const onCancel = vi.fn();
   render(
     <DropOverwriteDialog
       conflicts={over.conflicts ?? ["a.txt"]}
       targetDir={over.targetDir ?? "/home/user"}
       onConfirm={over.onConfirm ?? onConfirm}
+      onBackupAndCopy={over.onBackupAndCopy ?? onBackupAndCopy}
       onCancel={over.onCancel ?? onCancel}
     />,
   );
-  return { onConfirm, onCancel };
+  return { onConfirm, onBackupAndCopy, onCancel };
 }
 
 describe("DropOverwriteDialog", () => {
@@ -22,14 +24,20 @@ describe("DropOverwriteDialog", () => {
     renderDialog({ conflicts: ["report.pdf"] });
     expect(screen.getByText("Overwrite item?")).toBeInTheDocument();
     expect(screen.getByText("report.pdf")).toBeInTheDocument();
+    expect(screen.getByTestId("explorer-overwrite-backup-button")).toHaveTextContent("Backup & Copy");
+    expect(screen.getByText(/renames existing file to/i)).toBeInTheDocument();
+    expect(screen.getByText(/report\.pdf\.\d{8}\.bak/)).toBeInTheDocument();
   });
 
   it("shows plural copy and lists every conflict for many", () => {
     renderDialog({ conflicts: ["a.txt", "b.txt", "c.txt"] });
     expect(screen.getByText("Overwrite 3 items?")).toBeInTheDocument();
+    expect(screen.getByTestId("explorer-overwrite-backup-button")).toHaveTextContent("Backup & Copy 3");
     for (const n of ["a.txt", "b.txt", "c.txt"]) {
       expect(screen.getByText(n)).toBeInTheDocument();
     }
+    expect(screen.getByText(/renames existing files to/i)).toBeInTheDocument();
+    expect(screen.getByText(/<name>\.\d{8}\.bak/)).toBeInTheDocument();
   });
 
   it("explains that folders are merged rather than replaced", () => {
@@ -43,6 +51,14 @@ describe("DropOverwriteDialog", () => {
     const { onConfirm, onCancel } = renderDialog();
     fireEvent.click(screen.getByTestId("explorer-overwrite-confirm-button"));
     expect(onConfirm).toHaveBeenCalledTimes(1);
+    expect(onCancel).not.toHaveBeenCalled();
+  });
+
+  it("fires onBackupAndCopy when Backup & Copy is clicked", () => {
+    const { onBackupAndCopy, onConfirm, onCancel } = renderDialog();
+    fireEvent.click(screen.getByTestId("explorer-overwrite-backup-button"));
+    expect(onBackupAndCopy).toHaveBeenCalledTimes(1);
+    expect(onConfirm).not.toHaveBeenCalled();
     expect(onCancel).not.toHaveBeenCalled();
   });
 

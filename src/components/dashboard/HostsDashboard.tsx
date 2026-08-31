@@ -5,7 +5,7 @@ import {
   useCallback,
   useMemo,
 } from "react";
-import { Search, Plus, ArrowLeft, FolderPlus, Import, Cloud } from "lucide-react";
+import { Search, Plus, ArrowLeft, FolderPlus, Import, Cloud, LayoutGrid, List } from "lucide-react";
 import {
   DndContext,
   closestCenter,
@@ -19,6 +19,7 @@ import {
 import {
   SortableContext,
   rectSortingStrategy,
+  verticalListSortingStrategy,
   arrayMove,
   sortableKeyboardCoordinates,
 } from "@dnd-kit/sortable";
@@ -31,8 +32,10 @@ import { useUiStore } from "../../stores/ui-store";
 import { useTabStore } from "../../stores/tab-store";
 import { useSftpStore } from "../../stores/sftp-store";
 import { useS3Store } from "../../stores/s3-store";
+import { useSettingsStore } from "../../stores/settings-store";
 import type { SavedHost, HostGroup, RecentConnection, S3Connection } from "../../types";
 import { HostCard } from "./HostCard";
+import { HostListRow } from "./HostListRow";
 import { GroupCard } from "./GroupCard";
 import { S3Card } from "./S3Card";
 import { SortableCard } from "./SortableCard";
@@ -62,6 +65,8 @@ export function HostsDashboard() {
     useHostsStore();
   const { groups, loadGroups, createGroup, deleteGroup, reorderGroups } = useGroupsStore();
   const setEditingHostId = useUiStore((s) => s.setEditingHostId);
+  const hostsViewMode = useSettingsStore((s) => s.hostsViewMode);
+  const setHostsViewMode = useSettingsStore((s) => s.setHostsViewMode);
 
   const [query, setQuery] = useState("");
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
@@ -661,52 +666,10 @@ export function HostsDashboard() {
                 "transition-all duration-[var(--duration-fast)]",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               ].join(" ")}
-              title="Import from SSH Config"
+              title="Import Connections"
             >
               <Import size={14} strokeWidth={2} aria-hidden="true" />
               Import
-            </button>
-
-            {/* Keep MobaXterm discoverable from the existing connections
-                toolbar while leaving the established OpenSSH test id intact. */}
-            <button
-              data-testid="import-mobaxterm-button"
-              onClick={() => {
-                setImportSource("mobaxterm");
-                setImportModalOpen(true);
-              }}
-              className={[
-                "flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium uppercase tracking-wide",
-                "bg-bg-surface border border-border text-text-secondary",
-                "hover:border-border-focus hover:text-text-primary hover:bg-bg-overlay",
-                "transition-all duration-[var(--duration-fast)]",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              ].join(" ")}
-              title="Import from MobaXterm"
-            >
-              <Import size={14} strokeWidth={2} aria-hidden="true" />
-              MobaXterm
-            </button>
-
-            {/* Termius gets a dedicated entry point so its closed-app guidance
-                is available without changing the established import actions. */}
-            <button
-              data-testid="import-termius-button"
-              onClick={() => {
-                setImportSource("termius");
-                setImportModalOpen(true);
-              }}
-              className={[
-                "flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium uppercase tracking-wide",
-                "bg-bg-surface border border-border text-text-secondary",
-                "hover:border-border-focus hover:text-text-primary hover:bg-bg-overlay",
-                "transition-all duration-[var(--duration-fast)]",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              ].join(" ")}
-              title="Import from Termius"
-            >
-              <Import size={14} strokeWidth={2} aria-hidden="true" />
-              Termius
             </button>
           </div>
 
@@ -748,32 +711,78 @@ export function HostsDashboard() {
 
           {/* ── Hosts section ── */}
           <section aria-labelledby="hosts-heading">
-            <div className="flex items-center gap-3 mb-3">
-              {/* Breadcrumb back button when a group is selected */}
-              {activeGroup && (
-                <button
-                  onClick={() => setSelectedGroupId(null)}
-                  className={[
-                    "flex items-center gap-1.5 text-[length:var(--text-xs)] text-text-muted",
-                    "hover:text-text-secondary transition-colors duration-[var(--duration-fast)]",
-                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded",
-                  ].join(" ")}
-                  aria-label="Back to all hosts"
-                >
-                  <ArrowLeft size={13} strokeWidth={2.2} aria-hidden="true" />
-                  All Hosts
-                </button>
-              )}
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <div className="flex items-center gap-3">
+                {/* Breadcrumb back button when a group is selected */}
+                {activeGroup && (
+                  <button
+                    onClick={() => setSelectedGroupId(null)}
+                    className={[
+                      "flex items-center gap-1.5 text-[length:var(--text-xs)] text-text-muted",
+                      "hover:text-text-secondary transition-colors duration-[var(--duration-fast)]",
+                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded",
+                    ].join(" ")}
+                    aria-label="Back to all hosts"
+                  >
+                    <ArrowLeft size={13} strokeWidth={2.2} aria-hidden="true" />
+                    All Hosts
+                  </button>
+                )}
 
-              <h2
-                id="hosts-heading"
-                className="text-[length:var(--text-xs)] font-semibold uppercase tracking-widest text-text-muted"
-              >
-                {activeGroup ? activeGroup.name : "Hosts"}
-              </h2>
+                <h2
+                  id="hosts-heading"
+                  className="text-[length:var(--text-xs)] font-semibold uppercase tracking-widest text-text-muted"
+                >
+                  {activeGroup ? activeGroup.name : "Hosts"}
+                </h2>
+              </div>
+
+              {/* View mode toggle (Cards vs List) */}
+              {filteredHosts.length > 0 && (
+                <div
+                  className="flex items-center gap-0.5 p-0.5 rounded-lg bg-bg-surface border border-border"
+                  role="group"
+                  aria-label="Hosts view layout"
+                >
+                  <button
+                    type="button"
+                    data-testid="hosts-view-cards-button"
+                    onClick={() => setHostsViewMode("cards")}
+                    aria-pressed={hostsViewMode === "cards"}
+                    aria-label="Card grid view"
+                    title="Cards view"
+                    className={[
+                      "p-1.5 rounded-md transition-colors",
+                      hostsViewMode === "cards"
+                        ? "bg-bg-overlay text-text-primary shadow-xs"
+                        : "text-text-muted hover:text-text-primary",
+                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    ].join(" ")}
+                  >
+                    <LayoutGrid size={14} strokeWidth={2} aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="hosts-view-list-button"
+                    onClick={() => setHostsViewMode("list")}
+                    aria-pressed={hostsViewMode === "list"}
+                    aria-label="List view"
+                    title="List view"
+                    className={[
+                      "p-1.5 rounded-md transition-colors",
+                      hostsViewMode === "list"
+                        ? "bg-bg-overlay text-text-primary shadow-xs"
+                        : "text-text-muted hover:text-text-primary",
+                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    ].join(" ")}
+                  >
+                    <List size={14} strokeWidth={2} aria-hidden="true" />
+                  </button>
+                </div>
+              )}
             </div>
 
-            {/* Host grid or empty state */}
+            {/* Host grid or list or empty state */}
             {filteredHosts.length > 0 ? (
               <DndContext
                 sensors={sensors}
@@ -782,22 +791,39 @@ export function HostsDashboard() {
               >
                 <SortableContext
                   items={filteredHosts.map((h) => h.id)}
-                  strategy={rectSortingStrategy}
+                  strategy={hostsViewMode === "list" ? verticalListSortingStrategy : rectSortingStrategy}
                 >
-                  <div className="grid grid-cols-3 gap-2.5">
-                    {filteredHosts.map((host) => (
-                      <SortableCard key={host.id} id={host.id}>
-                        <HostCard
-                          host={host}
-                          onConnect={(h) => void connectToHost(h)}
-                          onExplore={(h) => void exploreHost(h)}
-                          onEdit={setEditingHostId}
-                          onDelete={(id) => void handleDeleteHost(id)}
-                          onDuplicate={(h) => void handleDuplicateHost(h)}
-                        />
-                      </SortableCard>
-                    ))}
-                  </div>
+                  {hostsViewMode === "list" ? (
+                    <div className="flex flex-col gap-2">
+                      {filteredHosts.map((host) => (
+                        <SortableCard key={host.id} id={host.id}>
+                          <HostListRow
+                            host={host}
+                            onConnect={(h) => void connectToHost(h)}
+                            onExplore={(h) => void exploreHost(h)}
+                            onEdit={setEditingHostId}
+                            onDelete={(id) => void handleDeleteHost(id)}
+                            onDuplicate={(h) => void handleDuplicateHost(h)}
+                          />
+                        </SortableCard>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-3 gap-2.5">
+                      {filteredHosts.map((host) => (
+                        <SortableCard key={host.id} id={host.id}>
+                          <HostCard
+                            host={host}
+                            onConnect={(h) => void connectToHost(h)}
+                            onExplore={(h) => void exploreHost(h)}
+                            onEdit={setEditingHostId}
+                            onDelete={(id) => void handleDeleteHost(id)}
+                            onDuplicate={(h) => void handleDuplicateHost(h)}
+                          />
+                        </SortableCard>
+                      ))}
+                    </div>
+                  )}
                 </SortableContext>
               </DndContext>
             ) : (

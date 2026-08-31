@@ -9,14 +9,14 @@ import { useHealthStore, IDLE_HEALTH, type HealthStatus } from "../../stores/hea
 import { useHostsStore } from "../../stores/hosts-store";
 
 // Single source of truth for status → colour, shared by the button and the label.
-function statusColor(status: HealthStatus): string {
+export function statusColor(status: HealthStatus): string {
   if (status === "reachable") return "text-status-connected";
   if (status === "checking") return "text-status-connecting";
   if (status === "idle") return "text-text-muted";
   return "text-status-error";
 }
 
-interface HostCardProps {
+export interface HostCardProps {
   host: SavedHost;
   onConnect: (host: SavedHost) => void;
   onExplore: (host: SavedHost) => void;
@@ -46,23 +46,23 @@ export function getHostColor(name: string): string {
 
 // ─── Environment badge ────────────────────────────────────────────────────────
 
-type EnvironmentValue = "production" | "staging" | "dev" | "testing";
+export type EnvironmentValue = "production" | "staging" | "dev" | "testing";
 
-const ENV_BADGE_CLASSES: Record<EnvironmentValue, string> = {
+export const ENV_BADGE_CLASSES: Record<EnvironmentValue, string> = {
   production: "bg-[oklch(0.650_0.200_25/0.15)] text-[oklch(0.650_0.200_25)]",
   staging:    "bg-[oklch(0.750_0.160_80/0.15)] text-[oklch(0.750_0.160_80)]",
   dev:        "bg-[oklch(0.720_0.180_155/0.15)] text-[oklch(0.720_0.180_155)]",
   testing:    "bg-[oklch(0.700_0.150_250/0.15)] text-[oklch(0.700_0.150_250)]",
 };
 
-const ENV_LABELS: Record<EnvironmentValue, string> = {
+export const ENV_LABELS: Record<EnvironmentValue, string> = {
   production: "PROD",
   staging:    "STAGE",
   dev:        "DEV",
   testing:    "TEST",
 };
 
-function isEnvironmentValue(val: string): val is EnvironmentValue {
+export function isEnvironmentValue(val: string): val is EnvironmentValue {
   return val === "production" || val === "staging" || val === "dev" || val === "testing";
 }
 
@@ -243,6 +243,11 @@ export function HostCard({ host, onConnect, onExplore, onEdit, onDelete, onDupli
           <p className="text-[length:var(--text-sm)] font-medium text-text-primary truncate leading-tight pr-24">
             {displayName}
           </p>
+          {host.label && (
+            <p className="text-[length:var(--text-xs)] text-text-muted font-mono truncate mt-0.5">
+              {host.host}{host.port && host.port !== 22 ? `:${host.port}` : ""}
+            </p>
+          )}
           <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
             <p className="text-[length:var(--text-xs)] text-text-muted font-mono truncate">
               {subtitle}

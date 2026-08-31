@@ -37,7 +37,9 @@ const GLOBAL_DATA_VERSION_TYPE: u8 = 2;
 const GLOBAL_BLOB_JOURNAL_TYPE: u8 = 3;
 const GLOBAL_LIVE_BLOB_JOURNAL_TYPE: u8 = 4;
 const GLOBAL_EARLIEST_SWEEP_TYPE: u8 = 5;
-const GLOBAL_MAX_SIMPLE_TYPE: u8 = 6;
+const GLOBAL_EARLIEST_COMPACTION_TYPE: u8 = 6;
+const GLOBAL_MAX_SIMPLE_TYPE: u8 = 7;
+const GLOBAL_SCOPES_PREFIX_TYPE: u8 = 50;
 const GLOBAL_DATABASE_FREE_LIST_TYPE: u8 = 100;
 const GLOBAL_DATABASE_NAME_TYPE: u8 = 201;
 const DATABASE_OBJECT_STORE_METADATA_TYPE: u8 = 50;
@@ -506,6 +508,8 @@ fn parse_global_metadata(
         | GLOBAL_BLOB_JOURNAL_TYPE
         | GLOBAL_LIVE_BLOB_JOURNAL_TYPE
         | GLOBAL_EARLIEST_SWEEP_TYPE
+        | GLOBAL_EARLIEST_COMPACTION_TYPE
+        | GLOBAL_SCOPES_PREFIX_TYPE
         | GLOBAL_DATABASE_FREE_LIST_TYPE => {}
         other => {
             return Err(unsupported(
@@ -1044,6 +1048,12 @@ mod tests {
                 &[2],
             )
             .unwrap();
+        let mut scope_metadata_key = prefix(0, 0, 0);
+        scope_metadata_key.extend([50, 0]);
+        database.put(&scope_metadata_key, &[1]).unwrap();
+        let mut compaction_metadata_key = prefix(0, 0, 0);
+        compaction_metadata_key.push(GLOBAL_EARLIEST_COMPACTION_TYPE);
+        database.put(&compaction_metadata_key, &[0; 8]).unwrap();
         database.flush().unwrap();
         database.close().unwrap();
         fs::write(path.join("LOCK"), b"").unwrap();

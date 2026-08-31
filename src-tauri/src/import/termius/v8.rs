@@ -18,6 +18,7 @@ const FALSE_TAG: u8 = b'F';
 const INT32_TAG: u8 = b'I';
 const UINT32_TAG: u8 = b'U';
 const DOUBLE_TAG: u8 = b'N';
+const DATE_TAG: u8 = b'D';
 const UTF8_STRING_TAG: u8 = b'S';
 const ONE_BYTE_STRING_TAG: u8 = b'"';
 const TWO_BYTE_STRING_TAG: u8 = b'c';
@@ -87,6 +88,25 @@ impl<'a> Decoder<'a> {
         let offset = self.offset;
         self.offset += 1;
         let version = self.varint()?;
+        /* Blink 16+ prefixes V8's own header with a separate wire-format
+         * envelope. Consume only that outer envelope, then validate the V8
+         * version that governs the tags decoded below. */
+        if version >= 16 {
+            if self.byte()? != V8_VERSION_TAG {
+                return Err(V8Error::Invalid {
+                    offset: self.offset - 1,
+                });
+            }
+            let v8_offset = self.offset - 1;
+            let v8_version = self.varint()?;
+            if v8_version > V8_LATEST_VERSION {
+                return Err(V8Error::UnsupportedVersion {
+                    version: v8_version,
+                    offset: v8_offset,
+                });
+            }
+            return Ok(());
+        }
         if version > V8_LATEST_VERSION {
             return Err(V8Error::UnsupportedVersion { version, offset });
         }
@@ -224,6 +244,7 @@ impl<'a> Decoder<'a> {
             }
             UINT32_TAG => Ok(Value::Uint32(self.varint()?)),
             DOUBLE_TAG => Ok(Value::Float64(f64::from_ne_bytes(self.take()?))),
+            DATE_TAG => Ok(Value::Float64(f64::from_ne_bytes(self.take()?))),
             UTF8_STRING_TAG | ONE_BYTE_STRING_TAG | TWO_BYTE_STRING_TAG => {
                 Ok(Value::String(self.string(tag, offset)?))
             }
@@ -361,6 +382,19 @@ mod tests {
 
         let padded = [0xff, 0x0f, 0x00, b'c', 0x02, b'a', 0x00];
         assert_eq!(decode(&padded).unwrap(), Value::String("a".into()));
+
+        let dual_header = [0xff, 20, 0xff, 15, b'"', 0x02, b'o', b'k'];
+        assert_eq!(decode(&dual_header).unwrap(), Value::String("ok".into()));
+    }
+
+    #[test]
+    fn decodes_date_as_epoch_milliseconds() {
+        let mut date = vec![DATE_TAG];
+        date.extend(1_735_689_600_000_f64.to_ne_bytes());
+        assert_eq!(
+            decode(&date).unwrap(),
+            Value::Float64(1_735_689_600_000_f64)
+        );
     }
 
     #[test]

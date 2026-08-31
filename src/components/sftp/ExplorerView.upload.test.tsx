@@ -7,9 +7,17 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 // plugin, the event channel, and the drag-drop webview API. Mock them all so
 // the component mounts in jsdom without a real Tauri runtime.
 
-const { invoke, dialogOpen } = vi.hoisted(() => ({
+type DragDropPayload = {
+  type: "enter" | "over" | "drop" | "leave";
+  paths: string[];
+  position?: { x: number; y: number };
+};
+type DragDropCallback = (event: { payload: DragDropPayload }) => void;
+
+const { invoke, dialogOpen, dropListeners } = vi.hoisted(() => ({
   invoke: vi.fn(async (..._args: unknown[]) => [] as unknown),
   dialogOpen: vi.fn(),
+  dropListeners: { current: null as DragDropCallback | null },
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
@@ -19,13 +27,18 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 vi.mock("@tauri-apps/api/webviewWindow", () => ({
   getCurrentWebviewWindow: () => ({
-    onDragDropEvent: vi.fn(async () => () => {}),
+    onDragDropEvent: vi.fn(async (cb: DragDropCallback) => {
+      dropListeners.current = cb;
+      return () => {
+        dropListeners.current = null;
+      };
+    }),
   }),
 }));
 
 import { ExplorerView } from "./ExplorerView";
 import { useSftpStore } from "../../stores/sftp-store";
-
+import type { SftpEntry } from "../../types";
 const SESSION_ID = "sess-1";
 const CURRENT_PATH = "/home/user";
 
@@ -35,6 +48,17 @@ function seedSession(): void {
   // Drive currentPath to a non-root dir so we can assert remoteDir precisely.
   store.setEntries(SESSION_ID, CURRENT_PATH, []);
 }
+
+const MOCK_FILE_ENTRY: SftpEntry = {
+  name: "oldfilename.jpeg",
+  path: `${CURRENT_PATH}/oldfilename.jpeg`,
+  entry_type: "File",
+  size: 1024,
+  permissions: 0o644,
+  permissions_display: "-rw-r--r--",
+  modified: 1700000000,
+  is_symlink: false,
+};
 
 /** Find the enqueue_upload invoke call, if any. */
 function enqueueCall(): unknown[] | undefined {
@@ -125,5 +149,152 @@ describe("ExplorerView — upload button", () => {
     await waitFor(() => expect(dialogOpen).toHaveBeenCalledTimes(1));
     await Promise.resolve();
     expect(enqueueCall()).toBeUndefined();
+  });
+});
+
+describe("ExplorerView — drag-and-drop upload and conflict handling", () => {
+  beforeEach(() => {
+    invoke.mockClear();
+    invoke.mockResolvedValue([]);
+    dialogOpen.mockReset();
+    dropListeners.current = null;
+    useSftpStore.setState({ sessions: new Map(), activeSftpSessionId: null, clipboard: null });
+    seedSession();
+  });
+
+  it("enqueues dropped files directly when there are no conflicting names", async () => {
+    invoke.mockImplementation(async (...args: unknown[]) => {
+      const cmd = args[0] as string;
+      if (cmd === "sftp_list_dir") return [];
+      return [];
+    });
+
+    render(<ExplorerView sessionId={SESSION_ID} isActive />);
+    await waitFor(() => expect(dropListeners.current).not.toBeNull());
+
+    dropListeners.current!({
+      payload: { type: "drop", paths: ["/local/newfile.txt"] },
+    });
+
+    await waitFor(() => expect(enqueueCall()).toBeDefined());
+    expect(enqueueCall()?.[1]).toEqual({
+      sftpSessionId: SESSION_ID,
+      localPaths: ["/local/newfile.txt"],
+      remoteDir: CURRENT_PATH,
+    });
+    expect(screen.queryByTestId("explorer-overwrite-confirm")).not.toBeInTheDocument();
+  });
+
+  it("shows overwrite dialog with Backup & Copy option when files conflict", async () => {
+    invoke.mockImplementation(async (...args: unknown[]) => {
+      const cmd = args[0] as string;
+      if (cmd === "sftp_list_dir") {
+        return [MOCK_FILE_ENTRY];
+      }
+      return [];
+    });
+
+    render(<ExplorerView sessionId={SESSION_ID} isActive />);
+    await waitFor(() => expect(dropListeners.current).not.toBeNull());
+
+    dropListeners.current!({
+      payload: { type: "drop", paths: ["/local/oldfilename.jpeg"] },
+    });
+
+    expect(await screen.findByTestId("explorer-overwrite-confirm")).toBeInTheDocument();
+    expect(screen.getByTestId("explorer-overwrite-backup-button")).toBeInTheDocument();
+    expect(screen.getByTestId("explorer-overwrite-confirm-button")).toBeInTheDocument();
+    expect(enqueueCall()).toBeUndefined();
+  });
+
+  it("cancels drop without uploading or renaming when Cancel is clicked", async () => {
+    invoke.mockImplementation(async (...args: unknown[]) => {
+      const cmd = args[0] as string;
+      if (cmd === "sftp_list_dir") {
+        return [MOCK_FILE_ENTRY];
+      }
+      return [];
+    });
+
+    render(<ExplorerView sessionId={SESSION_ID} isActive />);
+    await waitFor(() => expect(dropListeners.current).not.toBeNull());
+
+    dropListeners.current!({
+      payload: { type: "drop", paths: ["/local/oldfilename.jpeg"] },
+    });
+
+    const cancelBtn = await screen.findByTestId("explorer-overwrite-cancel");
+    fireEvent.click(cancelBtn);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("explorer-overwrite-confirm")).not.toBeInTheDocument();
+    });
+    expect(enqueueCall()).toBeUndefined();
+    expect(invoke.mock.calls.find((c) => c[0] === "sftp_rename")).toBeUndefined();
+  });
+
+  it("overwrites directly without renaming when Overwrite is clicked", async () => {
+    invoke.mockImplementation(async (...args: unknown[]) => {
+      const cmd = args[0] as string;
+      if (cmd === "sftp_list_dir") {
+        return [MOCK_FILE_ENTRY];
+      }
+      return [];
+    });
+
+    render(<ExplorerView sessionId={SESSION_ID} isActive />);
+    await waitFor(() => expect(dropListeners.current).not.toBeNull());
+
+    dropListeners.current!({
+      payload: { type: "drop", paths: ["/local/oldfilename.jpeg"] },
+    });
+
+    const overwriteBtn = await screen.findByTestId("explorer-overwrite-confirm-button");
+    fireEvent.click(overwriteBtn);
+
+    await waitFor(() => expect(enqueueCall()).toBeDefined());
+    expect(enqueueCall()?.[1]).toEqual({
+      sftpSessionId: SESSION_ID,
+      localPaths: ["/local/oldfilename.jpeg"],
+      remoteDir: CURRENT_PATH,
+    });
+    expect(invoke.mock.calls.find((c) => c[0] === "sftp_rename")).toBeUndefined();
+  });
+
+  it("renames existing files to .YYYYMMDD.bak and uploads when Backup & Copy is clicked", async () => {
+    invoke.mockImplementation(async (...args: unknown[]) => {
+      const cmd = args[0] as string;
+      if (cmd === "sftp_list_dir") {
+        return [MOCK_FILE_ENTRY];
+      }
+      return [];
+    });
+
+    render(<ExplorerView sessionId={SESSION_ID} isActive />);
+    await waitFor(() => expect(dropListeners.current).not.toBeNull());
+
+    dropListeners.current!({
+      payload: { type: "drop", paths: ["/local/oldfilename.jpeg"] },
+    });
+
+    const backupBtn = await screen.findByTestId("explorer-overwrite-backup-button");
+    fireEvent.click(backupBtn);
+
+    await waitFor(() => {
+      const renameCall = invoke.mock.calls.find((c) => c[0] === "sftp_rename");
+      expect(renameCall).toBeDefined();
+      expect(renameCall?.[1]).toEqual({
+        sftpSessionId: SESSION_ID,
+        oldPath: `${CURRENT_PATH}/oldfilename.jpeg`,
+        newPath: expect.stringMatching(new RegExp(`^${CURRENT_PATH}/oldfilename\\.jpeg\\.\\d{8}\\.bak$`)),
+      });
+    });
+
+    await waitFor(() => expect(enqueueCall()).toBeDefined());
+    expect(enqueueCall()?.[1]).toEqual({
+      sftpSessionId: SESSION_ID,
+      localPaths: ["/local/oldfilename.jpeg"],
+      remoteDir: CURRENT_PATH,
+    });
   });
 });
