@@ -1,6 +1,8 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useSshStatus } from "../use-ssh-status";
+import { useLinkedExplorerStore } from "../../stores/linked-explorer-store";
+import { useSessionStore } from "../../stores/session-store";
 import { useSftpStore } from "../../stores/sftp-store";
 import { pageTabId, useTabStore } from "../../stores/tab-store";
 import type { SshStatusPayload } from "../../types";
@@ -25,6 +27,17 @@ vi.mock("@tauri-apps/api/event", () => ({ listen }));
 let statusListener: StatusListener | undefined;
 
 function resetStores(): void {
+  useLinkedExplorerStore.setState({
+    openTabIds: new Set(),
+    bindings: new Map(),
+  });
+  useSessionStore.setState({
+    sessions: new Map(),
+    activeSessionId: null,
+    tabs: new Map(),
+    activeTerminalTabId: null,
+    zoomedPaneId: null,
+  });
   useSftpStore.setState({
     sessions: new Map(),
     activeSftpSessionId: null,
@@ -117,5 +130,58 @@ describe("useSshStatus", () => {
     expect(invoke).not.toHaveBeenCalled();
     expect(useSftpStore.getState().sessions.has("sftp-1")).toBe(true);
     expect(useTabStore.getState().tabs.has("sftp-1")).toBe(true);
+  });
+
+  /* A linked explorer has no standalone tab to describe its transport. The
+   * linked store must clear its panel/binding first, while the terminal stays
+   * present for the disconnected-state retry overlay. */
+  it("clears linked SCP state on a remote disconnect without disconnecting the terminal", async () => {
+    useSessionStore.getState().addSession("ssh-linked", {
+      host: "10.0.0.1",
+      port: 22,
+      username: "root",
+      auth_method: { type: "password", password: "pwd" },
+    });
+    useSftpStore.getState().openSession(
+      "scp-linked",
+      "ssh-linked",
+      "linked",
+      "root",
+      false,
+      undefined,
+      "scp",
+    );
+    useLinkedExplorerStore.setState({
+      openTabIds: new Set(["ssh-linked"]),
+      bindings: new Map([
+        ["ssh-linked", {
+          tabId: "ssh-linked",
+          sshSessionId: "ssh-linked",
+          sftpSessionId: "scp-linked",
+          transport: "scp",
+          status: "connected",
+          error: null,
+        }],
+      ]),
+    });
+
+    renderHook(() => useSshStatus());
+    await vi.waitFor(() => expect(statusListener).toBeDefined());
+
+    await act(async () => {
+      emitStatus("ssh-linked", "Disconnected");
+      await vi.waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("scp_close", { scpSessionId: "scp-linked" }),
+      );
+      await vi.waitFor(() =>
+        expect(useLinkedExplorerStore.getState().bindings.has("ssh-linked")).toBe(false),
+      );
+    });
+
+    expect(useLinkedExplorerStore.getState().openTabIds.has("ssh-linked")).toBe(false);
+    expect(useSftpStore.getState().sessions.has("scp-linked")).toBe(false);
+    expect(useSessionStore.getState().sessions.has("ssh-linked")).toBe(true);
+    expect(useSessionStore.getState().sessions.get("ssh-linked")?.status).toBe("Disconnected");
+    expect(invoke).not.toHaveBeenCalledWith("ssh_disconnect", expect.anything());
   });
 });

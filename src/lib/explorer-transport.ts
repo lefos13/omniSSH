@@ -12,16 +12,16 @@
 export type Transport = "sftp" | "scp";
 
 /*
- * Session metadata is optional until the linked-explorer store carries its
- * transport field. Prefer that metadata when present, then let a unified tab
- * supply the current standalone fallback.
+ * Session metadata is authoritative whenever it is available. A unified tab
+ * supplies the compatibility fallback for older standalone sessions that do
+ * not yet carry a transport value.
  */
 export function resolveExplorerTransport(
-  session: { transport?: unknown } | undefined,
+  session: { transport?: Transport } | undefined,
   fallback?: Transport,
 ): Transport | undefined {
   const transport = session?.transport;
-  return transport === "sftp" || transport === "scp" ? transport : fallback;
+  return transport ?? fallback;
 }
 
 /** The Tauri event channel that carries transfer progress for a transport. */

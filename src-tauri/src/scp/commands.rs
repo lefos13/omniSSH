@@ -14,7 +14,9 @@ use tauri::{AppHandle, Emitter, State};
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 
-use crate::ssh::manager::{ProtocolSessionKind, SshManager};
+use crate::ssh::manager::{
+    ProtocolOpenError, ProtocolOpenRequest, ProtocolSessionKind, SshManager,
+};
 
 use super::transfer_manager::ScpTransferManager;
 use super::{
@@ -39,67 +41,95 @@ pub async fn scp_open(
     ssh_manager: State<'_, SshManager>,
     scp_manager: State<'_, Arc<ScpManager>>,
 ) -> Result<String, ScpError> {
-    let _protocol_open = ssh_manager
-        .begin_protocol_open(&session_id)
-        .ok_or_else(|| ScpError::ChannelError("SSH session is disconnecting".to_string()))?;
-
-    let handle = ssh_manager
-        .get_handle(&session_id)
-        .map_err(|e| ScpError::SshSessionNotFound(e.to_string()))?;
-
-    // Probe for a usable scp binary up front so we fail fast with a clear
-    // message rather than on the first transfer.
-    let probe = exec::ssh_exec(handle.clone(), "command -v scp >/dev/null 2>&1; echo $?").await?;
-    let code = String::from_utf8_lossy(&probe.0);
-    if code.trim() != "0" {
-        return Err(ScpError::RemoteError(
-            "remote host has no 'scp' binary on PATH".into(),
-        ));
-    }
-
-    // Detect the remote userland once so listings use the right command. If the
-    // probe itself errors, fall back to the universal `ls`-based Posix path
-    // rather than Default (Gnu), which would hard-fail on `find -printf`.
-    let flavor = exec::detect_flavor(handle.clone())
-        .await
-        .unwrap_or(super::listing::Flavor::Posix);
-
     let scp_id = uuid::Uuid::new_v4().to_string();
-    let wrapper = ScpSessionWrapper {
-        ssh_session_id: session_id,
-        ssh_handle: handle,
-        flavor,
-    };
-    let wrapper_ssh_session_id = wrapper.ssh_session_id.clone();
-    let registration = ssh_manager.publish_protocol_session(
-        ProtocolSessionKind::Scp,
-        scp_id.clone(),
-        wrapper_ssh_session_id,
-        owns_ssh,
-        || scp_manager.insert_session(scp_id.clone(), wrapper),
-        || scp_manager.remove_session(&scp_id),
-    );
+    let ssh_manager_ref = ssh_manager.inner();
+    let session_id_for_open = session_id.clone();
+
+    /*
+     * Keep both remote probes under the lifecycle guard. The shared helper
+     * then publishes the wrapper before registering ownership atomically.
+     */
+    let registration = ssh_manager
+        .open_protocol_session(
+            ProtocolOpenRequest {
+                protocol: ProtocolSessionKind::Scp,
+                protocol_session_id: scp_id.clone(),
+                ssh_session_id: session_id,
+                requested: owns_ssh,
+            },
+            async move {
+                let handle = ssh_manager_ref
+                    .get_handle(&session_id_for_open)
+                    .map_err(|e| ScpError::SshSessionNotFound(e.to_string()))?;
+
+                // Probe for a usable scp binary up front so we fail fast with a clear
+                // message rather than on the first transfer.
+                let probe =
+                    exec::ssh_exec(handle.clone(), "command -v scp >/dev/null 2>&1; echo $?")
+                        .await?;
+                let code = String::from_utf8_lossy(&probe.0);
+                if code.trim() != "0" {
+                    return Err(ScpError::RemoteError(
+                        "remote host has no 'scp' binary on PATH".into(),
+                    ));
+                }
+
+                // Detect the remote userland once so listings use the right command. If the
+                // probe itself errors, fall back to the universal `ls`-based Posix path
+                // rather than Default (Gnu), which would hard-fail on `find -printf`.
+                let flavor = exec::detect_flavor(handle.clone())
+                    .await
+                    .unwrap_or(super::listing::Flavor::Posix);
+
+                Ok((
+                    ScpSessionWrapper {
+                        ssh_session_id: session_id_for_open,
+                        ssh_handle: handle,
+                        flavor,
+                    },
+                    flavor,
+                ))
+            },
+            {
+                let scp_manager = scp_manager.inner().clone();
+                let session_id = scp_id.clone();
+                move |(wrapper, flavor)| {
+                    scp_manager.insert_session(session_id, wrapper);
+                    flavor
+                }
+            },
+            {
+                let scp_manager = scp_manager.inner().clone();
+                let session_id = scp_id.clone();
+                move || {
+                    scp_manager.remove_session(&session_id).map(|wrapper| {
+                        let flavor = wrapper.flavor;
+                        (wrapper, flavor)
+                    })
+                }
+            },
+        )
+        .await;
     match registration {
-        Ok(()) => {}
-        Err(Some(wrapper)) => {
-            drop(wrapper);
-            return Err(ScpError::ChannelError(
-                "SSH session is disconnecting".to_string(),
-            ));
+        Ok(flavor) => {
+            tracing::info!(scp_session_id = %scp_id, flavor = %flavor.as_str(), "SCP session opened");
+            crate::telemetry::capture(
+                "scp_opened",
+                serde_json::json!({ "flavor": flavor.as_str() }),
+            );
+            Ok(scp_id)
         }
-        Err(None) => {
-            return Err(ScpError::ChannelError(
+        Err(ProtocolOpenError::Disconnecting) | Err(ProtocolOpenError::Rejected(None)) => Err(
+            ScpError::ChannelError("SSH session is disconnecting".to_string()),
+        ),
+        Err(ProtocolOpenError::Prepare(error)) => Err(error),
+        Err(ProtocolOpenError::Rejected(Some((wrapper, _flavor)))) => {
+            drop(wrapper);
+            Err(ScpError::ChannelError(
                 "SSH session is disconnecting".to_string(),
-            ));
+            ))
         }
     }
-
-    tracing::info!(scp_session_id = %scp_id, flavor = %flavor.as_str(), "SCP session opened");
-    crate::telemetry::capture(
-        "scp_opened",
-        serde_json::json!({ "flavor": flavor.as_str() }),
-    );
-    Ok(scp_id)
 }
 
 /// Forget an SCP session and release the shared SSH connection when this was

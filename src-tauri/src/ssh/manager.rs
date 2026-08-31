@@ -208,6 +208,24 @@ pub(crate) struct ProtocolOpenGuard<'a> {
     ssh_session_id: String,
 }
 
+pub(crate) enum ProtocolOpenError<E, T> {
+    Disconnecting,
+    Prepare(E),
+    Rejected(Option<T>),
+}
+
+/*
+ * Bundle the lifecycle identity so the async coordinator stays explicit
+ * without making every transport command pass a long positional argument
+ * list.
+ */
+pub(crate) struct ProtocolOpenRequest {
+    pub protocol: ProtocolSessionKind,
+    pub protocol_session_id: String,
+    pub ssh_session_id: String,
+    pub requested: Option<bool>,
+}
+
 impl Drop for ProtocolOpenGuard<'_> {
     fn drop(&mut self) {
         self.manager.finish_protocol_open(&self.ssh_session_id);
@@ -246,7 +264,7 @@ impl SshManager {
      * collector may have claimed the wrapper between publication and this
      * check; in that case the collector remains the sole cleanup owner.
      */
-    pub(crate) fn publish_protocol_session<T, Publish, Rollback>(
+    fn publish_protocol_session<T, R, Publish, Rollback>(
         &self,
         protocol: ProtocolSessionKind,
         protocol_session_id: String,
@@ -254,15 +272,15 @@ impl SshManager {
         requested: Option<bool>,
         publish: Publish,
         rollback: Rollback,
-    ) -> Result<(), Option<T>>
+    ) -> Result<R, Option<T>>
     where
-        Publish: FnOnce(),
+        Publish: FnOnce() -> R,
         Rollback: FnOnce() -> Option<T>,
     {
-        publish();
+        let result = publish();
         if self.register_protocol_session(protocol, protocol_session_id, ssh_session_id, requested)
         {
-            Ok(())
+            Ok(result)
         } else {
             Err(rollback())
         }
@@ -284,10 +302,7 @@ impl SshManager {
         ownership.complete_disconnect(ssh_session_id);
     }
 
-    pub(crate) fn begin_protocol_open(
-        &self,
-        ssh_session_id: &str,
-    ) -> Option<ProtocolOpenGuard<'_>> {
+    fn begin_protocol_open(&self, ssh_session_id: &str) -> Option<ProtocolOpenGuard<'_>> {
         let mut ownership = self
             .protocol_ownership
             .lock()
@@ -298,6 +313,38 @@ impl SshManager {
                 manager: self,
                 ssh_session_id: ssh_session_id.to_string(),
             })
+    }
+
+    /*
+     * Keep the lifecycle guard around the real asynchronous protocol setup.
+     * Commands supply their transport-specific handshake and wrapper manager
+     * callbacks, while this helper fixes the publish-before-register order.
+     */
+    pub(crate) async fn open_protocol_session<Prepare, T, E, R, Publish, Rollback>(
+        &self,
+        request: ProtocolOpenRequest,
+        prepare: Prepare,
+        publish: Publish,
+        rollback: Rollback,
+    ) -> Result<R, ProtocolOpenError<E, T>>
+    where
+        Prepare: Future<Output = Result<T, E>>,
+        Publish: FnOnce(T) -> R,
+        Rollback: FnOnce() -> Option<T>,
+    {
+        let Some(_protocol_open) = self.begin_protocol_open(&request.ssh_session_id) else {
+            return Err(ProtocolOpenError::Disconnecting);
+        };
+        let wrapper = prepare.await.map_err(ProtocolOpenError::Prepare)?;
+        self.publish_protocol_session(
+            request.protocol,
+            request.protocol_session_id,
+            request.ssh_session_id,
+            request.requested,
+            || publish(wrapper),
+            rollback,
+        )
+        .map_err(ProtocolOpenError::Rejected)
     }
 
     fn finish_protocol_open(&self, ssh_session_id: &str) {
@@ -830,6 +877,7 @@ mod tests {
 #[cfg(test)]
 mod ownership_tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn ownership_records_requested_value() {
@@ -1118,6 +1166,173 @@ mod ownership_tests {
             manager.remove_protocol_session(ProtocolSessionKind::Scp, "scp-only"),
             Some(true)
         );
+    }
+
+    /* These command-adjacent harnesses pause the same production helper that
+     * sftp_open and scp_open call after handle acquisition. They let explicit
+     * disconnect win at the awaited-handshake boundary without a live server,
+     * then verify the publish callback's wrapper is rolled back. */
+    #[tokio::test]
+    async fn sftp_open_helper_rolls_back_after_disconnect_during_handshake() {
+        let manager = SshManager::new();
+        let published = std::sync::Arc::new(StdMutex::new(HashSet::new()));
+        let published_for_publish = published.clone();
+        let published_for_rollback = published.clone();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
+
+        let open = manager.open_protocol_session(
+            ProtocolOpenRequest {
+                protocol: ProtocolSessionKind::Sftp,
+                protocol_session_id: "sftp-late".to_string(),
+                ssh_session_id: "ssh-1".to_string(),
+                requested: Some(true),
+            },
+            async move {
+                let _ = ready_tx.send(());
+                let _ = resume_rx.await;
+                Ok::<_, ()>("sftp-late".to_string())
+            },
+            move |session_id| {
+                published_for_publish.lock().unwrap().insert(session_id);
+            },
+            move || {
+                published_for_rollback
+                    .lock()
+                    .unwrap()
+                    .remove("sftp-late")
+                    .then(|| "sftp-late".to_string())
+            },
+        );
+        tokio::pin!(open);
+
+        let result = tokio::select! {
+            _ = ready_rx => {
+                manager.mark_protocol_disconnecting("ssh-1");
+                manager.remove_protocol_sessions_for_ssh("ssh-1");
+                manager.complete_protocol_disconnect("ssh-1");
+                let _ = resume_tx.send(());
+                open.await
+            }
+            _ = &mut open => panic!("handshake completed before disconnect interleaving"),
+        };
+
+        assert!(matches!(result, Err(ProtocolOpenError::Rejected(Some(_)))));
+        assert!(published.lock().unwrap().is_empty());
+        assert!(manager
+            .remove_protocol_session(ProtocolSessionKind::Sftp, "sftp-late")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn scp_open_helper_rolls_back_after_disconnect_during_probe() {
+        let manager = SshManager::new();
+        let published = std::sync::Arc::new(StdMutex::new(HashSet::new()));
+        let published_for_publish = published.clone();
+        let published_for_rollback = published.clone();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
+
+        let open = manager.open_protocol_session(
+            ProtocolOpenRequest {
+                protocol: ProtocolSessionKind::Scp,
+                protocol_session_id: "scp-late".to_string(),
+                ssh_session_id: "ssh-1".to_string(),
+                requested: Some(true),
+            },
+            async move {
+                let _ = ready_tx.send(());
+                let _ = resume_rx.await;
+                Ok::<_, ()>("scp-late".to_string())
+            },
+            move |session_id| {
+                published_for_publish.lock().unwrap().insert(session_id);
+            },
+            move || {
+                published_for_rollback
+                    .lock()
+                    .unwrap()
+                    .remove("scp-late")
+                    .then(|| "scp-late".to_string())
+            },
+        );
+        tokio::pin!(open);
+
+        let result = tokio::select! {
+            _ = ready_rx => {
+                manager.mark_protocol_disconnecting("ssh-1");
+                manager.remove_protocol_sessions_for_ssh("ssh-1");
+                manager.complete_protocol_disconnect("ssh-1");
+                let _ = resume_tx.send(());
+                open.await
+            }
+            _ = &mut open => panic!("probe completed before disconnect interleaving"),
+        };
+
+        assert!(matches!(result, Err(ProtocolOpenError::Rejected(Some(_)))));
+        assert!(published.lock().unwrap().is_empty());
+        assert!(manager
+            .remove_protocol_session(ProtocolSessionKind::Scp, "scp-late")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn final_sftp_owner_close_deterministically_rejects_late_scp_open() {
+        let manager = SshManager::new();
+        assert!(manager.register_protocol_session(
+            ProtocolSessionKind::Sftp,
+            "sftp-owner".to_string(),
+            "ssh-1".to_string(),
+            Some(true),
+        ));
+
+        let published = std::sync::Arc::new(StdMutex::new(HashSet::new()));
+        let published_for_publish = published.clone();
+        let published_for_rollback = published.clone();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
+        let open = manager.open_protocol_session(
+            ProtocolOpenRequest {
+                protocol: ProtocolSessionKind::Scp,
+                protocol_session_id: "scp-late".to_string(),
+                ssh_session_id: "ssh-1".to_string(),
+                requested: Some(false),
+            },
+            async move {
+                let _ = ready_tx.send(());
+                let _ = resume_rx.await;
+                Ok::<_, ()>("scp-late".to_string())
+            },
+            move |session_id| {
+                published_for_publish.lock().unwrap().insert(session_id);
+            },
+            move || {
+                published_for_rollback
+                    .lock()
+                    .unwrap()
+                    .remove("scp-late")
+                    .then(|| "scp-late".to_string())
+            },
+        );
+        tokio::pin!(open);
+
+        let result = tokio::select! {
+            _ = ready_rx => {
+                assert_eq!(
+                    manager.remove_protocol_session(ProtocolSessionKind::Sftp, "sftp-owner"),
+                    Some(true)
+                );
+                let _ = resume_tx.send(());
+                open.await
+            }
+            _ = &mut open => panic!("open completed before owner-close interleaving"),
+        };
+
+        assert!(matches!(result, Err(ProtocolOpenError::Rejected(Some(_)))));
+        assert!(published.lock().unwrap().is_empty());
+        assert!(manager
+            .remove_protocol_session(ProtocolSessionKind::Scp, "scp-late")
+            .is_none());
     }
 
     /* The publish hook marks the connection at the exact point an SSH

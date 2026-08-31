@@ -2,16 +2,19 @@ import { useEffect } from "react";
 import { useSessionStore } from "../stores/session-store";
 import { useSftpStore } from "../stores/sftp-store";
 import { useTabStore } from "../stores/tab-store";
+import { useLinkedExplorerStore } from "../stores/linked-explorer-store";
 import type { SshStatusPayload } from "../types";
 import { closeExplorerSession, resolveExplorerTransport } from "../lib/explorer-transport";
 
 /*
  * A lost SSH transport invalidates every explorer channel attached to it.
- * Prefer session metadata so linked panels without tabs can select SCP; use
- * tab metadata for current standalone tabs, then default unknown sessions to
- * SFTP until linked explorers store this same narrow transport metadata.
+ * Clear linked bindings first because they own panel state as well as protocol
+ * sessions. The remaining store entries are standalone tabs and use their
+ * session transport before falling back to tab metadata.
  */
 async function cleanupDisconnectedSftpSessions(sshSessionId: string): Promise<void> {
+  await useLinkedExplorerStore.getState().disconnectBindingsForSshSession(sshSessionId);
+
   const sessions = [...useSftpStore.getState().sessions.values()]
     .filter((session) => session.sshSessionId === sshSessionId)
     .map((session) => {

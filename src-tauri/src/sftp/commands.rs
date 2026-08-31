@@ -9,7 +9,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 
-use crate::ssh::manager::{ProtocolSessionKind, SshManager};
+use crate::ssh::manager::{
+    ProtocolOpenError, ProtocolOpenRequest, ProtocolSessionKind, SshManager,
+};
 
 use super::transfer_manager::TransferManager;
 use super::{
@@ -102,124 +104,139 @@ pub async fn sftp_open(
     ssh_manager: State<'_, SshManager>,
     sftp_manager: State<'_, Arc<SftpManager>>,
 ) -> Result<String, SftpError> {
-    let _protocol_open = ssh_manager
-        .begin_protocol_open(&session_id)
-        .ok_or_else(|| SftpError::ChannelError("SSH session is disconnecting".to_string()))?;
-
-    // 1. Obtain the shared Handle from the live SSH session.
-    let handle_arc = ssh_manager
-        .get_handle(&session_id)
-        .map_err(|e| SftpError::SshSessionNotFound(e.to_string()))?;
-
-    // 2. Lock only long enough to open the channel, then release immediately.
-    let channel = {
-        let handle = handle_arc.lock().await;
-        handle
-            .channel_open_session()
-            .await
-            .map_err(|e| SftpError::ChannelError(e.to_string()))?
-    };
-
-    // 3. Request the SFTP subsystem, or (sudo) preflight + exec sudo sftp-server.
-    if use_sudo.unwrap_or(false) {
-        // Preflight on a throwaway channel: confirm the user actually has
-        // *passwordless* sudo before committing the SFTP channel. Without this,
-        // a host that prompts for a password leaves the SFTP init blocked until
-        // the timeout — russh-sftp does not cancel the pending init when the
-        // channel hits EOF — so we'd hang ~30 s instead of failing cleanly.
-        // `sudo -n true` exits non-zero immediately when a password is required.
-        let mut check = {
-            let handle = handle_arc.lock().await;
-            handle
-                .channel_open_session()
-                .await
-                .map_err(|e| SftpError::ChannelError(e.to_string()))?
-        };
-        check
-            .exec(true, "sudo -n true")
-            .await
-            .map_err(|e| SftpError::ChannelError(e.to_string()))?;
-        // Read until the channel closes. NB: the server often sends `Eof`
-        // BEFORE the `exit-status` request, so we must NOT break on `Eof` or
-        // we'd miss the status and treat a passwordless host as a failure.
-        let mut sudo_exit = None;
-        while let Some(msg) = check.wait().await {
-            match msg {
-                russh::ChannelMsg::ExitStatus { exit_status } => sudo_exit = Some(exit_status),
-                russh::ChannelMsg::Close => break,
-                _ => {}
-            }
-        }
-        if sudo_exit != Some(0) {
-            return Err(SftpError::PermissionDenied(
-                "passwordless sudo is required to browse as root, but it is not configured \
-                 for this user"
-                    .to_string(),
-            ));
-        }
-
-        // Passwordless sudo confirmed — exec sudo sftp-server on the real
-        // channel. `-n` keeps it non-interactive; the shell loop probes
-        // sftp-server on $PATH first (portable `command -v`, not the non-POSIX
-        // `which`) then the known per-distro install paths, so this works on
-        // Debian/Ubuntu, RHEL/Fedora, Alpine and Arch.
-        channel
-            .exec(
-                true,
-                "sudo -n /bin/sh -c 'for p in \"$(command -v sftp-server 2>/dev/null)\" \
-                 /usr/lib/openssh/sftp-server /usr/libexec/openssh/sftp-server \
-                 /usr/lib/ssh/sftp-server /usr/libexec/sftp-server; do \
-                 [ -x \"$p\" ] && exec \"$p\"; done; \
-                 echo \"sftp-server: not found\" >&2; exit 127'",
-            )
-            .await
-            .map_err(|e| SftpError::ChannelError(e.to_string()))?;
-    } else {
-        channel
-            .request_subsystem(true, "sftp")
-            .await
-            .map_err(|e| SftpError::ChannelError(e.to_string()))?;
-    }
-
-    // 4. Hand the channel's byte-stream to the russh-sftp client (10 s default
-    //    init timeout). Do NOT raise this: russh's request_subsystem above
-    //    returns *before* the server's accept/reject reply, so on a host
-    //    without the SFTP subsystem (e.g. SCP-only) this init is what fails —
-    //    a longer timeout just delays the frontend's SFTP→SCP fallback by that
-    //    much (a 30 s value broke the SCP-fallback e2e specs).
-    let sftp = russh_sftp::client::SftpSession::new(channel.into_stream())
-        .await
-        .map_err(|e| SftpError::ProtocolError(e.to_string()))?;
-
-    // 5. Store a fresh ID before registering it with the SSH lifecycle.
     let sftp_id = uuid::Uuid::new_v4().to_string();
-    let sftp_arc = Arc::new(tokio::sync::Mutex::new(sftp));
-    let registration = ssh_manager.publish_protocol_session(
-        ProtocolSessionKind::Sftp,
-        sftp_id.clone(),
-        session_id.clone(),
-        owns_ssh,
-        || {
-            sftp_manager.insert_session(
-                sftp_id.clone(),
-                SftpSessionWrapper {
-                    sftp: sftp_arc,
-                    ssh_session_id: session_id.clone(),
-                },
-            );
-        },
-        || sftp_manager.remove_session(&sftp_id),
-    );
+    let ssh_manager_ref = ssh_manager.inner();
+    let session_id_for_open = session_id.clone();
+
+    /*
+     * The lifecycle guard covers handle lookup, channel setup, and SFTP init.
+     * This keeps an explicit SSH disconnect from collecting the connection
+     * while this command is still able to publish a protocol wrapper.
+     */
+    let registration = ssh_manager
+        .open_protocol_session(
+            ProtocolOpenRequest {
+                protocol: ProtocolSessionKind::Sftp,
+                protocol_session_id: sftp_id.clone(),
+                ssh_session_id: session_id.clone(),
+                requested: owns_ssh,
+            },
+            async move {
+                // 1. Obtain the shared Handle from the live SSH session.
+                let handle_arc = ssh_manager_ref
+                    .get_handle(&session_id_for_open)
+                    .map_err(|e| SftpError::SshSessionNotFound(e.to_string()))?;
+
+                // 2. Lock only long enough to open the channel, then release immediately.
+                let channel = {
+                    let handle = handle_arc.lock().await;
+                    handle
+                        .channel_open_session()
+                        .await
+                        .map_err(|e| SftpError::ChannelError(e.to_string()))?
+                };
+
+                // 3. Request the SFTP subsystem, or (sudo) preflight + exec sudo sftp-server.
+                if use_sudo.unwrap_or(false) {
+                    // Preflight on a throwaway channel: confirm the user actually has
+                    // *passwordless* sudo before committing the SFTP channel. Without this,
+                    // a host that prompts for a password leaves the SFTP init blocked until
+                    // the timeout — russh-sftp does not cancel the pending init when the
+                    // channel hits EOF — so we'd hang ~30 s instead of failing cleanly.
+                    // `sudo -n true` exits non-zero immediately when a password is required.
+                    let mut check = {
+                        let handle = handle_arc.lock().await;
+                        handle
+                            .channel_open_session()
+                            .await
+                            .map_err(|e| SftpError::ChannelError(e.to_string()))?
+                    };
+                    check
+                        .exec(true, "sudo -n true")
+                        .await
+                        .map_err(|e| SftpError::ChannelError(e.to_string()))?;
+                    // Read until the channel closes. NB: the server often sends `Eof`
+                    // BEFORE the `exit-status` request, so we must NOT break on `Eof` or
+                    // we'd miss the status and treat a passwordless host as a failure.
+                    let mut sudo_exit = None;
+                    while let Some(msg) = check.wait().await {
+                        match msg {
+                            russh::ChannelMsg::ExitStatus { exit_status } => {
+                                sudo_exit = Some(exit_status)
+                            }
+                            russh::ChannelMsg::Close => break,
+                            _ => {}
+                        }
+                    }
+                    if sudo_exit != Some(0) {
+                        return Err(SftpError::PermissionDenied(
+                        "passwordless sudo is required to browse as root, but it is not configured \
+                         for this user"
+                            .to_string(),
+                    ));
+                    }
+
+                    // Passwordless sudo confirmed — exec sudo sftp-server on the real
+                    // channel. `-n` keeps it non-interactive; the shell loop probes
+                    // sftp-server on $PATH first (portable `command -v`, not the non-POSIX
+                    // `which`) then the known per-distro install paths, so this works on
+                    // Debian/Ubuntu, RHEL/Fedora, Alpine and Arch.
+                    channel
+                    .exec(
+                        true,
+                        "sudo -n /bin/sh -c 'for p in \"$(command -v sftp-server 2>/dev/null)\" \
+                         /usr/lib/openssh/sftp-server /usr/libexec/openssh/sftp-server \
+                         /usr/lib/ssh/sftp-server /usr/libexec/sftp-server; do \
+                         [ -x \"$p\" ] && exec \"$p\"; done; \
+                         echo \"sftp-server: not found\" >&2; exit 127'",
+                    )
+                    .await
+                    .map_err(|e| SftpError::ChannelError(e.to_string()))?;
+                } else {
+                    channel
+                        .request_subsystem(true, "sftp")
+                        .await
+                        .map_err(|e| SftpError::ChannelError(e.to_string()))?;
+                }
+
+                // 4. Hand the channel's byte-stream to the russh-sftp client (10 s default
+                //    init timeout). Do NOT raise this: russh's request_subsystem above
+                //    returns *before* the server's accept/reject reply, so on a host
+                //    without the SFTP subsystem (e.g. SCP-only) this init is what fails —
+                //    a longer timeout just delays the frontend's SFTP→SCP fallback by that
+                //    much (a 30 s value broke the SCP-fallback e2e specs).
+                let sftp = russh_sftp::client::SftpSession::new(channel.into_stream())
+                    .await
+                    .map_err(|e| SftpError::ProtocolError(e.to_string()))?;
+
+                Ok(SftpSessionWrapper {
+                    sftp: Arc::new(tokio::sync::Mutex::new(sftp)),
+                    ssh_session_id: session_id_for_open,
+                })
+            },
+            {
+                let sftp_manager = sftp_manager.inner().clone();
+                let session_id = sftp_id.clone();
+                move |session| sftp_manager.insert_session(session_id, session)
+            },
+            {
+                let sftp_manager = sftp_manager.inner().clone();
+                let session_id = sftp_id.clone();
+                move || sftp_manager.remove_session(&session_id)
+            },
+        )
+        .await;
     match registration {
         Ok(()) => {}
-        Err(Some(session)) => {
-            let sftp = session.sftp.lock().await;
-            let _ = sftp.close().await;
+        Err(ProtocolOpenError::Disconnecting) | Err(ProtocolOpenError::Rejected(None)) => {
             return Err(SftpError::ChannelError(
                 "SSH session is disconnecting".to_string(),
             ));
         }
-        Err(None) => {
+        Err(ProtocolOpenError::Prepare(error)) => return Err(error),
+        Err(ProtocolOpenError::Rejected(Some(session))) => {
+            let sftp = session.sftp.lock().await;
+            let _ = sftp.close().await;
             return Err(SftpError::ChannelError(
                 "SSH session is disconnecting".to_string(),
             ));
