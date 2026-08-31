@@ -2,7 +2,8 @@
  * Chromium's POSIX LevelDB environment protects LOCK with an fcntl record
  * lock. The probe must use that same ABI, because BSD flock locks are a
  * separate namespace and would report a false "closed" result for a live
- * Termius process. The lock is requested non-blockingly and released at once.
+ * Termius process. The lock is requested non-blockingly and can be held by a
+ * guard across the complete LevelDB read.
  */
 
 use std::path::Path;
