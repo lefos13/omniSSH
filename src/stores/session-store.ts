@@ -115,6 +115,7 @@ interface SessionState {
   /** Called by tab-store when a terminal tab is activated. Sets activeSessionId from the layout tree. */
   focusTab: (tabId: string) => void;
   updateStatus: (id: SessionId, status: ConnectionStatus, message?: string) => void;
+  setRemoteCwd: (id: SessionId, cwd: string | null) => void;
   splitPane: (direction: SplitDirection, targetSessionId: string, newSessionId: string) => void;
   unsplitPane: (sessionId: string) => void;
   updateSplitRatio: (tabId: string, path: number[], ratio: number) => void;
@@ -244,6 +245,24 @@ export const useSessionStore = create<SessionState>((set) => ({
       sessions.set(id, { ...session, status, statusMessage: message });
       return { sessions };
     }),
+  /*
+   * Update the remote working directory for a session received via OSC 7.
+   * Passing a non-null directory marks cwdSyncActive as true; passing null
+   * clears the directory and resets cwdSyncActive to false.
+   */
+  setRemoteCwd: (id, cwd) =>
+    set((state) => {
+      const session = state.sessions.get(id);
+      if (!session) return state;
+      const sessions = new Map(state.sessions);
+      sessions.set(id, {
+        ...session,
+        remoteCwd: cwd,
+        cwdSyncActive: cwd !== null,
+      });
+      return { sessions };
+    }),
+
 
   splitPane: (direction, targetSessionId, newSessionId) =>
     set((state) => {

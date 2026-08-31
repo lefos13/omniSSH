@@ -29,6 +29,8 @@ export interface Session {
   status: ConnectionStatus;
   statusMessage?: string;
   label: string;
+  remoteCwd?: string | null;
+  cwdSyncActive?: boolean;
 }
 
 export interface SshOutputPayload {

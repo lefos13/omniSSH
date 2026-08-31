@@ -3,6 +3,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { registerSearchAddon, unregisterSearchAddon } from "./terminal-registry";
 import { useSettingsStore } from "./settings-store";
 import { useSessionStore } from "./session-store";
+import { parseOsc7Cwd } from "../lib/osc7";
 
 /**
  * Module-level registry of live xterm.js instances, keyed by sessionId.
@@ -152,6 +153,23 @@ function createEntry(sessionId: string): TerminalEntry {
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
   term.open(element);
+
+  /*
+   * Handle OSC 7 working-directory notifications emitted by remote shells.
+   * Updates remoteCwd in session-store so linked tools (e.g. explorer) stay in sync.
+   */
+  term.parser.registerOscHandler(7, (data) => {
+    try {
+      const r = parseOsc7Cwd(data);
+      if (r) {
+        useSessionStore.getState().setRemoteCwd(sessionId, r.path);
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  });
 
   const entry: TerminalEntry = { term, element, fitAddon, resizeTimer: null };
 
