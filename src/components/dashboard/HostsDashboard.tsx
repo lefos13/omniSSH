@@ -683,6 +683,27 @@ export function HostsDashboard() {
               <Import size={14} strokeWidth={2} aria-hidden="true" />
               MobaXterm
             </button>
+
+            {/* Termius gets a dedicated entry point so its closed-app guidance
+                is available without changing the established import actions. */}
+            <button
+              data-testid="import-termius-button"
+              onClick={() => {
+                setImportSource("termius");
+                setImportModalOpen(true);
+              }}
+              className={[
+                "flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium uppercase tracking-wide",
+                "bg-bg-surface border border-border text-text-secondary",
+                "hover:border-border-focus hover:text-text-primary hover:bg-bg-overlay",
+                "transition-all duration-[var(--duration-fast)]",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              ].join(" ")}
+              title="Import from Termius"
+            >
+              <Import size={14} strokeWidth={2} aria-hidden="true" />
+              Termius
+            </button>
           </div>
 
           {/* ── Groups section ── */}
