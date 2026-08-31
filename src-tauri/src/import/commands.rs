@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use tauri::State;
@@ -7,11 +8,12 @@ use tracing::instrument;
 use crate::db::{DbError, HostDb, HostGroup, SavedHost};
 use crate::types::SshError;
 
-use super::{ImportResult, SshConfigEntry, SshConfigImportEntry};
+use super::{ImportResult, MobaXtermEntry, SshConfigEntry, SshConfigImportEntry};
 
 /// Parse SSH config and return a preview of importable hosts.
 #[tauri::command]
-#[instrument(skip(db))]
+/* Do not instrument user-selected paths or parsed host configuration. */
+#[instrument(skip(path, db))]
 pub async fn import_parse_ssh_config(
     path: Option<String>,
     db: State<'_, Arc<HostDb>>,
@@ -20,12 +22,7 @@ pub async fn import_parse_ssh_config(
 
     task::spawn_blocking(move || {
         // Get existing hosts for duplicate detection
-        let existing = db
-            .list_hosts()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|h| (h.host, h.username, h.port))
-            .collect::<Vec<_>>();
+        let existing = existing_host_keys(&db)?;
 
         super::parse_ssh_config(path.as_deref(), &existing)
     })
@@ -44,6 +41,16 @@ pub fn save_imported_hosts(
     let mut imported = 0u32;
     let mut skipped = 0u32;
     let mut errors = Vec::new();
+
+    /* Enforce the import contract at the persistence boundary as well as in
+     * the preview parser. This keeps repeated or concurrently selected
+     * entries from creating duplicate hosts when a caller bypasses the UI. */
+    let existing_keys = db
+        .list_hosts()?
+        .into_iter()
+        .map(|host| (host.host, host.username, host.port))
+        .collect::<HashSet<_>>();
+    let mut seen_import_keys = HashSet::new();
 
     // Group name → group id cache for the import run.
     // Seeded with pre-existing groups so identical group paths reuse existing groups.
@@ -66,6 +73,12 @@ pub fn save_imported_hosts(
     let mut pending_jumps: Vec<(String, String, String)> = Vec::new();
 
     for entry in entries {
+        let dedup_key = (entry.hostname.clone(), entry.user.clone(), entry.port);
+        if existing_keys.contains(&dedup_key) || !seen_import_keys.insert(dedup_key.clone()) {
+            skipped += 1;
+            continue;
+        }
+
         let now = timestamp_now();
         let id = uuid::Uuid::new_v4().to_string();
 
@@ -150,6 +163,7 @@ pub fn save_imported_hosts(
                 }
             }
             Err(e) => {
+                seen_import_keys.remove(&dedup_key);
                 errors.push(format!("{}: {e}", entry.host_alias));
                 skipped += 1;
             }
@@ -162,7 +176,7 @@ pub fn save_imported_hosts(
     // field in place without breaking the import. Linking goes through the
     // *validated* setter so a config with mutually-referencing ProxyJump
     // directives (A→B, B→A) can never persist a connect-breaking cycle.
-    let existing_hosts = db.list_hosts().unwrap_or_default();
+    let existing_hosts = db.list_hosts()?;
     for (host_id, alias, jump_value) in pending_jumps {
         // Multi-hop chains (`jump1,jump2`) are retained as free-text but not
         // auto-linked: a single proxy_jump_host_id can't express the chain,
@@ -191,23 +205,79 @@ pub fn save_imported_hosts(
 
 /// Save selected SSH config entries as SavedHosts.
 #[tauri::command]
-#[instrument(skip(db))]
+/* Imported entries can contain hosts, commands, credentials, and key paths. */
+#[instrument(skip(entries, db))]
 pub async fn import_save_ssh_hosts(
     entries: Vec<SshConfigImportEntry>,
     db: State<'_, Arc<HostDb>>,
 ) -> Result<ImportResult, DbError> {
-    let host_count = entries.len();
+    save_imported_hosts_command(entries, Arc::clone(&db), "ssh_config_imported").await
+}
+
+/// Parse a MobaXterm `.mxtsessions` or `MobaXterm.ini` file and return a
+/// preview using the same host-entry contract as OpenSSH imports.
+#[tauri::command]
+/* Keep native file access and parsing in Rust; the UI receives only the
+ * bounded, version-tolerant preview representation. */
+#[instrument(skip(path, db))]
+pub async fn import_parse_mobaxterm(
+    path: String,
+    db: State<'_, Arc<HostDb>>,
+) -> Result<Vec<MobaXtermEntry>, SshError> {
     let db = Arc::clone(&db);
 
+    task::spawn_blocking(move || {
+        let existing = existing_host_keys(&db)?;
+
+        super::parse_mobaxterm(&path, &existing)
+    })
+    .await
+    .map_err(|e| SshError::IoError(format!("task panicked: {e}")))?
+}
+
+/// Save selected MobaXterm entries as SavedHosts through the shared import
+/// persistence contract.
+#[tauri::command]
+/* MobaXterm previews can carry key paths, startup commands, notes, and proxy
+ * provenance, so the command span and telemetry must contain counts only. */
+#[instrument(skip(entries, db))]
+pub async fn import_save_mobaxterm_hosts(
+    entries: Vec<SshConfigImportEntry>,
+    db: State<'_, Arc<HostDb>>,
+) -> Result<ImportResult, DbError> {
+    save_imported_hosts_command(entries, Arc::clone(&db), "mobaxterm_imported").await
+}
+
+/* Keep source-specific IPC commands thin while preserving a single save path
+ * for groups, metadata, ProxyJump linking, deduplication, and diagnostics. */
+async fn save_imported_hosts_command(
+    entries: Vec<SshConfigImportEntry>,
+    db: Arc<HostDb>,
+    telemetry_event: &'static str,
+) -> Result<ImportResult, DbError> {
+    let host_count = entries.len();
     let result = task::spawn_blocking(move || save_imported_hosts(&db, &entries))
         .await
         .map_err(|e| DbError::InitError(format!("task panicked: {e}")))?;
 
     crate::telemetry::capture(
-        "ssh_config_imported",
+        telemetry_event,
         serde_json::json!({ "host_count": host_count }),
     );
     result
+}
+
+/* Preview duplicate detection must fail closed when the host index cannot be
+ * read; an empty fallback would make a broken database look importable. */
+fn existing_host_keys(db: &HostDb) -> Result<Vec<(String, String, u16)>, SshError> {
+    db.list_hosts()
+        .map_err(|error| SshError::IoError(format!("Cannot read saved hosts: {error}")))
+        .map(|hosts| {
+            hosts
+                .into_iter()
+                .map(|host| (host.host, host.username, host.port))
+                .collect()
+        })
 }
 
 fn timestamp_now() -> String {
@@ -420,6 +490,41 @@ mod tests {
             created_at: "2026-01-01T00:00:00".to_string(),
             updated_at: "2026-01-01T00:00:00".to_string(),
         }
+    }
+
+    #[test]
+    fn deduplicates_existing_and_repeated_import_keys() {
+        let fixture = test_db();
+        let existing = sample_import_entry("existing");
+        save_imported_hosts(&fixture.db, &[existing]).expect("save existing host");
+
+        let mut duplicate = sample_import_entry("duplicate-label");
+        duplicate.hostname = "existing.example.com".to_string();
+        let mut repeated = duplicate.clone();
+        repeated.host_alias = "repeated-label".to_string();
+        let unique = sample_import_entry("unique");
+
+        let result = save_imported_hosts(&fixture.db, &[duplicate, repeated, unique])
+            .expect("save deduplicated entries");
+        assert_eq!(result.imported, 1);
+        assert_eq!(result.skipped, 2);
+        assert!(result.errors.is_empty());
+        assert_eq!(fixture.db.list_hosts().expect("list hosts").len(), 2);
+    }
+
+    /* A broken host index must abort the import before any rows are written;
+     * silently treating the read as empty would defeat persistence dedup. */
+    #[test]
+    fn propagates_existing_host_read_errors() {
+        let fixture = test_db();
+        let connection =
+            rusqlite::Connection::open(fixture.path.join("anyscp.db")).expect("open test database");
+        connection
+            .execute_batch("DROP TABLE saved_hosts")
+            .expect("drop host table");
+
+        let error = save_imported_hosts(&fixture.db, &[]).expect_err("host read must fail");
+        assert!(error.to_string().contains("no such table"));
     }
 
     #[test]

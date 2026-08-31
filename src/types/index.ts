@@ -11,6 +11,7 @@ export type {
   RecentConnection,
   ConnectionHistoryEntry,
   SshConfigEntry,
+  MobaXtermEntry,
   SshConfigImportEntry,
   ImportResult,
   SshKeyInfo,
