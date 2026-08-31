@@ -11,6 +11,11 @@ on:
         required: false
         default: "v1.0.0"
 
+
+# Cancel superseded release runs for the same tag/ref to prevent duplicate workflows and wasted runner minutes.
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.event.inputs.tag || github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: write
 
