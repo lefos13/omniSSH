@@ -99,6 +99,10 @@ describe("linked and standalone explorer coexistence", () => {
         const reLinkedTransport = await $("[data-explorer-transport='sftp']");
         await reLinkedTransport.waitForDisplayed({ timeout: 10_000 });
         expect((await $$("[data-testid='linked-explorer-error']")).length).to.equal(0);
+        await browser.waitUntil(
+            async () => (await $$("[data-entry-row='true']")).length > 0,
+            { timeout: 15_000, timeoutMsg: "linked explorer directory listing missing after switch back" },
+        );
         expect((await $$("[data-entry-row='true']")).length).to.be.greaterThan(0);
 
         // 7. Switch to Standalone Explorer tab and verify it renders separately
@@ -106,6 +110,10 @@ describe("linked and standalone explorer coexistence", () => {
         await sftpTab.waitForClickable({ timeout: 5_000 });
         await sftpTab.click();
         await waitForExplorer();
+        await browser.waitUntil(
+            async () => (await $$("[data-entry-row='true']")).length > 0,
+            { timeout: 15_000, timeoutMsg: "standalone explorer directory listing missing after switch back" },
+        );
         expect((await $$("[data-entry-row='true']")).length).to.be.greaterThan(0);
     });
 });

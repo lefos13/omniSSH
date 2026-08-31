@@ -41,6 +41,8 @@ export function ExplorerPage({ sftpSessionId, transport = "sftp", s3SessionId, i
         {/* Browser content */}
         <div
           className="flex-1 min-h-0 bg-bg-base"
+          data-session-id={sftpSessionId ?? s3SessionId}
+          data-explorer-session-id={sftpSessionId ?? s3SessionId}
           data-explorer-transport={sftpSessionId ? transport : s3SessionId ? "s3" : undefined}
         >
           {sftpSessionId && <ExplorerView sessionId={sftpSessionId} transport={transport} isActive={isActive} />}
