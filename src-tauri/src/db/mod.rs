@@ -604,8 +604,8 @@ impl HostDb {
     }
 
     /* Recheck import deduplication under the same IMMEDIATE transaction that
-     * inserts rows. Group IDs are remapped by name and transaction-time host
-     * duplicates are returned so their staged vault entries can be removed. */
+     * inserts rows. Group IDs are remapped and validated, while transaction-time
+     * host duplicates are returned so staged vault entries can be removed. */
     #[instrument(skip(self, groups, hosts), fields(group_count = groups.len(), host_count = hosts.len()))]
     pub fn save_groups_and_hosts_transaction(
         &self,
@@ -635,6 +635,7 @@ impl HostDb {
                 imported_groups += 1;
             }
         }
+        let valid_group_ids = group_ids.values().cloned().collect::<HashSet<_>>();
 
         let mut host_keys = tx
             .prepare("SELECT lower(trim(host)), trim(username), port FROM saved_hosts")?
@@ -649,6 +650,16 @@ impl HostDb {
         let mut skipped_host_ids = Vec::new();
         let mut imported_hosts = 0;
         for host in hosts {
+            let mut host = host.clone();
+            if let Some(group_id) = host.group_id.as_ref() {
+                if let Some(remapped) = remapped_groups.get(group_id) {
+                    host.group_id = Some(remapped.clone());
+                } else if !valid_group_ids.contains(group_id) {
+                    return Err(DbError::Validation(
+                        "Imported host references an unknown group".to_string(),
+                    ));
+                }
+            }
             let key = (
                 host.host.trim().to_ascii_lowercase(),
                 host.username.trim().to_string(),
@@ -657,12 +668,6 @@ impl HostDb {
             if !host_keys.insert(key) {
                 skipped_host_ids.push(host.id.clone());
                 continue;
-            }
-            let mut host = host.clone();
-            if let Some(group_id) = host.group_id.as_ref() {
-                if let Some(remapped) = remapped_groups.get(group_id) {
-                    host.group_id = Some(remapped.clone());
-                }
             }
             Self::check_proxy_jump_chain(&tx, &host.id, host.proxy_jump_host_id.as_deref())?;
             Self::upsert_host(&tx, &host)?;
@@ -3072,9 +3077,13 @@ mod tests {
         let mut invalid_host = sample_host("batch-invalid");
         invalid_host.group_id = Some("missing-group".to_string());
 
-        assert!(db
+        let error = match db
             .save_groups_and_hosts_transaction(&[root, child], &[valid_host, invalid_host])
-            .is_err());
+        {
+            Err(error) => error,
+            Ok(_) => panic!("unknown host group must reject the batch"),
+        };
+        assert!(matches!(error, DbError::Validation(_)));
         assert!(db.list_groups().expect("list groups").is_empty());
         assert!(db.list_hosts().expect("list hosts").is_empty());
     }
