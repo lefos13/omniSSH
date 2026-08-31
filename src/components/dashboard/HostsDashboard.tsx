@@ -328,12 +328,16 @@ export function HostsDashboard() {
 
         let explorerSessionId: string;
         let transport: "sftp" | "scp" = "sftp";
+        /*
+         * This no-PTY connection exists only for the standalone explorer, so
+         * Rust owns its lifetime and can release it with the final channel.
+         */
         try {
-          explorerSessionId = await invoke<string>("sftp_open", { sessionId });
+          explorerSessionId = await invoke<string>("sftp_open", { sessionId, ownsSsh: true });
         } catch (sftpErr) {
           // SFTP subsystem unavailable — retry over SCP on the same connection.
           try {
-            explorerSessionId = await invoke<string>("scp_open", { sessionId });
+            explorerSessionId = await invoke<string>("scp_open", { sessionId, ownsSsh: true });
             transport = "scp";
           } catch {
             // Surface the original SFTP error if SCP also fails.
