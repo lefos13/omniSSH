@@ -139,11 +139,10 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          # Upload to the single release created up front (no per-job drafts).
           releaseId: ${{ needs.create-release.outputs.release_id }}
+          releaseDraft: true
+          includeUpdaterJson: false
           args: ${{ matrix.args }}
-          updaterJsonKeepUniversal: true
-
   update-release-notes:
     needs: build
     runs-on: ubuntu-latest
@@ -208,3 +207,80 @@ jobs:
           RELEASE_TAG="${TAG:-$GITHUB_REF_NAME}"
           gh release edit "$RELEASE_TAG" \
             --notes-file release_notes.md
+
+      - name: Generate and upload updater manifest (latest.json)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          RELEASE_TAG="${TAG:-$GITHUB_REF_NAME}"
+          mkdir -p sigs
+          gh release download "$RELEASE_TAG" --pattern "*.sig" --dir sigs --clobber || true
+
+          node -e '
+            const fs = require("fs");
+            const path = require("path");
+
+            const tag = process.env.RELEASE_TAG || "${{ inputs.tag }}" || process.env.GITHUB_REF_NAME || "v1.0.0";
+            const version = tag.replace(/^v/, "");
+            const repo = process.env.GITHUB_REPOSITORY || "lefos13/omniSSH";
+            const baseUrl = `https://github.com/${repo}/releases/download/${tag}`;
+
+            const readSig = (file) => {
+              const p = path.join("sigs", file);
+              return fs.existsSync(p) ? fs.readFileSync(p, "utf8").trim() : null;
+            };
+
+            const platforms = {};
+
+            const aarch64AppSig = readSig("OmniSSH_aarch64.app.tar.gz.sig");
+            if (aarch64AppSig) {
+              platforms["darwin-aarch64"] = {
+                signature: aarch64AppSig,
+                url: `${baseUrl}/OmniSSH_aarch64.app.tar.gz`,
+              };
+              platforms["darwin-aarch64-app"] = {
+                signature: aarch64AppSig,
+                url: `${baseUrl}/OmniSSH_aarch64.app.tar.gz`,
+              };
+            }
+
+            const x64AppSig = readSig("OmniSSH_x64.app.tar.gz.sig");
+            if (x64AppSig) {
+              platforms["darwin-x86_64"] = {
+                signature: x64AppSig,
+                url: `${baseUrl}/OmniSSH_x64.app.tar.gz`,
+              };
+              platforms["darwin-x86_64-app"] = {
+                signature: x64AppSig,
+                url: `${baseUrl}/OmniSSH_x64.app.tar.gz`,
+              };
+            }
+
+            const linuxAppImageSig = readSig(`OmniSSH_${version}_amd64.AppImage.tar.gz.sig`) || readSig("OmniSSH_1.0.0_amd64.AppImage.tar.gz.sig");
+            if (linuxAppImageSig) {
+              platforms["linux-x86_64"] = {
+                signature: linuxAppImageSig,
+                url: `${baseUrl}/OmniSSH_${version}_amd64.AppImage.tar.gz`,
+              };
+            }
+
+            const windowsNsisSig = readSig(`OmniSSH_${version}_x64-setup.nsis.zip.sig`) || readSig("OmniSSH_1.0.0_x64-setup.nsis.zip.sig");
+            if (windowsNsisSig) {
+              platforms["windows-x86_64"] = {
+                signature: windowsNsisSig,
+                url: `${baseUrl}/OmniSSH_${version}_x64-setup.nsis.zip`,
+              };
+            }
+
+            const latestJson = {
+              version,
+              notes: `OmniSSH ${tag}`,
+              pub_date: new Date().toISOString(),
+              platforms,
+            };
+
+            fs.writeFileSync("latest.json", JSON.stringify(latestJson, null, 2), "utf8");
+          '
+
+          gh release upload "$RELEASE_TAG" latest.json --clobber
