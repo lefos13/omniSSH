@@ -127,8 +127,10 @@ export function ImportSshConfigModal({
         /* The preview request intentionally asks Rust for metadata only. The
          * returned token is retained solely in component state for one commit. */
         const preview = await invoke<TermiusPreviewResponse>("import_preview_termius", {
-          source_path: path,
-          metadata_only: true,
+          request: {
+            source_path: path,
+            metadata_only: true,
+          },
         });
         if (requestId !== scanRequest.current) return;
         setTermiusPreview(preview);
@@ -195,7 +197,7 @@ export function ImportSshConfigModal({
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const path = await open({
-        title: source === "ssh" ? "Select SSH config file" : source === "mobaxterm" ? "Select MobaXterm file" : "Select Termius data directory",
+        title: source === "ssh" ? "Select SSH config file" : source === "mobaxterm" ? "Select MobaXterm file" : "Select Termius LevelDB directory",
         multiple: false,
         ...(source === "termius" && { directory: true }),
         ...(source === "mobaxterm" && {
@@ -218,12 +220,14 @@ export function ImportSshConfigModal({
         /* Commit sends only opaque selection IDs and explicit consent flags;
          * decrypted credentials never enter React state or the IPC payload. */
         const response = await invoke<TermiusCommitResponse>("import_commit_termius", {
-          preview_token: termiusPreviewToken,
-          selected_ids: termiusPreview?.hosts
-            .filter((host) => selected.has(host.id))
-            .map((host) => host.id) ?? [],
-          include_credentials: includeCredentials,
-          credentials_confirmed: includeCredentials && credentialsConfirmed,
+          request: {
+            preview_token: termiusPreviewToken,
+            selected_ids: termiusPreview?.hosts
+              .filter((host) => selected.has(host.id))
+              .map((host) => host.id) ?? [],
+            include_credentials: includeCredentials,
+            credentials_confirmed: includeCredentials && credentialsConfirmed,
+          },
         });
         setTermiusResult(response);
         onImported();
@@ -409,7 +413,7 @@ export function ImportSshConfigModal({
             <>
               <div className="flex items-center gap-2 mb-4">
                 <span className="text-[length:var(--text-2xs)] text-text-muted truncate flex-1">
-                  {configPath ? "Custom Termius data directory" : "Automatic Termius data directory"}
+                  {configPath ? "Selected Termius LevelDB directory" : "Automatic Termius data directory"}
                 </span>
                 <button type="button" onClick={() => void handleBrowse()} className="text-[length:var(--text-2xs)] text-accent hover:text-accent-hover transition-colors duration-[var(--duration-fast)] shrink-0">
                   Browse
@@ -418,7 +422,7 @@ export function ImportSshConfigModal({
               <div className="mb-4 rounded-lg border border-border/60 bg-bg-base px-3 py-2">
                 <p className="text-[length:var(--text-sm)] text-text-primary">Termius metadata preview</p>
                 <p className="text-[length:var(--text-xs)] text-text-muted mt-1">
-                  {termiusPreview.counts.hosts} host{termiusPreview.counts.hosts !== 1 ? "s" : ""} and {termiusPreview.counts.groups} group{termiusPreview.counts.groups !== 1 ? "s" : ""} found. Credentials are excluded until you opt in.
+                  {termiusPreview.counts.hosts} host{termiusPreview.counts.hosts !== 1 ? "s" : ""} and {termiusPreview.counts.groups} group{termiusPreview.counts.groups !== 1 ? "s" : ""} found. Credentials are excluded until you opt in. A custom source must be the exact Termius LevelDB directory.
                 </p>
               </div>
 

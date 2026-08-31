@@ -211,7 +211,7 @@ describe("ImportSshConfigModal — Termius source", () => {
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith(
       "import_preview_termius",
-      { source_path: null, metadata_only: true },
+      { request: { source_path: null, metadata_only: true } },
     ));
     expect(screen.getByTestId("import-termius-host-opaque-host-1")).toBeInTheDocument();
     expect(screen.getAllByRole("checkbox")[0]).toBeChecked();
@@ -234,10 +234,12 @@ describe("ImportSshConfigModal — Termius source", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith(
       "import_commit_termius",
       {
-        preview_token: "opaque-preview-token",
-        selected_ids: ["opaque-host-1"],
-        include_credentials: true,
-        credentials_confirmed: true,
+        request: {
+          preview_token: "opaque-preview-token",
+          selected_ids: ["opaque-host-1"],
+          include_credentials: true,
+          credentials_confirmed: true,
+        },
       },
     ));
   });
@@ -252,14 +254,17 @@ describe("ImportSshConfigModal — Termius source", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith(
       "import_commit_termius",
       {
-        preview_token: "opaque-preview-token",
-        selected_ids: ["opaque-host-2"],
-        include_credentials: false,
-        credentials_confirmed: false,
+        request: {
+          preview_token: "opaque-preview-token",
+          selected_ids: ["opaque-host-2"],
+          include_credentials: false,
+          credentials_confirmed: false,
+        },
       },
     ));
     const commitPayload = invoke.mock.calls.find((call) => call[0] === "import_commit_termius")?.[1] as Record<string, unknown>;
-    expect(Object.keys(commitPayload)).not.toEqual(expect.arrayContaining(["password", "private_key", "passphrase"]));
+    const requestKeys = JSON.stringify(commitPayload).match(/"([^"\\]+)"\s*:/g) ?? [];
+    expect(requestKeys.join(" ")).not.toMatch(/password|private_key|passphrase|secret/i);
   });
 
   it("clears an expired preview and asks the user to scan again", async () => {
