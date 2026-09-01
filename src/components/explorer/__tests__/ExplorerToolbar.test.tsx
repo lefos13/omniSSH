@@ -12,6 +12,8 @@ function renderToolbar(over: {
   onNavigate?: (p: string) => void;
   loading?: boolean;
   onCdToTerminal?: () => void;
+  searchQuery?: string;
+  onSearchChange?: (q: string) => void;
 } = {}) {
   const onNavigate = over.onNavigate ?? vi.fn();
   render(
@@ -32,6 +34,8 @@ function renderToolbar(over: {
       onNavigate={onNavigate}
       onUpload={vi.fn()}
       onCdToTerminal={over.onCdToTerminal}
+      searchQuery={over.searchQuery}
+      onSearchChange={over.onSearchChange}
     />,
   );
   return { onNavigate };
@@ -136,5 +140,58 @@ describe("ExplorerToolbar — editable path bar", () => {
   it("does not render cd-to-terminal button when onCdToTerminal is absent", () => {
     renderToolbar();
     expect(screen.queryByTestId("explorer-cd-terminal")).not.toBeInTheDocument();
+  });
+});
+
+describe("ExplorerToolbar — search/filter input", () => {
+  it("renders search input with correct placeholder and accessibility attributes", () => {
+    const onSearchChange = vi.fn();
+    renderToolbar({ onSearchChange, searchQuery: "" });
+
+    const input = screen.getByTestId("explorer-search-input");
+    expect(input).toBeInTheDocument();
+    expect(input).toHaveAttribute("placeholder", "Filter files...");
+    expect(input).toHaveAttribute("aria-label", "Filter files by name");
+  });
+
+  it("calls onSearchChange when typing in the input", () => {
+    const onSearchChange = vi.fn();
+    renderToolbar({ onSearchChange, searchQuery: "" });
+
+    const input = screen.getByTestId("explorer-search-input");
+    fireEvent.change(input, { target: { value: "config" } });
+    expect(onSearchChange).toHaveBeenCalledWith("config");
+  });
+
+  it("does not render clear button when searchQuery is empty", () => {
+    const onSearchChange = vi.fn();
+    renderToolbar({ onSearchChange, searchQuery: "" });
+
+    expect(screen.queryByTestId("explorer-search-clear")).not.toBeInTheDocument();
+  });
+
+  it("renders clear button when searchQuery is non-empty and calls onSearchChange('') on click", () => {
+    const onSearchChange = vi.fn();
+    renderToolbar({ onSearchChange, searchQuery: "nginx" });
+
+    const clearBtn = screen.getByTestId("explorer-search-clear");
+    expect(clearBtn).toBeInTheDocument();
+    expect(clearBtn).toHaveAttribute("aria-label", "Clear filter");
+
+    fireEvent.click(clearBtn);
+    expect(onSearchChange).toHaveBeenCalledWith("");
+  });
+
+  it("clears query and blurs input on Escape key", () => {
+    const onSearchChange = vi.fn();
+    renderToolbar({ onSearchChange, searchQuery: "test" });
+
+    const input = screen.getByTestId("explorer-search-input");
+    input.focus();
+    expect(document.activeElement).toBe(input);
+
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(onSearchChange).toHaveBeenCalledWith("");
+    expect(document.activeElement).not.toBe(input);
   });
 });

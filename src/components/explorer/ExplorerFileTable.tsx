@@ -26,6 +26,7 @@ import {
   Link2,
   AlertTriangle,
   Terminal as TerminalIcon,
+  Search,
 } from "lucide-react";
 import { ModalShell, BTN_GHOST, BTN_DANGER } from "../shared/ModalShell";
 import type {
@@ -94,6 +95,8 @@ interface ExplorerFileTableProps {
   loading?: boolean;
   busy?: boolean;
   onCdToTerminal?: (path: string) => void;
+  searchQuery?: string;
+  onClearSearch?: () => void;
 }
 
 interface ContextMenuState {
@@ -364,6 +367,8 @@ export function ExplorerFileTable({
   currentPath,
   loading,
   onCdToTerminal,
+  searchQuery,
+  onClearSearch,
 }: ExplorerFileTableProps) {
   const caps = provider.capabilities;
   const editors = useSettingsStore((s) => s.editors);
@@ -428,11 +433,24 @@ export function ExplorerFileTable({
       }),
     [entries, sortBy, sortAsc],
   );
+  /*
+   * Filter sorted entries using case-insensitive substring matching on name.
+   * Empty or whitespace-only queries bypass filtering and return sorted entries.
+   */
+  const filteredEntries = useMemo(() => {
+    const query = searchQuery?.trim().toLowerCase();
+    if (!query) return sortedEntries;
+    return sortedEntries.filter((entry) =>
+      entry.name.toLowerCase().includes(query),
+    );
+  }, [sortedEntries, searchQuery]);
 
   // Keyboard navigation walks this on every arrow keydown — derive it once per
   // sort change instead of rebuilding a fresh array per keypress.
-  const sortedIds = useMemo(() => sortedEntries.map((en) => en.id), [sortedEntries]);
-
+  const sortedIds = useMemo(
+    () => filteredEntries.map((en) => en.id),
+    [filteredEntries],
+  );
   const handleSortClick = (col: "name" | "size" | "modified") => {
     if (sortBy === col) {
       onSortChange(col, !sortAsc);
@@ -551,7 +569,7 @@ export function ExplorerFileTable({
         return next;
       });
     } else if (e.shiftKey && lastClickedId.current) {
-      const ids = sortedEntries.map((e) => e.id);
+      const ids = filteredEntries.map((e) => e.id);
       const startIdx = ids.indexOf(lastClickedId.current);
       const endIdx = ids.indexOf(entry.id);
       if (startIdx >= 0 && endIdx >= 0) {
@@ -569,7 +587,7 @@ export function ExplorerFileTable({
     lastClickedId.current = entry.id;
   };
 
-  const selectedEntries = sortedEntries.filter((e) => selectedIds.has(e.id));
+  const selectedEntries = filteredEntries.filter((e) => selectedIds.has(e.id));
 
   // ─── Drag (pointer-based) ──────────────────────────────────────────────────
   //
@@ -1147,7 +1165,7 @@ export function ExplorerFileTable({
         )}
 
         {/* Rows */}
-        {sortedEntries.length === 0 && !creatingFolder && !creatingFile ? (
+        {entries.length === 0 && !creatingFolder && !creatingFile ? (
           <div className="flex flex-col items-center justify-center flex-1 min-h-[200px] gap-3 py-12">
             <Folder
               size={30}
@@ -1188,6 +1206,26 @@ export function ExplorerFileTable({
               Right-click for more options
             </p>
           </div>
+        ) : filteredEntries.length === 0 && !creatingFolder && !creatingFile ? (
+          <div className="flex flex-col items-center justify-center flex-1 min-h-[200px] gap-3 py-12">
+            <Search
+              size={30}
+              strokeWidth={1.2}
+              className="text-text-muted/30"
+              aria-hidden="true"
+            />
+            <p className="text-[length:var(--text-sm)] text-text-muted">
+              No files match &quot;{searchQuery}&quot;
+            </p>
+            {onClearSearch && (
+              <button
+                onClick={onClearSearch}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[length:var(--text-xs)] font-medium text-text-muted hover:text-text-secondary hover:bg-bg-subtle transition-colors duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                Clear filter
+              </button>
+            )}
+          </div>
         ) : (
           <div
             role="list"
@@ -1198,7 +1236,7 @@ export function ExplorerFileTable({
                 handleContextMenu(e, null);
             }}
           >
-            {sortedEntries.map((entry) => {
+            {filteredEntries.map((entry) => {
               const isSelected = selectedIds.has(entry.id);
               return (
                 <div
@@ -1255,7 +1293,7 @@ export function ExplorerFileTable({
                           : currentRow.previousElementSibling
                       ) as HTMLElement | null;
                       nextRow?.focus();
-                      nextRow?.scrollIntoView({ block: "nearest" });
+                      nextRow?.scrollIntoView?.({ block: "nearest" });
                     }
                     if (e.key === "F2" && caps.canRename && !isInput) {
                       e.preventDefault();
@@ -1271,7 +1309,7 @@ export function ExplorerFileTable({
                     }
                     if (!isInput && (e.metaKey || e.ctrlKey) && e.key === "a") {
                       e.preventDefault();
-                      setSelectedIds(new Set(sortedEntries.map((en) => en.id)));
+                      setSelectedIds(new Set(filteredEntries.map((en) => en.id)));
                     }
                     if (!isInput && caps.canCopyPaste) {
                       if (

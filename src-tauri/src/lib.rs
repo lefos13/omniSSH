@@ -134,8 +134,14 @@ pub fn run() {
                 "document.documentElement.dataset.theme = {theme:?}; document.documentElement.style.setProperty('--accent-hue', '{accent_hue}');{custom_accent_script}{font_script}{mono_font_script}"
             );
 
+            let window_title = if cfg!(debug_assertions) {
+                "OmniSSH-dev"
+            } else {
+                "OmniSSH"
+            };
+
             WebviewWindowBuilder::new(app.handle(), "main", WebviewUrl::App("index.html".into()))
-                .title("OmniSSH")
+                .title(window_title)
                 .inner_size(1200.0, 800.0)
                 .min_inner_size(800.0, 500.0)
                 .initialization_script(&theme_script)

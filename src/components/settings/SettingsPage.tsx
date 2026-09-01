@@ -1429,7 +1429,7 @@ function AboutCard() {
     <div className="px-4 py-3 rounded-xl bg-bg-surface border border-border/50">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <p className="text-[length:var(--text-base)] font-semibold text-text-primary">OmniSSH</p>
+          <p className="text-[length:var(--text-base)] font-semibold text-text-primary">OmniSSH{import.meta.env.DEV ? "-dev" : ""}</p>
           <p className={DESC_CLASS}>A modern desktop client for SSH, SFTP/SCP, and S3</p>
         </div>
         <span className="shrink-0 text-[length:var(--text-xs)] tabular-nums text-text-muted">

@@ -10,6 +10,8 @@ import {
   Loader2,
   Shield,
   Terminal as TerminalIcon,
+  Search,
+  X,
 } from "lucide-react";
 import type { FileSystemProvider } from "../../types/explorer";
 
@@ -37,6 +39,8 @@ interface ExplorerToolbarProps {
   sudoBusy?: boolean;
   onToggleSudo?: () => void;
   onCdToTerminal?: () => void;
+  searchQuery?: string;
+  onSearchChange?: (query: string) => void;
 }
 
 // cache icons so they render once
@@ -100,6 +104,8 @@ export const ExplorerToolbar = memo(function ExplorerToolbar({
   sudoBusy,
   onToggleSudo,
   onCdToTerminal,
+  searchQuery,
+  onSearchChange,
 }: ExplorerToolbarProps) {
   const caps = provider.capabilities;
   const providerType = provider.type;
@@ -250,6 +256,49 @@ export const ExplorerToolbar = memo(function ExplorerToolbar({
           className="text-accent motion-safe:animate-spin shrink-0"
           aria-label="Operation in progress"
         />
+      )}
+
+      {/* Search / Filter */}
+      {onSearchChange && (
+        <div className="relative flex items-center shrink-0 w-36 sm:w-44">
+          <Search
+            size={13}
+            strokeWidth={2}
+            className="absolute left-2 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"
+            aria-hidden="true"
+          />
+          <input
+            data-testid="explorer-search-input"
+            aria-label="Filter files by name"
+            type="text"
+            value={searchQuery ?? ""}
+            onChange={(e) => onSearchChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                onSearchChange("");
+                e.currentTarget.blur();
+              }
+            }}
+            placeholder="Filter files..."
+            className={[
+              "w-full pl-7 pr-6 py-0.5 rounded text-[length:var(--text-xs)]",
+              "bg-bg-base border border-border text-text-primary placeholder:text-text-muted",
+              "outline-none focus:border-border-focus focus:ring-1 focus:ring-ring",
+              "transition-[border-color,box-shadow] duration-[var(--duration-fast)]",
+            ].join(" ")}
+          />
+          {searchQuery ? (
+            <button
+              type="button"
+              data-testid="explorer-search-clear"
+              aria-label="Clear filter"
+              onClick={() => onSearchChange("")}
+              className="absolute right-1 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-primary p-0.5 rounded transition-colors"
+            >
+              <X size={12} strokeWidth={2} aria-hidden="true" />
+            </button>
+          ) : null}
+        </div>
       )}
 
       {/* Separator */}

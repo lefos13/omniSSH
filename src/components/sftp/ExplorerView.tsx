@@ -54,8 +54,33 @@ export function ExplorerView({
   const isRoot = useSftpStore((s) => s.sessions.get(sessionId)?.username === "root");
 
   const provider = useMemo(() => createSftpProvider(sessionId), [sessionId]);
+  const [searchQuery, setSearchQuery] = useState("");
+  const containerRef = useRef<HTMLDivElement>(null);
 
-  // ─── Drag-and-drop (OS → App) ─────────────────────────────────────────────
+  // Reset search filter when navigating to a different directory
+  useEffect(() => {
+    setSearchQuery("");
+  }, [session?.currentPath]);
+
+  // Focus search input on Cmd/Ctrl+F when this explorer tab is active
+  useEffect(() => {
+    if (!isActive) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+        e.preventDefault();
+        const input = containerRef.current?.querySelector<HTMLInputElement>(
+          'input[data-testid="explorer-search-input"]',
+        );
+        input?.focus();
+        input?.select();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isActive]);
+
 
   const [isDragOver, setIsDragOver] = useState(false);
   // When the cursor hovers a folder row during an OS drag, this holds that
@@ -816,7 +841,7 @@ export function ExplorerView({
   if (!session) return null;
 
   return (
-    <div className="flex flex-col h-full overflow-hidden relative">
+    <div ref={containerRef} className="flex flex-col h-full overflow-hidden relative">
       <ExplorerToolbar
         provider={provider}
         currentPath={session.currentPath}
@@ -833,8 +858,9 @@ export function ExplorerView({
         sudoBusy={togglingSudo}
         onToggleSudo={transport === "sftp" && !isRoot ? () => void handleToggleSudo() : undefined}
         onCdToTerminal={onCdToTerminal && session ? () => onCdToTerminal(session.currentPath) : undefined}
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
       />
-
       {/* Error banner */}
       {session.error && (
         <div
@@ -875,8 +901,9 @@ export function ExplorerView({
         loading={session.loading}
         busy={busy}
         onCdToTerminal={onCdToTerminal}
+        searchQuery={searchQuery}
+        onClearSearch={() => setSearchQuery("")}
       />
-
       {isDragOver && (
         <ExplorerDropZone
           path={dropTargetDir ?? session.currentPath}

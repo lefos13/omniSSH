@@ -32,8 +32,32 @@ export function S3Browser({ sessionId, isActive = true }: S3BrowserProps) {
     () => createS3Provider(sessionId, session?.currentBucket ?? ""),
     [sessionId, session?.currentBucket],
   );
+  const [searchQuery, setSearchQuery] = useState("");
+  const containerRef = useRef<HTMLDivElement>(null);
 
-  // ─── Drag-and-drop (OS → App) ─────────────────────────────────────────────
+  // Reset search filter when navigating to a different prefix
+  useEffect(() => {
+    setSearchQuery("");
+  }, [session?.currentPrefix]);
+
+  // Focus search input on Cmd/Ctrl+F when this S3 browser tab is active
+  useEffect(() => {
+    if (!isActive) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+        e.preventDefault();
+        const input = containerRef.current?.querySelector<HTMLInputElement>(
+          'input[data-testid="explorer-search-input"]',
+        );
+        input?.focus();
+        input?.select();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isActive]);
 
   const [isDragOver, setIsDragOver] = useState(false);
   const isProcessingDrop = useRef(false);
@@ -428,7 +452,7 @@ export function S3Browser({ sessionId, isActive = true }: S3BrowserProps) {
   // ─── Object browser view (using shared components) ────────────────────────
 
   return (
-    <div className="flex flex-col h-full overflow-hidden relative">
+    <div ref={containerRef} className="flex flex-col h-full overflow-hidden relative">
       <ExplorerToolbar
         provider={provider}
         currentPath={session.currentPrefix}
@@ -440,8 +464,9 @@ export function S3Browser({ sessionId, isActive = true }: S3BrowserProps) {
         onNewFolder={() => setCreatingFolder(true)}
         onUpload={() => void handleUpload()}
         onUploadFolder={() => void handleUploadFolder()}
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
       />
-
       {/* Error banner */}
       {session.error && (
         <div className="flex items-center gap-2.5 px-4 py-2.5 bg-status-error/10 border-b border-status-error/20 text-status-error">
@@ -471,8 +496,9 @@ export function S3Browser({ sessionId, isActive = true }: S3BrowserProps) {
         onCancelCreateFolder={() => setCreatingFolder(false)}
         currentPath={session.currentPrefix}
         loading={session.loading}
+        searchQuery={searchQuery}
+        onClearSearch={() => setSearchQuery("")}
       />
-
       {isDragOver && <ExplorerDropZone path={session.currentPrefix || bucketName} />}
     </div>
   );

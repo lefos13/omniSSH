@@ -7,7 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased] - `feature/imports-and-linked-explorer`
+## [1.0.1] - 2026-09-01
+
+### 🚀 Highlights & New Features
+
+#### 1. File Explorer Search & Real-Time Filtering
+* **Search Filter Bar**: Added an interactive search and filter input to the SFTP, SCP, and S3 file explorer toolbars, allowing users to filter files and folders in real time.
+* **Case-Insensitive Substring Match**: Easily locate files across large directories with instant, case-insensitive substring matching.
+* **Keyboard Shortcuts & Clear Control**: Quick-focus the filter using `Cmd+F` / `Ctrl+F`, clear filter via the `Escape` key or the clear `X` button, and navigate filtered results with keyboard arrow keys.
+* **Filtered Empty State**: Shows a clean empty match state with a `"Clear filter"` action when no files match the current query.
+
+#### 2. Development App Naming (`OmniSSH-dev`)
+* **Local Dev Window Title**: Local development runs and debug builds now explicitly name the window `"OmniSSH-dev"` and update the document title so developers can easily distinguish running dev instances from installed production releases.
+* **Settings & About Section**: Displays `"OmniSSH-dev"` in the About card during local development mode.
+
+---
+
+## [1.0.0] - 2026-09-01
 
 ### 🚀 Highlights & New Features
 
