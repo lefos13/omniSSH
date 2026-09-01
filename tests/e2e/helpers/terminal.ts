@@ -58,13 +58,22 @@ export async function typeIntoTerminal(sessionId: string, text: string): Promise
     // `term.paste()` is the documented public API for programmatically
     // injecting input. It goes through the same `onData` path real
     // keystrokes do, which is what `ssh_send_input` is wired to.
+    //
+    // Newlines are sent via `term.input()` instead: once the remote readline
+    // has enabled bracketed paste (DECSET 2004), paste()-ed content is wrapped
+    // in \e[200~/\e[201~ and a CR inside it is inserted literally rather than
+    // accepting the line — so the command would sit at the prompt unexecuted.
     await browser.execute(
         (sid: string, payload: string) => {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const reg = (window as any).__e2eTerminals as Map<string, any> | undefined;
             const term = reg?.get(sid);
             if (!term) throw new Error(`no terminal registered for ${sid}`);
-            term.paste(payload);
+            const chunks = payload.split("\n");
+            chunks.forEach((chunk, i) => {
+                if (chunk) term.paste(chunk);
+                if (i < chunks.length - 1) term.input("\r", true);
+            });
         },
         sessionId,
         text,

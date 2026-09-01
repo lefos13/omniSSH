@@ -281,7 +281,7 @@ e2e-build: $(E2E_IMAGE_STAMP)
 # node-modules) so the next run does an incremental compile (~5s instead
 # of ~80s). Use `make e2e-clean` to wipe volumes when you want a fresh start.
 e2e: $(E2E_IMAGE_STAMP)
-	@for i in 1 2 3 4 5; do $(E2E_COMPOSE) pull -q && break || sleep 3; done; \
+	@for i in 1 2 3 4 5; do $(E2E_COMPOSE) pull --ignore-buildable -q && break || sleep 3; done; \
 	$(E2E_COMPOSE) up --abort-on-container-exit --exit-code-from e2e e2e; \
 		ec=$$?; \
 		$(E2E_COMPOSE) down --remove-orphans >/dev/null 2>&1; \
