@@ -47,13 +47,8 @@ describe("linked and standalone explorer coexistence", () => {
         });
         await clickSave();
         await waitForModalClosed();
-        await findHostCardByLabel("coexist-host");
-        const hostId = await getHostId("coexist-host");
-
-        // 2. Connect terminal session from card
-        const connectBtn = await $(`[data-testid='host-card-${hostId}-connect']`);
-        await connectBtn.waitForClickable({ timeout: 10_000 });
-        await connectBtn.click();
+        const card = await findHostCardByLabel("coexist-host");
+        await card.click();
 
         const sessionId = await waitForAnyTerminal();
         await waitForTerminalText(sessionId, ":~$");

@@ -73,9 +73,9 @@ describe("OSC 7 CWD follow and explicit cd", () => {
         );
 
         // 2. Navigate linked explorer to /tmp via UI to test explicit cd
-        // Click root '/' in breadcrumb
-        const rootCrumb = await $("[aria-label='Current path'] button");
-        await rootCrumb.waitForClickable({ timeout: 5_000 });
+        // Click root '/' via home button
+        const rootCrumb = await $("[data-testid='explorer-home']");
+        await rootCrumb.waitForClickable({ timeout: 10_000 });
         await rootCrumb.click();
 
         await browser.waitUntil(

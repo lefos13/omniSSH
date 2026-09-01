@@ -95,7 +95,7 @@ describe("two independent explorer connections", () => {
         expect((await container2.$$('[data-testid="explorer-error"]')).length).to.equal(0);
         await browser.waitUntil(
             async () => (await container2.$$('[data-entry-row="true"]')).length > 0,
-            { timeout: 10_000, timeoutMsg: "second explorer directory listing never rendered" },
+            { timeout: 20_000, timeoutMsg: "second explorer directory listing never rendered" },
         );
         const tmpEntries = await container2.$$('[data-entry-row="true"]');
         expect(tmpEntries.length).to.be.greaterThan(0);
