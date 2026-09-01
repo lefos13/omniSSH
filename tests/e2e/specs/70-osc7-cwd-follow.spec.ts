@@ -96,6 +96,7 @@ describe("OSC 7 CWD follow and explicit cd", () => {
         const cdTerminalBtn = await $("[data-testid='linked-explorer-cd-terminal']");
         await cdTerminalBtn.waitForClickable({ timeout: 10_000 });
         await cdTerminalBtn.click();
+        await browser.pause(500);
 
         // Prove explicit cd changed terminal PWD to /tmp using a unique marker
         const cdMarker = `cd_marker_${Date.now()}`;
