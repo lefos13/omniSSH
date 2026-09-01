@@ -79,13 +79,13 @@ describe("OSC 7 CWD follow and explicit cd", () => {
         await rootCrumb.click();
 
         await browser.waitUntil(
-            async () => (await explorerContainer.$$('[data-entry-row="true"]')).length > 0,
-            { timeout: 15_000 },
+            async () => (await activeExplorerPath()) === "/",
+            { timeout: 15_000, timeoutMsg: "linked explorer did not enter root '/'" },
         );
+        await waitForActiveEntry("tmp", 15_000);
 
-        // Double-click 'tmp' directory
+        // Open 'tmp' directory
         await openEntry("tmp");
-
         // Wait until linked explorer breadcrumb indicates /tmp
         await browser.waitUntil(
             async () => (await activeExplorerPath()) === "tmp",
