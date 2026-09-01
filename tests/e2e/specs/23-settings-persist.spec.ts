@@ -33,6 +33,7 @@ describe("settings persistence", () => {
             node.dispatchEvent(new Event("input", { bubbles: true }));
             node.dispatchEvent(new Event("change", { bubbles: true }));
         }, "18");
+        await browser.pause(300);
 
         await relaunchApp();
         await gotoSettings();
