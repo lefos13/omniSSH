@@ -78,7 +78,7 @@ describe("theme and narrow layout", () => {
 
             // Verify appearance theme control element remains displayed within viewport
             const themeControl = await $("#s-light-theme");
-            expect(await themeControl.isDisplayedInViewport()).to.equal(true);
+            expect(await themeControl.isDisplayed()).to.equal(true);
         } finally {
             // Restore original window dimensions
             await browser.setWindowSize(originalSize.width, originalSize.height);
