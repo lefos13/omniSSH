@@ -10,6 +10,10 @@ import { join } from "node:path";
 
 const APP_DATA_DIR = join(
     process.env.XDG_DATA_HOME ?? `${process.env.HOME}/.local/share`,
+    "com.omnissh.desktop",
+);
+const LEGACY_APP_DATA_DIR = join(
+    process.env.XDG_DATA_HOME ?? `${process.env.HOME}/.local/share`,
     "com.macnev2013.anyscp",
 );
 
@@ -23,6 +27,7 @@ export async function resetApp(): Promise<void> {
     // pass and the final rmdir → ENOTEMPTY. maxRetries makes rm retry the
     // rmdir with a linear backoff until the writes settle.
     await rm(APP_DATA_DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
+    await rm(LEGACY_APP_DATA_DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
     await browser.reloadSession();
 }
 
