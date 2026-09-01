@@ -310,7 +310,7 @@ describe("ImportSshConfigModal — Termius source", () => {
 
   it("commits selected opaque ids without any credential fields", async () => {
     render(<ImportSshConfigModal initialSource="termius" onClose={() => {}} onImported={() => {}} />);
-    await screen.findByTestId("import-termius-submit");
+    await screen.findByTestId("import-termius-host-opaque-host-1");
     fireEvent.click(screen.getAllByRole("checkbox")[0]);
     fireEvent.click(screen.getAllByRole("checkbox")[1]);
     fireEvent.click(screen.getByTestId("import-termius-submit"));
@@ -338,7 +338,7 @@ describe("ImportSshConfigModal — Termius source", () => {
       return undefined;
     });
     render(<ImportSshConfigModal initialSource="termius" onClose={() => {}} onImported={() => {}} />);
-    await screen.findByTestId("import-termius-submit");
+    await screen.findByTestId("import-termius-host-opaque-host-1");
     fireEvent.click(screen.getByTestId("import-termius-submit"));
 
     expect(await screen.findByText(/preview expired/i)).toBeInTheDocument();
