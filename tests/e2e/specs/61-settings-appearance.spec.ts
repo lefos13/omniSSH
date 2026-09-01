@@ -48,12 +48,17 @@ describe("settings appearance", () => {
             async () => (await orange.getAttribute("aria-pressed")) === "true",
             { timeout: 5_000, timeoutMsg: "accent swatch did not become selected" },
         );
+        await browser.pause(300);
 
         await relaunchApp();
         await openSettings();
 
         const after = await $("[data-testid='s-accent-70']");
         await after.waitForDisplayed({ timeout: 10_000 });
+        await browser.waitUntil(
+            async () => (await after.getAttribute("aria-pressed")) === "true",
+            { timeout: 5_000, timeoutMsg: "accent swatch did not persist as selected" },
+        );
         expect(await after.getAttribute("aria-pressed")).to.equal("true");
     });
 
