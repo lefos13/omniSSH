@@ -222,8 +222,7 @@ describe("ImportSshConfigModal — Termius source", () => {
 
   it("requires explicit credential opt-in and confirmation before commit", async () => {
     render(<ImportSshConfigModal initialSource="termius" onClose={() => {}} onImported={() => {}} />);
-    await screen.findByTestId("import-termius-submit");
-
+    await screen.findByTestId("import-termius-host-opaque-host-1");
     const submit = screen.getByTestId("import-termius-submit");
     expect(submit).toBeEnabled();
     fireEvent.click(screen.getByTestId("import-termius-credentials"));
