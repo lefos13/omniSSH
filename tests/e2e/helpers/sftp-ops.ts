@@ -84,6 +84,7 @@ export async function assertEntryAbsent(name: string, timeoutMs = 10_000): Promi
 /** Double-click an entry to navigate (if directory) or open (if file). */
 export async function openEntry(name: string): Promise<void> {
     const entry = await waitForEntry(name);
+    await entry.scrollIntoView({ block: "center" });
     await entry.doubleClick();
 }
 

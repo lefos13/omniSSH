@@ -56,9 +56,9 @@ describe("two independent explorer connections", () => {
     });
 
     it("opens two independent SFTP explorer tabs and maintains separate session IDs and directory states", async () => {
-        // 1. Save host 1 (/etc) and host 2 (/tmp)
+        // 1. Save host 1 (/etc) and host 2 (/var)
         const host1Id = await saveHostWithStartDir("host-etc", "/etc");
-        const host2Id = await saveHostWithStartDir("host-tmp", "/tmp");
+        const host2Id = await saveHostWithStartDir("host-var", "/var");
 
         // 2. Open explorer for Host 1 (should land in /etc)
         const exp1Btn = await $(`[data-testid='host-card-${host1Id}-explorer']`);
@@ -84,7 +84,7 @@ describe("two independent explorer connections", () => {
         await hostsTab.click();
         await waitForDashboard();
 
-        // 4. Open explorer for Host 2 (should land in /tmp)
+        // 4. Open explorer for Host 2 (should land in /var)
         const exp2Btn = await $(`[data-testid='host-card-${host2Id}-explorer']`);
         await exp2Btn.waitForClickable({ timeout: 10_000 });
         await exp2Btn.click();
@@ -97,9 +97,9 @@ describe("two independent explorer connections", () => {
             async () => (await container2.$$('[data-entry-row="true"]')).length > 0,
             { timeout: 20_000, timeoutMsg: "second explorer directory listing never rendered" },
         );
-        const tmpEntries = await container2.$$('[data-entry-row="true"]');
-        expect(tmpEntries.length).to.be.greaterThan(0);
-        expect(await activeExplorerPath()).to.equal("tmp");
+        const varEntries = await container2.$$('[data-entry-row="true"]');
+        expect(varEntries.length).to.be.greaterThan(0);
+        expect(await activeExplorerPath()).to.equal("var");
 
         // Capture session ID from the second active explorer container.
         const sessionId2 = await container2.getAttribute("data-explorer-session-id");
@@ -124,8 +124,8 @@ describe("two independent explorer connections", () => {
         expect(await passwdEntryAgain.getAttribute("data-entry-name")).to.equal("passwd");
         expect(await activeExplorerPath()).to.equal("etc");
 
-        // 6. Switch back to Host 2 explorer tab and verify it preserves sessionId2 and /tmp
-        const tab2 = await $(`[data-tab-label='host-tmp']`);
+        // 6. Switch back to Host 2 explorer tab and verify it preserves sessionId2 and /var
+        const tab2 = await $(`[data-tab-label='host-var']`);
         await tab2.waitForClickable({ timeout: 5_000 });
         await tab2.click();
         await waitForExplorer();
@@ -134,7 +134,7 @@ describe("two independent explorer connections", () => {
         expect(await activeContainer2.getAttribute("data-explorer-session-id")).to.equal(sessionId2);
         expect(await activeContainer2.getAttribute("data-explorer-transport")).to.equal("sftp");
 
-        expect(await activeExplorerPath()).to.equal("tmp");
+        expect(await activeExplorerPath()).to.equal("var");
         expect((await activeContainer2.$$('[data-entry-row="true"]')).length).to.be.greaterThan(0);
     });
 });
