@@ -81,12 +81,13 @@ export async function assertEntryAbsent(name: string, timeoutMs = 10_000): Promi
     );
 }
 
-/** Double-click or Enter an entry to navigate (if directory) or open (if file). */
+/** Double-click an entry to navigate (if directory) or open (if file). */
 export async function openEntry(name: string): Promise<void> {
     const entry = await waitForActiveEntry(name);
     await entry.scrollIntoView({ block: "center" });
-    await entry.click();
-    await browser.keys(["Enter"]);
+    await browser.execute((el) => {
+        el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, view: window }));
+    }, entry);
 }
 
 /** Click the explorer refresh button. */
