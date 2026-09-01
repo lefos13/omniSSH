@@ -24,6 +24,7 @@ import {
 import {
     activeExplorerPath,
     openEntry,
+    waitForActiveEntry,
     waitForActiveExplorer,
 } from "../helpers/sftp-ops.js";
 
