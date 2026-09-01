@@ -48,8 +48,8 @@ describe("linked and standalone explorer coexistence", () => {
         await clickSave();
         await waitForModalClosed();
         const card = await findHostCardByLabel("coexist-host");
+        const hostId = await getHostId("coexist-host");
         await card.click();
-
         const sessionId = await waitForAnyTerminal();
         await waitForTerminalText(sessionId, ":~$");
 
