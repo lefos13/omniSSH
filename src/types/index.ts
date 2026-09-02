@@ -74,4 +74,8 @@ export type {
   FileSystemProvider,
 } from "./explorer";
 
-export type { CredentialStorage, LocalVaultStatus } from "./vault";
+export type {
+  BackupPreflightSummary,
+  CredentialStorage,
+  LocalVaultStatus,
+} from "./vault";

@@ -4,15 +4,16 @@
 //! header — magic, KDF parameters, salt, nonce — followed directly by the raw
 //! **AES-256-GCM** ciphertext. The header is the AEAD associated data, so any
 //! tampering with the parameters is detected. The key is derived from the
-//! user's passphrase with **Argon2id**; the payload (a raw SQLite snapshot of
-//! the whole database plus every stored credential) is gzip-compressed before
-//! encryption. Secrets never touch disk in plaintext, and a backup is useless
-//! without the passphrase.
+//! user's passphrase with **Argon2id**; the payload (a raw SQLite snapshot plus
+//! the selected System Keychain credentials) is gzip-compressed before
+//! encryption. App Vault ciphertext always remains in the database snapshot.
+//! Secrets never touch disk in plaintext, and a backup is useless without the
+//! passphrase.
 //!
 //! - Export: snapshot the DB ([`crate::db::HostDb::export_db_snapshot`]) +
-//!   gather eligible credentials from the OS keychain → frame + gzip → seal →
-//!   write the container bytes. Local-vault ciphertext remains inside the
-//!   encrypted database snapshot and is never read into this credential map.
+//!   optionally gather eligible credentials from the OS keychain → frame +
+//!   gzip → seal → write the container bytes. Local-vault ciphertext remains
+//!   inside the encrypted database snapshot and is never read into this map.
 //! - Import: open the container with the passphrase → gunzip → restore the DB
 //!   snapshot ([`crate::db::HostDb::import_db_snapshot`]) + write credentials
 //!   back to the keychain. A wrong password fails the AEAD tag check and is
@@ -35,7 +36,7 @@ use serde::Serialize;
 use zeroize::Zeroizing;
 
 use crate::db::{CredentialStorage, HostDb};
-use crate::vault::{self, StoredCredential};
+use crate::vault::{self, StoredCredential, VaultError};
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 
@@ -68,6 +69,8 @@ pub enum BackupError {
     Format(String),
     #[error("I/O error: {0}")]
     Io(String),
+    #[error("A System Keychain credential could not be read; no backup was written")]
+    KeychainRead,
 }
 
 /// Serialize as `{ kind, message }` — same convention as the other error types.
@@ -84,6 +87,7 @@ impl Serialize for BackupError {
             BackupError::Crypto(_) => "crypto",
             BackupError::Format(_) => "format",
             BackupError::Io(_) => "io",
+            BackupError::KeychainRead => "credential_read",
         };
         state.serialize_field("kind", kind)?;
         state.serialize_field("message", &self.to_string())?;
@@ -318,25 +322,88 @@ fn open(password: &str, data: &[u8]) -> Result<(Zeroizing<Vec<u8>>, u8), BackupE
 
 // ─── Orchestration (sync — callers use spawn_blocking) ──────────────────────────
 
-/// Build the encrypted backup container (raw bytes) for the whole app.
-pub fn build_backup(db: &HostDb, password: &str) -> Result<Vec<u8>, BackupError> {
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupPreflightSummary {
+    pub keychain_host_candidates: usize,
+    pub local_vault_hosts: usize,
+    pub s3_candidates: usize,
+}
+
+/// Count credential-storage candidates without reading any credential values.
+pub fn backup_preflight(db: &HostDb) -> Result<BackupPreflightSummary, BackupError> {
+    let hosts = db.list_hosts()?;
+    Ok(BackupPreflightSummary {
+        keychain_host_candidates: hosts
+            .iter()
+            .filter(|host| host.credential_storage == CredentialStorage::Keychain)
+            .count(),
+        local_vault_hosts: hosts
+            .iter()
+            .filter(|host| host.credential_storage == CredentialStorage::LocalVault)
+            .count(),
+        s3_candidates: db.list_s3_connections()?.len(),
+    })
+}
+
+trait CredentialReader {
+    fn get(&self, key: &str) -> Result<StoredCredential, VaultError>;
+}
+
+struct SystemKeychainReader;
+
+impl CredentialReader for SystemKeychainReader {
+    fn get(&self, key: &str) -> Result<StoredCredential, VaultError> {
+        vault::get_credential(key)
+    }
+}
+
+/// Build the encrypted backup container, optionally including System Keychain credentials.
+pub fn build_backup(
+    db: &HostDb,
+    password: &str,
+    include_credentials: bool,
+) -> Result<Vec<u8>, BackupError> {
+    build_backup_with_reader(db, password, include_credentials, &SystemKeychainReader)
+}
+
+/* Credential collection is separated from the native reader so tests can
+ * verify the no-prompt path and failure contract without touching a user's
+ * keychain. Missing items are valid for hosts that do not require a secret;
+ * every other read failure aborts with a redacted error. */
+fn build_backup_with_reader(
+    db: &HostDb,
+    password: &str,
+    include_credentials: bool,
+    reader: &dyn CredentialReader,
+) -> Result<Vec<u8>, BackupError> {
     let db_bytes = db.export_db_snapshot()?;
 
     /* Only keychain-backed host credentials are copied into the credential map.
      * Local-vault rows already live in the encrypted DB snapshot; reading them
      * here would create a plaintext backup path and could leak stale duplicates. */
     let mut credentials: BTreeMap<String, StoredCredential> = BTreeMap::new();
-    for h in db.list_hosts()? {
-        if h.credential_storage == CredentialStorage::Keychain {
-            if let Ok(c) = vault::get_credential(&h.id) {
-                credentials.insert(h.id, c);
+    if include_credentials {
+        for h in db.list_hosts()? {
+            if h.credential_storage == CredentialStorage::Keychain {
+                match reader.get(&h.id) {
+                    Ok(credential) => {
+                        credentials.insert(h.id, credential);
+                    }
+                    Err(VaultError::NotFound(_)) => {}
+                    Err(_) => return Err(BackupError::KeychainRead),
+                }
             }
         }
-    }
-    for s in db.list_s3_connections()? {
-        let key = format!("s3:{}", s.id);
-        if let Ok(c) = vault::get_credential(&key) {
-            credentials.insert(key, c);
+        for s in db.list_s3_connections()? {
+            let key = format!("s3:{}", s.id);
+            match reader.get(&key) {
+                Ok(credential) => {
+                    credentials.insert(key, credential);
+                }
+                Err(VaultError::NotFound(_)) => {}
+                Err(_) => return Err(BackupError::KeychainRead),
+            }
         }
     }
 
@@ -395,6 +462,76 @@ pub fn restore_backup(db: &HostDb, password: &str, container: &[u8]) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::SavedHost;
+    use crate::vault::VaultError;
+    use std::cell::RefCell;
+
+    /* Backup orchestration tests use an in-memory credential reader so they
+     * can prove which records would touch the OS keychain without opening
+     * native authorization dialogs or persisting test secrets. */
+    struct TestCredentialReader {
+        reads: RefCell<Vec<String>>,
+        credentials: BTreeMap<String, StoredCredential>,
+        error_key: Option<String>,
+    }
+
+    impl CredentialReader for TestCredentialReader {
+        fn get(&self, key: &str) -> Result<StoredCredential, VaultError> {
+            self.reads.borrow_mut().push(key.to_string());
+            if self.error_key.as_deref() == Some(key) {
+                return Err(VaultError::Keychain(
+                    "private native keychain detail".to_string(),
+                ));
+            }
+            self.credentials
+                .get(key)
+                .cloned()
+                .ok_or_else(|| VaultError::NotFound(key.to_string()))
+        }
+    }
+
+    fn sample_host(id: &str, storage: CredentialStorage) -> SavedHost {
+        SavedHost {
+            id: id.to_string(),
+            label: format!("Host {id}"),
+            host: "192.0.2.1".to_string(),
+            port: 22,
+            username: "alice".to_string(),
+            auth_type: "password".to_string(),
+            credential_storage: storage,
+            group_id: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            key_path: None,
+            color: None,
+            notes: None,
+            environment: None,
+            os_type: None,
+            startup_command: None,
+            proxy_jump: None,
+            proxy_jump_host_id: None,
+            start_directory: None,
+            keep_alive_interval: None,
+            default_shell: None,
+            font_size: None,
+            last_connected_at: None,
+            connection_count: Some(0),
+        }
+    }
+
+    fn test_db() -> (HostDb, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("anyscp-backup-{}", uuid::Uuid::new_v4()));
+        let db = HostDb::new(&dir).expect("test db");
+        (db, dir)
+    }
+
+    fn decoded_credentials(password: &str, container: &[u8]) -> BTreeMap<String, StoredCredential> {
+        let (plaintext, compression) = open(password, container).expect("open backup");
+        assert_eq!(compression, COMPRESSION_GZIP);
+        let frame = gunzip(&plaintext).expect("gunzip backup");
+        let (credentials, _) = decode_frame(&frame).expect("decode frame");
+        serde_json::from_slice(credentials).expect("decode credentials")
+    }
 
     fn roundtrip(password: &str, msg: &[u8]) -> Vec<u8> {
         let container = seal(password, msg, COMPRESSION_NONE).expect("seal");
@@ -523,7 +660,7 @@ mod tests {
         src.save_setting("app_theme", "light")
             .expect("seed setting");
 
-        let backup = build_backup(&src, "hunter2-strong-pw").expect("build_backup");
+        let backup = build_backup(&src, "hunter2-strong-pw", true).expect("build_backup");
 
         // Compression + framing + binary container: the encrypted backup is far
         // smaller than the raw SQLite snapshot (the old JSON+double-base64 format
@@ -584,5 +721,143 @@ mod tests {
         let (plaintext, _) = open("pw", &container).unwrap();
         assert_zeroizing(&plaintext);
         assert_eq!(plaintext.as_slice(), b"sensitive-payload");
+    }
+
+    #[test]
+    fn preflight_counts_keychain_local_vault_and_s3_candidates() {
+        let (db, dir) = test_db();
+        db.save_host(&sample_host("keychain-1", CredentialStorage::Keychain))
+            .expect("save keychain host");
+        db.save_host(&sample_host("keychain-2", CredentialStorage::Keychain))
+            .expect("save keychain host");
+        db.save_host(&sample_host("local-1", CredentialStorage::LocalVault))
+            .expect("save local vault host");
+        db.save_s3_connection(
+            "s3-1",
+            "S3",
+            "aws",
+            "us-east-1",
+            None,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("save s3 connection");
+
+        let summary = backup_preflight(&db).expect("preflight");
+        assert_eq!(summary.keychain_host_candidates, 2);
+        assert_eq!(summary.local_vault_hosts, 1);
+        assert_eq!(summary.s3_candidates, 1);
+        assert_eq!(
+            serde_json::to_value(summary).expect("serialize"),
+            serde_json::json!({
+                "keychainHostCandidates": 2,
+                "localVaultHosts": 1,
+                "s3Candidates": 1
+            })
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn skipped_keychain_export_performs_no_reads_and_restores() {
+        let (src, src_dir) = test_db();
+        let (dst, dst_dir) = test_db();
+        src.save_host(&sample_host("keychain-1", CredentialStorage::Keychain))
+            .expect("save host");
+        let reader = TestCredentialReader {
+            reads: RefCell::new(Vec::new()),
+            credentials: BTreeMap::new(),
+            error_key: Some("keychain-1".to_string()),
+        };
+
+        let backup = build_backup_with_reader(&src, "password", false, &reader)
+            .expect("build without keychain");
+        assert!(reader.reads.borrow().is_empty());
+        assert!(decoded_credentials("password", &backup).is_empty());
+        restore_backup(&dst, "password", &backup).expect("restore");
+        assert!(dst.get_host("keychain-1").expect("get host").is_some());
+
+        let _ = std::fs::remove_dir_all(src_dir);
+        let _ = std::fs::remove_dir_all(dst_dir);
+    }
+
+    #[test]
+    fn full_export_reads_only_keychain_candidates_and_skips_missing_items() {
+        let (db, dir) = test_db();
+        db.save_host(&sample_host("keychain-1", CredentialStorage::Keychain))
+            .expect("save keychain host");
+        db.save_host(&sample_host("missing", CredentialStorage::Keychain))
+            .expect("save missing host");
+        db.save_host(&sample_host("local-1", CredentialStorage::LocalVault))
+            .expect("save local host");
+        db.save_s3_connection(
+            "bucket",
+            "Bucket",
+            "aws",
+            "us-east-1",
+            None,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("save s3 connection");
+        let reader = TestCredentialReader {
+            reads: RefCell::new(Vec::new()),
+            credentials: BTreeMap::from([
+                (
+                    "keychain-1".to_string(),
+                    StoredCredential::Password {
+                        password: "host-secret".to_string(),
+                    },
+                ),
+                (
+                    "s3:bucket".to_string(),
+                    StoredCredential::Password {
+                        password: "s3-secret".to_string(),
+                    },
+                ),
+            ]),
+            error_key: None,
+        };
+
+        let backup = build_backup_with_reader(&db, "password", true, &reader).expect("build");
+        let reads = reader.reads.borrow();
+        assert!(reads.contains(&"keychain-1".to_string()));
+        assert!(reads.contains(&"missing".to_string()));
+        assert!(reads.contains(&"s3:bucket".to_string()));
+        assert!(!reads.contains(&"local-1".to_string()));
+        assert_eq!(decoded_credentials("password", &backup).len(), 2);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn full_export_redacts_keychain_failures() {
+        let (db, dir) = test_db();
+        db.save_host(&sample_host(
+            "sensitive-host-id",
+            CredentialStorage::Keychain,
+        ))
+        .expect("save host");
+        let reader = TestCredentialReader {
+            reads: RefCell::new(Vec::new()),
+            credentials: BTreeMap::new(),
+            error_key: Some("sensitive-host-id".to_string()),
+        };
+
+        let error = build_backup_with_reader(&db, "password", true, &reader)
+            .expect_err("keychain failure must abort");
+        assert!(matches!(error, BackupError::KeychainRead));
+        let serialized = serde_json::to_string(&error).expect("serialize error");
+        assert!(serialized.contains("credential_read"));
+        assert!(!serialized.contains("sensitive-host-id"));
+        assert!(!serialized.contains("private native keychain detail"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -9,17 +9,22 @@
 // (which Vite bundled) does the import instead.
 
 /** Encrypt all app data with `password` and write the backup to `path`. */
-export async function backupExport(password: string, path: string): Promise<void> {
+export async function backupExport(
+    password: string,
+    path: string,
+    includeCredentials = true,
+): Promise<void> {
     await browser.execute(
-        async (pw: string, p: string) => {
+        async (pw: string, p: string, inc?: boolean) => {
             const fn = (window as unknown as {
-                __e2eBackupExport?: (a: string, b: string) => Promise<void>;
+                __e2eBackupExport?: (a: string, b: string, inc?: boolean) => Promise<void>;
             }).__e2eBackupExport;
             if (!fn) throw new Error("__e2eBackupExport not registered");
-            await fn(pw, p);
+            await fn(pw, p, inc);
         },
         password,
         path,
+        includeCredentials,
     );
 }
 

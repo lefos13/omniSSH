@@ -8,6 +8,7 @@ import { toast } from "../../stores/toast-store";
 import { RefreshCw, CheckCircle2, AlertCircle, Palette, SquareTerminal, ArrowUpDown, Info, ExternalLink, Check, FileCode, Plus, Trash2, FolderOpen, Star, Search, Database, Download, Upload, ShieldCheck, KeyRound } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { CursorStyle, ThemeMode, EditorConfig, PasteButton, DoubleClickAction } from "../../stores/settings-store";
+import type { BackupPreflightSummary } from "../../types";
 import { useLocalVaultStore } from "../../stores/local-vault-store";
 import { ChangeVaultPasswordDialog } from "../vault";
 
@@ -816,10 +817,10 @@ function DataSettings() {
   );
 }
 
-/** Passphrase dialog for encrypted backup export/import.
- *  - export: set + confirm a password, then a save-file dialog picks the path.
- *  - import: enter the file's password; on success the app relaunches so the
- *    restored data loads cleanly. */
+/* Passphrase dialog for encrypted backup export/import.
+ * Export queries preflight candidate counts, lets the user optionally skip
+ * System Keychain reads to avoid repeated OS authorization prompts, and encrypts
+ * the archive with a user-chosen passphrase. */
 function BackupPasswordModal({ mode, open, path, onClose }: {
   mode: "export" | "import";
   open: boolean;
@@ -831,6 +832,10 @@ function BackupPasswordModal({ mode, open, path, onClose }: {
   const [pw, setPw] = useState("");
   const [confirm, setConfirm] = useState("");
   const [busy, setBusy] = useState(false);
+  const [includeCredentials, setIncludeCredentials] = useState(true);
+  const [preflight, setPreflight] = useState<BackupPreflightSummary | null>(null);
+  const [preflightLoading, setPreflightLoading] = useState(false);
+  const [preflightError, setPreflightError] = useState<string | null>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -842,9 +847,39 @@ function BackupPasswordModal({ mode, open, path, onClose }: {
       setPw("");
       setConfirm("");
       setBusy(false);
+      setIncludeCredentials(true);
       requestAnimationFrame(() => inputRef.current?.focus());
+
+      if (isExport) {
+        let isMounted = true;
+        setPreflightLoading(true);
+        setPreflightError(null);
+        setPreflight(null);
+
+        void (async () => {
+          try {
+            const { invoke } = await import("@tauri-apps/api/core");
+            const summary = await invoke<BackupPreflightSummary>("backup_preflight");
+            if (isMounted) {
+              setPreflight(summary);
+            }
+          } catch {
+            if (isMounted) {
+              setPreflightError("Couldn’t inspect credential counts.");
+            }
+          } finally {
+            if (isMounted) {
+              setPreflightLoading(false);
+            }
+          }
+        })();
+
+        return () => {
+          isMounted = false;
+        };
+      }
     }
-  }, [open]);
+  }, [open, isExport]);
 
   const submit = useCallback(async () => {
     if (!canSubmit) return;
@@ -861,7 +896,7 @@ function BackupPasswordModal({ mode, open, path, onClose }: {
           filters: [{ name: "OmniSSH backup", extensions: ["ascpbak"] }],
         });
         if (!dest) { setBusy(false); return; } // dialog cancelled — keep the modal open
-        await invoke("backup_export", { password: pw, path: dest });
+        await invoke("backup_export", { password: pw, path: dest, includeCredentials });
         toast.success("Encrypted backup saved.");
         onClose();
       } else {
@@ -881,8 +916,7 @@ function BackupPasswordModal({ mode, open, path, onClose }: {
         : null;
       toast.error(msg ?? (isExport ? "Couldn’t export backup." : "Import failed."));
     }
-  }, [canSubmit, isExport, pw, path, onClose]);
-
+  }, [canSubmit, isExport, pw, path, includeCredentials, onClose]);
   return (
     <ModalShell
       open={open}
@@ -915,6 +949,92 @@ function BackupPasswordModal({ mode, open, path, onClose }: {
               ? "Choose a password to encrypt the backup. You’ll need it to restore — there’s no way to recover the data without it."
               : "Enter the password this backup was created with. Importing replaces all current data and restarts OmniSSH."}
           </p>
+
+          {isExport && (
+            /* Credential scope selection allowing users to omit System Keychain
+             * reads and avoid repeated OS-level access dialogs during export. */
+            <div className="flex flex-col gap-2.5 rounded-xl border border-border/60 bg-bg-surface/50 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[length:var(--text-xs)] font-medium uppercase tracking-wider text-text-muted">
+                  Credential Scope
+                </span>
+                {preflightLoading && (
+                  <span className="flex items-center gap-1 text-[length:var(--text-2xs)] text-text-muted">
+                    <RefreshCw size={11} strokeWidth={2} className="motion-safe:animate-spin" />
+                    Checking counts…
+                  </span>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-2" role="radiogroup" aria-label="Credential scope">
+                <label className="flex items-start gap-2.5 cursor-pointer text-[length:var(--text-sm)]">
+                  <input
+                    type="radio"
+                    name="backup-credentials-mode"
+                    data-testid="backup-include-credentials"
+                    checked={includeCredentials}
+                    disabled={busy}
+                    onChange={() => setIncludeCredentials(true)}
+                    className="mt-0.5 accent-accent"
+                  />
+                  <div className="flex flex-col">
+                    <span className="font-medium text-text-primary">
+                      Include System Keychain credentials (full backup)
+                    </span>
+                    <span className="text-[length:var(--text-xs)] text-text-muted">
+                      Exports all saved hosts, snippets, settings, and stored credentials.
+                    </span>
+                  </div>
+                </label>
+
+                <label className="flex items-start gap-2.5 cursor-pointer text-[length:var(--text-sm)]">
+                  <input
+                    type="radio"
+                    name="backup-credentials-mode"
+                    data-testid="backup-skip-credentials"
+                    checked={!includeCredentials}
+                    disabled={busy}
+                    onChange={() => setIncludeCredentials(false)}
+                    className="mt-0.5 accent-accent"
+                  />
+                  <div className="flex flex-col">
+                    <span className="font-medium text-text-primary">
+                      Skip System Keychain credentials
+                    </span>
+                    <span className="text-[length:var(--text-xs)] text-text-muted">
+                      Avoids System Keychain reads and prompts. Encrypted App Vault credentials remain in the backup and stay protected by their master password.
+                    </span>
+                    {preflight && preflight.localVaultHosts > 0 && (
+                      <span className="text-[length:var(--text-xs)] text-text-muted">
+                        Includes {preflight.localVaultHosts} App Vault host{preflight.localVaultHosts === 1 ? "" : "s"} without Keychain prompts.
+                      </span>
+                    )}
+                  </div>
+                </label>
+              </div>
+
+              {includeCredentials && preflight && (() => {
+                const totalKeychain = preflight.keychainHostCandidates + preflight.s3Candidates;
+                return (
+                  <div className="mt-1 rounded-lg border border-status-warning/30 bg-status-warning/10 p-2.5 text-[length:var(--text-xs)] text-text-secondary">
+                    {totalKeychain > 0 ? (
+                      <p>
+                        macOS may request Keychain access up to {totalKeychain} time{totalKeychain === 1 ? "" : "s"} during export ({preflight.keychainHostCandidates} host candidate{preflight.keychainHostCandidates === 1 ? "" : "s"}, {preflight.s3Candidates} S3 candidate{preflight.s3Candidates === 1 ? "" : "s"}).
+                      </p>
+                    ) : (
+                      <p>No System Keychain credential candidates found.</p>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {preflightError && (
+                <p className="text-[length:var(--text-xs)] text-status-error">
+                  {preflightError}
+                </p>
+              )}
+            </div>
+          )}
 
           <div>
             <label htmlFor="backup-pw" className={FIELD_LABEL_CLASS}>Password</label>

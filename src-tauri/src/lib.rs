@@ -285,6 +285,7 @@ pub fn run() {
             // Encrypted backup / restore
             backup::commands::backup_export,
             backup::commands::backup_import,
+            backup::commands::backup_preflight,
             // External editors
             editors::detect_editors,
             // Credential vault

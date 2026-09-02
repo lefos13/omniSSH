@@ -182,6 +182,8 @@ describe("Settings → Data: UI gating", () => {
         await submit.waitForDisplayed({ timeout: 5_000 });
         expect(await submit.isEnabled()).to.equal(false);
 
+        expect(await (await $("[data-testid='backup-include-credentials']")).isDisplayed()).to.equal(true);
+        expect(await (await $("[data-testid='backup-skip-credentials']")).isDisplayed()).to.equal(true);
         const pw = await $("[data-testid='backup-password']");
         const confirm = await $("[data-testid='backup-password-confirm']");
 

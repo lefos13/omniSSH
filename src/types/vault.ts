@@ -7,4 +7,10 @@ export interface LocalVaultStatus {
   unlocked: boolean;
 }
 
+export interface BackupPreflightSummary {
+  keychainHostCandidates: number;
+  localVaultHosts: number;
+  s3Candidates: number;
+}
+
 export type CredentialStorage = "keychain" | "localVault";

@@ -124,7 +124,7 @@ export const useHostsStore = create<HostsState>((set, get) => ({
 if (typeof window !== "undefined") {
   const w = window as unknown as {
     __e2eDuplicateHost?: (id: string) => Promise<void>;
-    __e2eBackupExport?: (password: string, path: string) => Promise<void>;
+    __e2eBackupExport?: (password: string, path: string, includeCredentials?: boolean) => Promise<void>;
     __e2eBackupImport?: (password: string, path: string) => Promise<void>;
     __e2eFactoryReset?: () => Promise<void>;
     __e2eDataCounts?: () => Promise<{ hosts: number; groups: number; snippets: number }>;
@@ -138,9 +138,9 @@ if (typeof window !== "undefined") {
     const hosts = await invoke<SavedHost[]>("list_hosts");
     return hosts.map((h) => h.label);
   };
-  w.__e2eBackupExport = async (password, path) => {
+  w.__e2eBackupExport = async (password, path, includeCredentials = true) => {
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("backup_export", { password, path });
+    await invoke("backup_export", { password, path, includeCredentials });
   };
   w.__e2eBackupImport = async (password, path) => {
     const { invoke } = await import("@tauri-apps/api/core");

@@ -13,22 +13,40 @@ use tracing::instrument;
 use crate::db::HostDb;
 use crate::vault::LocalVault;
 
-use super::{build_backup, restore_backup, BackupError};
+use super::{
+    backup_preflight as inspect_backup, build_backup, restore_backup, BackupError,
+    BackupPreflightSummary,
+};
 
-/// Encrypt all app data with `password` and write the backup to `path`.
+/// Inspect backup credential sources without accessing the System Keychain.
+#[tauri::command]
+pub async fn backup_preflight(
+    state: State<'_, Arc<HostDb>>,
+) -> Result<BackupPreflightSummary, BackupError> {
+    let db = Arc::clone(&state);
+    task::spawn_blocking(move || inspect_backup(&db))
+        .await
+        .map_err(|e| BackupError::Io(format!("task panicked: {e}")))?
+}
+
+/// Encrypt the database and selected credentials, then write the backup to `path`.
 #[tauri::command]
 #[instrument(skip(password, state), fields(path = %path))]
 pub async fn backup_export(
     password: String,
     path: String,
+    include_credentials: Option<bool>,
     state: State<'_, Arc<HostDb>>,
 ) -> Result<(), BackupError> {
     if password.is_empty() {
         return Err(BackupError::Crypto("password must not be empty".into()));
     }
     let db = Arc::clone(&state);
+    let include_credentials = include_credentials.unwrap_or(true);
     task::spawn_blocking(move || {
-        let bytes = build_backup(&db, &password)?;
+        /* Building completes before the destination is written, so a denied or
+         * failed credential read cannot leave a silently incomplete backup. */
+        let bytes = build_backup(&db, &password, include_credentials)?;
         std::fs::write(&path, bytes).map_err(|e| BackupError::Io(e.to_string()))?;
         crate::telemetry::capture("backup_exported", serde_json::json!({}));
         Ok::<(), BackupError>(())
