@@ -1,7 +1,7 @@
 {
   "name": "omnissh",
   "private": true,
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "A modern desktop client for SSH, SFTP/SCP, and S3",
   "author": "Nevil Macwan <macnev2013@gmail.com>",
   "license": "MIT",

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.4] - 2026-09-02
+
+### 🚀 Highlights & New Features
+
+#### 1. Import Credential Storage Selection
+* **Storage Target Choice**: You can now choose whether imported credentials are saved to the macOS System Keychain or the encrypted App Vault during import. The choice appears for all import sources and is prefilled from your "default password storage" setting.
+* **Termius Passwords to Vault**: When importing from Termius, password credentials are moved into the encrypted App Vault if selected. Private keys and key passphrases remain in the System Keychain (as the App Vault is password-only). The import wizard shows this split before you commit and reports it in the summary.
+* **MobaXterm & SSH Config Support**: Because these files contain no secrets, the selection determines where any password you enter later for these hosts will be stored.
+* **Missing Vault Credential Fix**: Fixed a bug where a host marked for App Vault storage with no stored credential yet would fail to connect entirely. It now falls back to a password prompt like a Keychain host does (while still refusing to connect if the vault is locked).
+* **Consent Copy Correction**: Fixed the import wizard consent text which previously incorrectly stated that credentials were saved to the "secure vault" while actually writing them to the System Keychain.
+
+---
+
 ## [1.0.3] - 2026-09-02
 
 ### 🚀 Highlights & New Features

@@ -33,3 +33,7 @@ CLAUDE.md
 *.njsproj
 *.sln
 *.sw?
+
+# Local code-index and knowledge-graph caches
+.codegraph/
+graphify-out/
