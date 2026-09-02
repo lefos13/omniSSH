@@ -6,9 +6,11 @@ import { useHostsStore } from "../../stores/hosts-store";
 import { useGroupsStore } from "../../stores/groups-store";
 import { useSessionStore } from "../../stores/session-store";
 import { useTabStore } from "../../stores/tab-store";
-import type { SavedHost, HostConfig, StoredCredential } from "../../types";
+import type { CredentialStorage, SavedHost, HostConfig, StoredCredential } from "../../types";
 import { HOST_COLORS } from "./HostCard";
 import { CustomSelect } from "../shared/CustomSelect";
+import { CreateVaultDialog, UnlockVaultDialog } from "../vault";
+import { useLocalVaultStore } from "../../stores/local-vault-store";
 
 // ─── Field types ─────────────────────────────────────────────────────────────
 
@@ -146,6 +148,12 @@ export function HostEditModal() {
   const [hasSavedCred, setHasSavedCred] = useState(false);
   /** True when the user has explicitly clicked "Clear" on the saved credential. */
   const [credCleared, setCredCleared] = useState(false);
+  const [credentialStorage, setCredentialStorage] = useState<CredentialStorage>("keychain");
+  const [createVaultOpen, setCreateVaultOpen] = useState(false);
+  const [unlockVaultOpen, setUnlockVaultOpen] = useState(false);
+  const [pendingAction, setPendingAction] = useState<"save" | "connect" | null>(null);
+
+  const loadVaultStatus = useLocalVaultStore((s) => s.loadStatus);
 
   const firstInputRef = useRef<HTMLInputElement>(null);
 
@@ -191,6 +199,10 @@ export function HostEditModal() {
     setForm(EMPTY_FORM);
     setHasSavedCred(false);
     setCredCleared(false);
+    setCredentialStorage("keychain");
+    setCreateVaultOpen(false);
+    setUnlockVaultOpen(false);
+    setPendingAction(null);
     setTunnelEnabled(false);
 
     // Load groups + hosts (for the tunnel dropdown) in parallel
@@ -208,13 +220,17 @@ export function HostEditModal() {
     (async () => {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
-        const [host, hasCred] = await Promise.all([
-          invoke<SavedHost>("get_host", { id: editingHostId }),
-          invoke<boolean>("vault_has_credential", { hostId: editingHostId }).catch(() => false),
-        ]);
+        const host = await invoke<SavedHost>("get_host", { id: editingHostId });
+        /* A local-vault host must never probe Keychain just to draw its editor;
+         * that would reintroduce the authentication prompt this option avoids. */
+        const hasCred = host.credential_storage === "localVault"
+          ? true
+          : await invoke<boolean>("vault_has_credential", { hostId: editingHostId })
+            .catch(() => false);
         setOriginalHost(host);
         setForm(savedHostToForm(host));
         setHasSavedCred(hasCred);
+        setCredentialStorage(host.credential_storage ?? "keychain");
         setTunnelEnabled(!!host.proxy_jump_host_id);
       } catch (err) {
         setError(extractError(err, "Failed to load host data"));
@@ -351,10 +367,48 @@ export function HostEditModal() {
     // If the field is empty and not cleared, leave the existing keychain entry untouched.
   };
 
+  /* The local vault remains opt-in and locked between launches. This gate opens
+   * setup or unlock only for password hosts that are about to use it. */
+  const prepareCredentialStorage = async (action: "save" | "connect"): Promise<boolean> => {
+    if (form.authType !== "password") return true;
+    const needsVault = credentialStorage === "localVault" ||
+      originalHost?.credential_storage === "localVault";
+    if (!needsVault) return true;
+
+    const status = await loadVaultStatus();
+    if (!status.configured) {
+      if (credentialStorage === "localVault") {
+        setPendingAction(action);
+        setCreateVaultOpen(true);
+        return false;
+      }
+      return true;
+    }
+    if (!status.unlocked) {
+      setPendingAction(action);
+      setUnlockVaultOpen(true);
+      return false;
+    }
+    return true;
+  };
+
+  const applyCredentialStorage = async (
+    hostId: string,
+    invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>,
+  ): Promise<void> => {
+    if (form.authType !== "password") return;
+    if (credentialStorage === "localVault") {
+      await invoke("local_vault_migrate_host_password", { hostId });
+    } else if (originalHost?.credential_storage === "localVault") {
+      await invoke("local_vault_move_host_to_keychain", { hostId });
+    }
+  };
+
   // ── Save ────────────────────────────────────────────────────────────────────
   const handleSave = async () => {
     const validationError = validate();
     if (validationError) { setError(validationError); return; }
+    if (!await prepareCredentialStorage("save")) return;
 
     setSaving(true);
     setError(null);
@@ -364,6 +418,7 @@ export function HostEditModal() {
 
       const { invoke } = await import("@tauri-apps/api/core");
       await syncVaultCredential(host.id, invoke as (cmd: string, args?: Record<string, unknown>) => Promise<unknown>);
+      await applyCredentialStorage(host.id, invoke as (cmd: string, args?: Record<string, unknown>) => Promise<unknown>);
 
       close();
     } catch (err) {
@@ -377,6 +432,7 @@ export function HostEditModal() {
   const handleConnect = async () => {
     const validationError = validate();
     if (validationError) { setError(validationError); return; }
+    if (!await prepareCredentialStorage("connect")) return;
 
     setConnecting(true);
     setError(null);
@@ -390,6 +446,7 @@ export function HostEditModal() {
       // Persist credential to keychain before connecting — the Rust backend
       // reads credentials exclusively from the keychain, never from the frontend.
       await syncVaultCredential(host.id, typedInvoke);
+      await applyCredentialStorage(host.id, typedInvoke);
 
       // The backend resolves host config + credentials from its own DB and keychain.
       const sessionId = await invoke<string>("connect_saved_host", { hostId: host.id });
@@ -449,6 +506,7 @@ export function HostEditModal() {
 
 
   return (
+    <>
     <ModalShell
       open={isOpen}
       onClose={handleClose}
@@ -635,6 +693,27 @@ export function HostEditModal() {
                     busy={isBusy}
                     onClear={() => setCredCleared(true)}
                   />
+                  <div className="mt-3">
+                    <label htmlFor="hem-password-storage" className={labelClass}>
+                      Password Storage
+                    </label>
+                    <CustomSelect
+                      id="hem-password-storage"
+                      data-testid="host-modal-password-storage"
+                      value={credentialStorage}
+                      onChange={(value) => setCredentialStorage(value as CredentialStorage)}
+                      disabled={isBusy}
+                      options={[
+                        { value: "keychain", label: "System Keychain (default)" },
+                        { value: "localVault", label: "Encrypted App Vault" },
+                      ]}
+                    />
+                    <p className="mt-1 text-[length:var(--text-2xs)] text-text-muted">
+                      {credentialStorage === "localVault"
+                        ? "Unlocked once per OmniSSH session with your master password."
+                        : "Uses your operating system’s protected Keychain."}
+                    </p>
+                  </div>
                 </div>
               ) : (
                 <>
@@ -967,6 +1046,30 @@ export function HostEditModal() {
           )}
         </div>
     </ModalShell>
+    <CreateVaultDialog
+      open={createVaultOpen}
+      onClose={() => { setCreateVaultOpen(false); setPendingAction(null); }}
+      onSuccess={() => {
+        setCreateVaultOpen(false);
+        const action = pendingAction;
+        setPendingAction(null);
+        if (action === "save") void handleSave();
+        if (action === "connect") void handleConnect();
+      }}
+    />
+    <UnlockVaultDialog
+      open={unlockVaultOpen}
+      onClose={() => { setUnlockVaultOpen(false); setPendingAction(null); }}
+      onSuccess={() => {
+        setUnlockVaultOpen(false);
+        const action = pendingAction;
+        setPendingAction(null);
+        if (action === "save") void handleSave();
+        if (action === "connect") void handleConnect();
+      }}
+      hostLabel={form.label || form.host}
+    />
+    </>
   );
 }
 

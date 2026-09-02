@@ -10,8 +10,9 @@
 //! without the passphrase.
 //!
 //! - Export: snapshot the DB ([`crate::db::HostDb::export_db_snapshot`]) +
-//!   gather credentials from the OS keychain → frame + gzip → seal → write the
-//!   container bytes.
+//!   gather eligible credentials from the OS keychain → frame + gzip → seal →
+//!   write the container bytes. Local-vault ciphertext remains inside the
+//!   encrypted database snapshot and is never read into this credential map.
 //! - Import: open the container with the passphrase → gunzip → restore the DB
 //!   snapshot ([`crate::db::HostDb::import_db_snapshot`]) + write credentials
 //!   back to the keychain. A wrong password fails the AEAD tag check and is
@@ -33,7 +34,7 @@ use argon2::{Algorithm, Argon2, Params, Version};
 use serde::Serialize;
 use zeroize::Zeroizing;
 
-use crate::db::HostDb;
+use crate::db::{CredentialStorage, HostDb};
 use crate::vault::{self, StoredCredential};
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
@@ -321,12 +322,15 @@ fn open(password: &str, data: &[u8]) -> Result<(Zeroizing<Vec<u8>>, u8), BackupE
 pub fn build_backup(db: &HostDb, password: &str) -> Result<Vec<u8>, BackupError> {
     let db_bytes = db.export_db_snapshot()?;
 
-    // Gather every stored secret keyed by its vault key. Missing entries are
-    // simply skipped (a host may have no saved credential).
+    /* Only keychain-backed host credentials are copied into the credential map.
+     * Local-vault rows already live in the encrypted DB snapshot; reading them
+     * here would create a plaintext backup path and could leak stale duplicates. */
     let mut credentials: BTreeMap<String, StoredCredential> = BTreeMap::new();
     for h in db.list_hosts()? {
-        if let Ok(c) = vault::get_credential(&h.id) {
-            credentials.insert(h.id, c);
+        if h.credential_storage == CredentialStorage::Keychain {
+            if let Ok(c) = vault::get_credential(&h.id) {
+                credentials.insert(h.id, c);
+            }
         }
     }
     for s in db.list_s3_connections()? {
@@ -365,11 +369,22 @@ pub fn restore_backup(db: &HostDb, password: &str, container: &[u8]) -> Result<(
 
     // 1. Replace the database (validated + migrated + transactional inside).
     db.import_db_snapshot(db_bytes)?;
-    // 2. Restore secrets to the OS keychain. Best-effort per entry so one bad
-    //    write doesn't abort the rest; the DB is already restored.
+    /* Restore only records whose restored host still points at the keychain.
+     * A local-vault host keeps its ciphertext in SQLite and must never be
+     * materialized through the OS keychain during backup import. */
     for (key, cred) in &credentials {
-        if let Err(e) = vault::save_credential(key, cred) {
-            tracing::warn!(key = %key, error = %e, "restore: failed to write credential to keychain");
+        let restore_to_keychain = if key.starts_with("s3:") {
+            true
+        } else {
+            matches!(
+                db.get_host(key)?,
+                Some(host) if host.credential_storage == CredentialStorage::Keychain
+            )
+        };
+        if restore_to_keychain {
+            if let Err(e) = vault::save_credential(key, cred) {
+                tracing::warn!(key = %key, error = %e, "restore: failed to write credential to keychain");
+            }
         }
     }
     Ok(())

@@ -61,6 +61,8 @@ export interface SavedHost {
   port: number;
   username: string;
   auth_type: string; // "password" | "privateKey" | "privateKeyData"
+  /** Non-secret credential route; absent legacy values are treated as Keychain. */
+  credential_storage?: import("./vault").CredentialStorage;
   group_id: string | null;
   created_at: string;
   updated_at: string;

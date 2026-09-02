@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTabStore } from "../../stores/tab-store";
 import { useSessionStore } from "../../stores/session-store";
 import { useTerminalSearchStore } from "../../stores/terminal-search-store";
@@ -28,8 +28,11 @@ import { usePortForwardEvents } from "../../hooks/use-port-forward-events";
 import { UpdateDialog } from "../updater/UpdateDialog";
 import { Toaster } from "../shared/Toaster";
 import { closeExplorerSession, resolveExplorerTransport } from "../../lib/explorer-transport";
+import { useLocalVaultStore } from "../../stores/local-vault-store";
+import { UnlockVaultDialog } from "../vault";
 
 export function AppShell() {
+  const [unlockVaultOnStart, setUnlockVaultOnStart] = useState(false);
   const themeMode = useSettingsStore((s) => s.themeMode);
   const accentHue = useSettingsStore((s) => s.accentHue);
   const accentCustom = useSettingsStore((s) => s.accentCustom);
@@ -43,6 +46,14 @@ export function AppShell() {
 
   const toggleSidebar = useUiStore((s) => s.toggleSidebar);
   const setEditingHostId = useUiStore((s) => s.setEditingHostId);
+  const loadVaultStatus = useLocalVaultStore((s) => s.loadStatus);
+  /* A configured vault begins locked after every launch. Deferring this dialog
+   * still leaves Keychain-only and SSH-key hosts immediately available. */
+  useEffect(() => {
+    void loadVaultStatus()
+      .then((status) => setUnlockVaultOnStart(status.configured && !status.unlocked))
+      .catch(() => { /* optional vault status must not block startup */ });
+  }, [loadVaultStatus]);
   // Auto-open hosts tab if active tab gets removed
   useEffect(() => {
     if (!activeTabId || !allTabs.has(activeTabId)) {
@@ -429,6 +440,7 @@ export function AppShell() {
   const activePageType = activeTab?.type === "page" ? activeTab.page : null;
 
   return (
+    <>
     <div className="flex h-screen w-screen overflow-hidden bg-bg-base no-select p-2 gap-2">
       {/* Sidebar rail */}
       <Sidebar />
@@ -521,5 +533,11 @@ export function AppShell() {
       {/* Transient notifications (errors, etc.) */}
       <Toaster />
     </div>
+    <UnlockVaultDialog
+      open={unlockVaultOnStart}
+      onClose={() => setUnlockVaultOnStart(false)}
+      onSuccess={() => setUnlockVaultOnStart(false)}
+    />
+    </>
   );
 }

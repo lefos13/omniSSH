@@ -85,6 +85,10 @@ pub struct SavedHost {
     pub username: String,
     /// One of: "password", "privateKey", "privateKeyData"
     pub auth_type: String,
+    /// Where the host's credential is persisted. Legacy payloads default to
+    /// the OS keychain, while `localVault` selects the encrypted DB row.
+    #[serde(default, alias = "credentialStorage")]
+    pub credential_storage: CredentialStorage,
     pub group_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -133,6 +137,46 @@ pub struct SavedHost {
     pub last_connected_at: Option<String>,
     /// Running total of successful connections to this host.
     pub connection_count: Option<u32>,
+}
+
+/* This enum is the non-secret routing contract shared by persistence and the
+ * future vault service. Explicit serde names keep database/API values stable
+ * while accepting the snake_case spelling used by older frontend payloads. */
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CredentialStorage {
+    #[serde(rename = "keychain")]
+    #[default]
+    Keychain,
+    #[serde(rename = "localVault", alias = "local_vault")]
+    LocalVault,
+}
+
+impl CredentialStorage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Keychain => "keychain",
+            Self::LocalVault => "localVault",
+        }
+    }
+
+    fn from_db(value: String) -> Result<Self, rusqlite::Error> {
+        match value.as_str() {
+            "keychain" => Ok(Self::Keychain),
+            "localVault" | "local_vault" => Ok(Self::LocalVault),
+            _ => Err(rusqlite::Error::InvalidColumnType(
+                0,
+                "credential_storage".to_string(),
+                rusqlite::types::Type::Text,
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VaultMetadata {
+    pub salt: Vec<u8>,
+    pub verifier_nonce: Vec<u8>,
+    pub verifier_ciphertext: Vec<u8>,
 }
 
 /// A named group that hosts can be assigned to.
@@ -560,6 +604,35 @@ impl HostDb {
             tracing::info!("migration 15→16 applied: added vault cleanup queue");
         }
 
+        if version < 17 {
+            /* Vault rows contain only encrypted bytes. The singleton metadata
+             * row stores KDF/verification material, and host foreign keys make
+             * deletion of a saved host remove its local credential. */
+            let has_storage: bool = conn
+                .prepare("SELECT credential_storage FROM saved_hosts LIMIT 0")
+                .is_ok();
+            if !has_storage {
+                conn.execute(
+                    "ALTER TABLE saved_hosts ADD COLUMN credential_storage TEXT NOT NULL DEFAULT 'keychain'",
+                    [],
+                )?;
+            }
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS local_vault_metadata (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    salt BLOB NOT NULL,
+                    verifier_nonce BLOB NOT NULL,
+                    verifier_ciphertext BLOB NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS local_vault_credentials (
+                    host_id TEXT PRIMARY KEY REFERENCES saved_hosts(id) ON DELETE CASCADE,
+                    ciphertext BLOB NOT NULL
+                );
+                INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', '17');",
+            )?;
+            tracing::info!("migration 16→17 applied: added local vault storage");
+        }
+
         Ok(())
     }
 
@@ -727,6 +800,155 @@ impl HostDb {
         Ok(())
     }
 
+    /* These primitives deliberately expose encrypted bytes only. Higher layers
+     * own Argon2/AES operations and session-key lifetime; SQLite only enforces
+     * host ownership, singleton metadata, and atomic marker transitions. */
+    pub fn is_local_vault_configured(&self) -> Result<bool, DbError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        Ok(conn
+            .query_row(
+                "SELECT 1 FROM local_vault_metadata WHERE id = 1",
+                [],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    pub fn get_vault_metadata(&self) -> Result<Option<VaultMetadata>, DbError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        conn.query_row(
+            "SELECT salt, verifier_nonce, verifier_ciphertext
+             FROM local_vault_metadata WHERE id = 1",
+            [],
+            |row| {
+                Ok(VaultMetadata {
+                    salt: row.get(0)?,
+                    verifier_nonce: row.get(1)?,
+                    verifier_ciphertext: row.get(2)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(DbError::from)
+    }
+
+    pub fn save_vault_metadata(&self, metadata: &VaultMetadata) -> Result<(), DbError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        conn.execute(
+            "INSERT INTO local_vault_metadata
+                 (id, salt, verifier_nonce, verifier_ciphertext)
+             VALUES (1, ?1, ?2, ?3)",
+            params![
+                &metadata.salt,
+                &metadata.verifier_nonce,
+                &metadata.verifier_ciphertext
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_local_vault_credential(&self, host_id: &str) -> Result<Option<Vec<u8>>, DbError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        conn.query_row(
+            "SELECT ciphertext FROM local_vault_credentials WHERE host_id = ?1",
+            params![host_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(DbError::from)
+    }
+
+    pub fn save_local_vault_credential(
+        &self,
+        host_id: &str,
+        ciphertext: &[u8],
+    ) -> Result<(), DbError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let affected = conn.execute(
+            "INSERT INTO local_vault_credentials (host_id, ciphertext)
+             VALUES (?1, ?2)
+             ON CONFLICT(host_id) DO UPDATE SET ciphertext = excluded.ciphertext",
+            params![host_id, ciphertext],
+        );
+        match affected {
+            Ok(_) => Ok(()),
+            Err(rusqlite::Error::SqliteFailure(error, _))
+                if error.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                Err(DbError::NotFound(host_id.to_string()))
+            }
+            Err(error) => Err(DbError::Sqlite(error)),
+        }
+    }
+
+    pub fn delete_local_vault_credential(&self, host_id: &str) -> Result<(), DbError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        conn.execute(
+            "DELETE FROM local_vault_credentials WHERE host_id = ?1",
+            params![host_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_credential_storage(
+        &self,
+        host_id: &str,
+        storage: CredentialStorage,
+    ) -> Result<(), DbError> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let auth_type: Option<String> = tx
+            .query_row(
+                "SELECT auth_type FROM saved_hosts WHERE id = ?1",
+                params![host_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(auth_type) = auth_type else {
+            return Err(DbError::NotFound(host_id.to_string()));
+        };
+        if storage == CredentialStorage::LocalVault && auth_type != "password" {
+            return Err(DbError::Validation(
+                "Only password authentication can use the local vault".to_string(),
+            ));
+        }
+        tx.execute(
+            "UPDATE saved_hosts SET credential_storage = ?2, updated_at = datetime('now')
+             WHERE id = ?1",
+            params![host_id, storage.as_str()],
+        )?;
+        if storage == CredentialStorage::Keychain {
+            tx.execute(
+                "DELETE FROM local_vault_credentials WHERE host_id = ?1",
+                params![host_id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Walk the ProxyJump chain starting at `proxy` (the proposed
     /// `proxy_jump_host_id` for `host_id`) and reject self-references, cycles, and
     /// dangling immediate targets. Operates on a single connection/transaction so
@@ -787,20 +1009,26 @@ impl HostDb {
     /// Shared upsert used by both the raw and validated save paths. Takes a bare
     /// connection so it can run inside a transaction.
     fn upsert_host(conn: &Connection, host: &SavedHost) -> Result<(), DbError> {
+        if host.credential_storage == CredentialStorage::LocalVault && host.auth_type != "password"
+        {
+            return Err(DbError::Validation(
+                "Only password authentication can use the local vault".to_string(),
+            ));
+        }
         conn.execute(
             "INSERT INTO saved_hosts (
                  id, label, host, port, username, auth_type, group_id, created_at, updated_at,
                  key_path, color, notes, environment, os_type,
                  startup_command, proxy_jump, keep_alive_interval, default_shell,
                  font_size, last_connected_at, connection_count, proxy_jump_host_id,
-                 start_directory
+                 start_directory, credential_storage
              )
              VALUES (
                  ?1,  ?2,  ?3,  ?4,  ?5,  ?6,  ?7,  ?8,  ?9,
                  ?10, ?11, ?12, ?13, ?14,
                  ?15, ?16, ?17, ?18,
                  ?19, ?20, ?21, ?22,
-                 ?23
+                 ?23, ?24
              )
              ON CONFLICT(id) DO UPDATE SET
                  label                = excluded.label,
@@ -823,7 +1051,14 @@ impl HostDb {
                  last_connected_at    = excluded.last_connected_at,
                  connection_count     = excluded.connection_count,
                  proxy_jump_host_id   = excluded.proxy_jump_host_id,
-                 start_directory      = excluded.start_directory",
+                 start_directory      = excluded.start_directory,
+                 credential_storage  = CASE
+                     WHEN excluded.credential_storage = 'keychain'
+                          AND excluded.auth_type = 'password'
+                          AND saved_hosts.credential_storage = 'localVault'
+                     THEN saved_hosts.credential_storage
+                     ELSE excluded.credential_storage
+                 END",
             params![
                 host.id,
                 host.label,
@@ -848,7 +1083,14 @@ impl HostDb {
                 host.connection_count,
                 host.proxy_jump_host_id,
                 host.start_directory,
+                host.credential_storage.as_str(),
             ],
+        )?;
+        conn.execute(
+            "DELETE FROM local_vault_credentials
+             WHERE host_id = ?1
+               AND (SELECT credential_storage FROM saved_hosts WHERE id = ?1) = 'keychain'",
+            params![host.id],
         )?;
         Ok(())
     }
@@ -867,7 +1109,7 @@ impl HostDb {
                     key_path, color, notes, environment, os_type,
                     startup_command, proxy_jump, keep_alive_interval, default_shell,
                     font_size, last_connected_at, connection_count, proxy_jump_host_id,
-                    start_directory
+                    start_directory, credential_storage
              FROM saved_hosts
              ORDER BY sort_order ASC, label ASC",
         )?;
@@ -897,6 +1139,7 @@ impl HostDb {
                 connection_count: row.get(20)?,
                 proxy_jump_host_id: row.get(21)?,
                 start_directory: row.get(22)?,
+                credential_storage: CredentialStorage::from_db(row.get(23)?)?,
             })
         })?;
 
@@ -958,7 +1201,7 @@ impl HostDb {
                     key_path, color, notes, environment, os_type,
                     startup_command, proxy_jump, keep_alive_interval, default_shell,
                     font_size, last_connected_at, connection_count, proxy_jump_host_id,
-                    start_directory
+                    start_directory, credential_storage
              FROM saved_hosts
              WHERE id = ?1",
         )?;
@@ -988,6 +1231,7 @@ impl HostDb {
                 connection_count: row.get(20)?,
                 proxy_jump_host_id: row.get(21)?,
                 start_directory: row.get(22)?,
+                credential_storage: CredentialStorage::from_db(row.get(23)?)?,
             })
         })?;
 
@@ -1943,6 +2187,8 @@ impl HostDb {
              DELETE FROM s3_connections;
              DELETE FROM snippets;
              DELETE FROM snippet_folders;
+             DELETE FROM local_vault_credentials;
+             DELETE FROM local_vault_metadata;
              DELETE FROM saved_hosts;
              DELETE FROM host_groups;
              DELETE FROM vault_cleanup_queue;
@@ -2119,6 +2365,8 @@ const COPYABLE_TABLES: &[&str] = &[
     "port_forwarding_rules",
     "s3_connections",
     "app_settings",
+    "local_vault_metadata",
+    "local_vault_credentials",
 ];
 
 /// Column names of `table` in declaration order, read from the live schema.
@@ -2169,6 +2417,7 @@ mod tests {
             port: 22,
             username: "alice".to_string(),
             auth_type: "password".to_string(),
+            credential_storage: CredentialStorage::default(),
             group_id: None,
             created_at: "2026-01-01T00:00:00".to_string(),
             updated_at: "2026-01-01T00:00:00".to_string(),
@@ -2216,6 +2465,113 @@ mod tests {
     }
 
     #[test]
+    fn legacy_saved_host_payload_defaults_to_keychain() {
+        let payload = serde_json::json!({
+            "id": "legacy", "label": "Legacy", "host": "192.0.2.1",
+            "port": 22, "username": "alice", "auth_type": "password",
+            "created_at": "2026-01-01T00:00:00", "updated_at": "2026-01-01T00:00:00"
+        });
+        let host: SavedHost = serde_json::from_value(payload).expect("legacy payload");
+        assert_eq!(host.credential_storage, CredentialStorage::Keychain);
+        assert_eq!(
+            serde_json::to_value(CredentialStorage::LocalVault).unwrap(),
+            "localVault"
+        );
+    }
+
+    #[test]
+    fn credential_storage_marker_persists_and_survives_legacy_upsert() {
+        let (db, _dir) = test_db();
+        db.save_host(&sample_host("marker")).expect("save");
+        db.set_credential_storage("marker", CredentialStorage::LocalVault)
+            .expect("set local vault");
+        assert_eq!(
+            db.get_host("marker").unwrap().unwrap().credential_storage,
+            CredentialStorage::LocalVault
+        );
+
+        /* A pre-marker frontend deserializes the missing field as Keychain; its
+         * edit must not silently move an existing local-vault host. */
+        db.save_host(&sample_host("marker")).expect("legacy edit");
+        assert_eq!(
+            db.get_host("marker").unwrap().unwrap().credential_storage,
+            CredentialStorage::LocalVault
+        );
+
+        db.save_local_vault_credential("marker", b"encrypted")
+            .expect("save blob");
+        db.set_credential_storage("marker", CredentialStorage::Keychain)
+            .expect("move to keychain");
+        assert!(db.get_local_vault_credential("marker").unwrap().is_none());
+    }
+
+    #[test]
+    fn vault_metadata_and_blob_round_trip_delete_and_cascade() {
+        let (db, _dir) = test_db();
+        db.save_host(&sample_host("vault-host")).expect("save host");
+        let metadata = VaultMetadata {
+            salt: vec![1, 2, 3],
+            verifier_nonce: vec![4, 5, 6],
+            verifier_ciphertext: vec![7, 8, 9],
+        };
+        db.save_vault_metadata(&metadata).expect("save metadata");
+        assert!(db.is_local_vault_configured().unwrap());
+        assert_eq!(db.get_vault_metadata().unwrap(), Some(metadata));
+        db.save_local_vault_credential("vault-host", b"ciphertext")
+            .expect("save blob");
+        assert_eq!(
+            db.get_local_vault_credential("vault-host").unwrap(),
+            Some(b"ciphertext".to_vec())
+        );
+        db.delete_local_vault_credential("vault-host")
+            .expect("delete blob");
+        assert!(db
+            .get_local_vault_credential("vault-host")
+            .unwrap()
+            .is_none());
+        db.save_local_vault_credential("vault-host", b"ciphertext")
+            .expect("restore blob");
+        db.delete_host("vault-host").expect("delete host");
+        assert!(db
+            .get_local_vault_credential("vault-host")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn local_vault_migration_creates_expected_schema() {
+        let (db, _dir) = test_db();
+        let conn = db.conn.lock().unwrap();
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM _meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, "17");
+        for table in ["local_vault_metadata", "local_vault_credentials"] {
+            assert!(conn
+                .query_row(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    params![table],
+                    |_| Ok(()),
+                )
+                .optional()
+                .unwrap()
+                .is_some());
+        }
+        let foreign_key: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name = 'local_vault_credentials'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(foreign_key.contains("ON DELETE CASCADE"));
+    }
+
+    #[test]
     fn factory_reset_wipes_everything_and_returns_keys() {
         let (db, _dir) = test_db();
         db.create_group(&sample_group("grp-1"))
@@ -2223,6 +2579,16 @@ mod tests {
         let mut h = sample_host("host-1");
         h.group_id = Some("grp-1".to_string());
         db.save_host(&h).expect("save_host");
+        db.save_vault_metadata(&VaultMetadata {
+            salt: vec![1],
+            verifier_nonce: vec![2],
+            verifier_ciphertext: vec![3],
+        })
+        .expect("save vault metadata");
+        db.save_local_vault_credential("host-1", b"encrypted")
+            .expect("save vault credential");
+        db.set_credential_storage("host-1", CredentialStorage::LocalVault)
+            .expect("mark local vault");
         db.record_connection("host-1").expect("record_connection");
         db.save_setting("app_theme", "light").expect("save_setting");
 
@@ -2235,6 +2601,11 @@ mod tests {
         assert!(db.list_groups().expect("list_groups").is_empty());
         assert!(db.list_recent_connections(50).expect("recent").is_empty());
         assert!(db.load_all_settings().expect("settings").is_empty());
+        assert!(!db.is_local_vault_configured().expect("vault status"));
+        assert!(db
+            .get_local_vault_credential("host-1")
+            .expect("vault credential")
+            .is_none());
 
         // The schema survives the wipe — a fresh insert still works (i.e. the
         // DB is reset to first-launch state, not corrupted/dropped).

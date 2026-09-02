@@ -135,7 +135,7 @@ pub async fn pf_list_rules(
 // ─── Tunnel control ──────────────────────────────────────────────────────────
 
 #[tauri::command]
-#[instrument(skip(pf_manager, ssh_manager, db))]
+#[instrument(skip(pf_manager, ssh_manager, db, local_vault))]
 #[allow(clippy::too_many_arguments)]
 pub async fn pf_start_tunnel(
     rule_id: String,
@@ -147,97 +147,24 @@ pub async fn pf_start_tunnel(
     pf_manager: State<'_, Arc<PortForwardManager>>,
     ssh_manager: State<'_, SshManager>,
     db: State<'_, Arc<HostDb>>,
+    local_vault: State<'_, Arc<crate::vault::LocalVault>>,
 ) -> Result<TunnelStatus, crate::types::SshError> {
-    use crate::types::AuthMethod;
-
-    // Load host from DB
+    /* Resolve the tunnel host through the same backend-only path as terminal
+     * and SFTP connections. This keeps local-vault hosts fail-closed while
+     * retaining keychain fallback for legacy/keychain hosts. */
     let db_clone = Arc::clone(&db);
-    let hid = host_id.clone();
-    let saved_host = task::spawn_blocking(move || db_clone.get_host(&hid))
-        .await
-        .map_err(|e| crate::types::SshError::IoError(format!("task panicked: {e}")))?
-        .map_err(|e| crate::types::SshError::IoError(e.to_string()))?
-        .ok_or_else(|| {
-            crate::types::SshError::SessionNotFound(format!("host not found: {host_id}"))
-        })?;
-
-    // Resolve credentials from vault
-    let vid = host_id.clone();
-    let auth_type = saved_host.auth_type.clone();
-    let key_path = saved_host.key_path.clone();
-
-    let auth_method = task::spawn_blocking(move || -> AuthMethod {
-        match auth_type.as_str() {
-            /* Tunnels use the same vault-only raw-key representation as SSH
-             * sessions, without sending credential fields through Tauri. */
-            "privateKeyData" => match crate::vault::get_credential(&vid) {
-                Ok(credential) => match &credential {
-                    crate::vault::StoredCredential::PrivateKeyData {
-                        key_data,
-                        passphrase,
-                    } => AuthMethod::PrivateKeyData {
-                        key_data: key_data.clone(),
-                        passphrase: passphrase.clone(),
-                    },
-                    _ => AuthMethod::PrivateKeyData {
-                        key_data: String::new(),
-                        passphrase: None,
-                    },
-                },
-                Err(_) => AuthMethod::PrivateKeyData {
-                    key_data: String::new(),
-                    passphrase: None,
-                },
-            },
-            "privateKey" => {
-                let path = key_path.unwrap_or_default();
-                let passphrase = match crate::vault::get_credential(&vid) {
-                    Ok(credential) => match &credential {
-                        crate::vault::StoredCredential::KeyPassphrase { passphrase } => {
-                            Some(passphrase.clone())
-                        }
-                        _ => None,
-                    },
-                    Err(_) => None,
-                };
-                AuthMethod::PrivateKey {
-                    key_path: path,
-                    passphrase,
-                }
-            }
-            _ => {
-                let password = match crate::vault::get_credential(&vid) {
-                    Ok(credential) => match &credential {
-                        crate::vault::StoredCredential::Password { password } => password.clone(),
-                        _ => String::new(),
-                    },
-                    Err(_) => String::new(),
-                };
-                AuthMethod::Password { password }
-            }
-        }
+    let local_vault_clone = Arc::clone(&local_vault);
+    let host_id_for_config = host_id.clone();
+    let config = task::spawn_blocking(move || {
+        crate::ssh::commands::build_host_config_blocking(
+            &host_id_for_config,
+            &db_clone,
+            &local_vault_clone,
+            &mut Vec::new(),
+        )
     })
     .await
-    .map_err(|e| crate::types::SshError::IoError(format!("task panicked: {e}")))?;
-
-    // Connect SSH (no PTY needed for tunnels)
-    let config = crate::types::HostConfig {
-        host: saved_host.host,
-        port: saved_host.port,
-        username: saved_host.username,
-        auth_method,
-        label: if saved_host.label.is_empty() {
-            None
-        } else {
-            Some(saved_host.label)
-        },
-        keep_alive_interval: None,
-        default_shell: None,
-        startup_command: None,
-        // Port-forwarding connects directly; ProxyJump tunnelling is handled by
-        // the terminal/SFTP connect paths.
-        jump_host: None,
-    };
+    .map_err(|e| crate::types::SshError::IoError(format!("task panicked: {e}")))??;
 
     let session_id = ssh_manager.connect_no_pty(config, None).await?;
     let handle = ssh_manager.get_handle(&session_id.0)?;

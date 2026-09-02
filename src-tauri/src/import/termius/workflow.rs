@@ -2201,6 +2201,7 @@ fn commit_pending(
                 credential.as_ref(),
             )
             .to_string(),
+            credential_storage: Default::default(),
             group_id: source_host
                 .group_source_id
                 .as_deref()
@@ -2799,6 +2800,7 @@ mod tests {
             port: 22,
             username: "alice".to_string(),
             auth_type: "password".to_string(),
+            credential_storage: Default::default(),
             group_id: group_id.map(str::to_string),
             created_at: "2026-01-01T00:00:00.000Z".to_string(),
             updated_at: "2026-01-01T00:00:00.000Z".to_string(),

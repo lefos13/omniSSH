@@ -135,6 +135,7 @@ pub fn save_imported_hosts(
             } else {
                 "password".to_string()
             },
+            credential_storage: Default::default(),
             key_path: entry.identity_file.clone(),
             group_id,
             color: None,
@@ -361,6 +362,7 @@ mod tests {
             port: 22,
             username: "u".to_string(),
             auth_type: "password".to_string(),
+            credential_storage: Default::default(),
             group_id: None,
             key_path: None,
             color: None,

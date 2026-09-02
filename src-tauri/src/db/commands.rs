@@ -231,9 +231,13 @@ pub async fn load_all_settings(
 /// This is irreversible; the frontend gates it behind a typed confirmation and
 /// relaunches the app afterwards.
 #[tauri::command]
-#[instrument(skip(state))]
-pub async fn factory_reset(state: State<'_, Arc<HostDb>>) -> Result<(), DbError> {
+#[instrument(skip(state, local_vault))]
+pub async fn factory_reset(
+    state: State<'_, Arc<HostDb>>,
+    local_vault: State<'_, Arc<crate::vault::LocalVault>>,
+) -> Result<(), DbError> {
     let db = Arc::clone(&state);
+    let local_vault = Arc::clone(&local_vault);
     task::spawn_blocking(move || {
         let keys = db.factory_reset()?;
         // Purge secrets from the keychain. Best-effort: a missing entry is fine,
@@ -249,6 +253,9 @@ pub async fn factory_reset(state: State<'_, Arc<HostDb>>) -> Result<(), DbError>
                 tracing::warn!(key = %key, error = %e, "factory reset: keychain purge failed");
             }
         }
+        /* Reset removes persisted encrypted values and must also invalidate the
+         * in-memory session key before any subsequent first-launch setup. */
+        local_vault.lock_session();
         Ok::<(), DbError>(())
     })
     .await

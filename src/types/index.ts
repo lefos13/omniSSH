@@ -73,3 +73,5 @@ export type {
   ProviderCapabilities,
   FileSystemProvider,
 } from "./explorer";
+
+export type { CredentialStorage, LocalVaultStatus } from "./vault";

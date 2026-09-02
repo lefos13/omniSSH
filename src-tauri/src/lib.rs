@@ -149,6 +149,10 @@ pub fn run() {
                 .map_err(|e| format!("failed to create main window: {e}"))?;
 
             app.manage(Arc::new(host_db));
+            /* Keep the derived local-vault key in backend-managed memory only;
+             * constructing this state during setup guarantees every launch
+             * starts with the vault locked. */
+            app.manage(Arc::new(vault::LocalVault::new()));
             app.manage(Arc::new(TermiusImportState::new()));
 
             // SftpManager must be created inside setup so it can be shared with
@@ -287,6 +291,12 @@ pub fn run() {
             vault::vault_save_credential,
             vault::vault_delete_credential,
             vault::vault_has_credential,
+            vault::local::local_vault_setup,
+            vault::local::local_vault_unlock,
+            vault::local::local_vault_lock,
+            vault::local::local_vault_status,
+            vault::local::local_vault_migrate_host_password,
+            vault::local::local_vault_move_host_to_keychain,
             // S3
             s3::commands::s3_connect,
             s3::commands::s3_disconnect,

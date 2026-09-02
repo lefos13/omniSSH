@@ -3,6 +3,11 @@ use std::fmt;
 use tracing::instrument;
 use zeroize::Zeroize;
 
+pub(crate) mod local;
+
+pub(crate) use local::resolve_host_credential;
+pub use local::LocalVault;
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -20,11 +25,32 @@ pub enum VaultError {
     #[error("Keychain error: {0}")]
     Keychain(String),
 
+    #[error("Local vault database error: {0}")]
+    Database(String),
+
     #[error("Credential not found for host: {0}")]
     NotFound(String),
 
     #[error("Invalid credential data: {0}")]
     InvalidData(String),
+
+    #[error("Local vault is not configured")]
+    LocalVaultNotConfigured,
+
+    #[error("Local vault is already configured")]
+    LocalVaultAlreadyConfigured,
+
+    #[error("Local vault is locked; unlock it before connecting")]
+    LocalVaultLocked,
+
+    #[error("Incorrect local vault master password")]
+    InvalidMasterPassword,
+
+    #[error("Local vault cannot store this credential: {0}")]
+    UnsupportedCredential(String),
+
+    #[error("Cryptographic operation failed: {0}")]
+    Crypto(String),
 }
 
 /// Serialise `VaultError` as `{ kind, message }` so the frontend can
@@ -38,8 +64,15 @@ impl Serialize for VaultError {
         let mut state = serializer.serialize_struct("VaultError", 2)?;
         let kind = match self {
             VaultError::Keychain(_) => "keychain",
+            VaultError::Database(_) => "database",
             VaultError::NotFound(_) => "not_found",
             VaultError::InvalidData(_) => "invalid_data",
+            VaultError::LocalVaultNotConfigured => "local_vault_not_configured",
+            VaultError::LocalVaultAlreadyConfigured => "local_vault_already_configured",
+            VaultError::LocalVaultLocked => "local_vault_locked",
+            VaultError::InvalidMasterPassword => "invalid_master_password",
+            VaultError::UnsupportedCredential(_) => "unsupported_credential",
+            VaultError::Crypto(_) => "crypto",
         };
         state.serialize_field("kind", kind)?;
         state.serialize_field("message", &self.to_string())?;

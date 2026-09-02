@@ -11,6 +11,7 @@ use tokio::task;
 use tracing::instrument;
 
 use crate::db::HostDb;
+use crate::vault::LocalVault;
 
 use super::{build_backup, restore_backup, BackupError};
 
@@ -39,19 +40,24 @@ pub async fn backup_export(
 /// Decrypt the backup at `path` with `password` and restore it, replacing all
 /// current data and credentials. The frontend relaunches the app afterwards.
 #[tauri::command]
-#[instrument(skip(password, state), fields(path = %path))]
+#[instrument(skip(password, state, local_vault), fields(path = %path))]
 pub async fn backup_import(
     password: String,
     path: String,
     state: State<'_, Arc<HostDb>>,
+    local_vault: State<'_, Arc<LocalVault>>,
 ) -> Result<(), BackupError> {
     if password.is_empty() {
         return Err(BackupError::Crypto("password must not be empty".into()));
     }
     let db = Arc::clone(&state);
+    let local_vault = Arc::clone(&local_vault);
     task::spawn_blocking(move || {
         let bytes = std::fs::read(&path).map_err(|e| BackupError::Io(e.to_string()))?;
         restore_backup(&db, &password, &bytes)?;
+        /* The restored metadata may belong to a different master password;
+         * discard any pre-import session key before the next connection. */
+        local_vault.lock_session();
         crate::telemetry::capture("backup_imported", serde_json::json!({}));
         Ok::<(), BackupError>(())
     })

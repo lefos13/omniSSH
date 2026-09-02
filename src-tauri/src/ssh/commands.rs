@@ -1,4 +1,4 @@
-use crate::db::HostDb;
+use crate::db::{CredentialStorage, HostDb};
 use crate::scp::ScpManager;
 use crate::sftp::SftpManager;
 use crate::ssh::keys::SshKeyInfo;
@@ -164,11 +164,13 @@ pub async fn inspect_ssh_key(path: String) -> Result<SshKeyInfo, SshError> {
 pub async fn ssh_health_check_saved_host(
     host_id: String,
     db: State<'_, Arc<HostDb>>,
+    local_vault: State<'_, Arc<crate::vault::LocalVault>>,
 ) -> Result<HostHealthCheckResult, SshError> {
     let db_clone = Arc::clone(&db);
+    let local_vault_clone = Arc::clone(&local_vault);
     let id_for_db = host_id.clone();
     let config = tokio::task::spawn_blocking(move || {
-        build_host_config_blocking(&id_for_db, &db_clone, &mut Vec::new())
+        build_host_config_blocking(&id_for_db, &db_clone, &local_vault_clone, &mut Vec::new())
     })
     .await
     .map_err(|e| SshError::IoError(format!("task panicked: {e}")))??;
@@ -573,6 +575,7 @@ pub async fn connect_saved_host(
     attempt_id: Option<String>,
     state: State<'_, SshManager>,
     db: State<'_, Arc<HostDb>>,
+    local_vault: State<'_, Arc<crate::vault::LocalVault>>,
     app_handle: AppHandle,
 ) -> Result<SessionId, SshError> {
     // -----------------------------------------------------------------
@@ -580,9 +583,10 @@ pub async fn connect_saved_host(
     // inside one blocking task — DB and keychain access are synchronous.
     // -----------------------------------------------------------------
     let db_clone = Arc::clone(&db);
+    let local_vault_clone = Arc::clone(&local_vault);
     let id_for_db = host_id.clone();
     let config = tokio::task::spawn_blocking(move || {
-        build_host_config_blocking(&id_for_db, &db_clone, &mut Vec::new())
+        build_host_config_blocking(&id_for_db, &db_clone, &local_vault_clone, &mut Vec::new())
     })
     .await
     .map_err(|e| SshError::IoError(format!("task panicked: {e}")))??;
@@ -609,11 +613,37 @@ fn auth_method_label(auth: &AuthMethod) -> &'static str {
     }
 }
 
-/// Resolve the AuthMethod for a saved host, pulling secrets from the keychain.
-/// An empty password / absent passphrase means the keychain entry is missing;
-/// the SSH handshake then fails with AuthenticationFailed rather than a vault
-/// error.
-fn resolve_auth_method(host_id: &str, auth_type: &str, key_path: Option<String>) -> AuthMethod {
+/* Select the persisted credential source before reading any secret. Local-vault
+ * hosts are resolved exclusively from the session key and encrypted SQLite
+ * value, so a locked vault cannot silently fall back to an old keychain entry. */
+fn resolve_auth_method(
+    host_id: &str,
+    auth_type: &str,
+    key_path: Option<String>,
+    credential_storage: CredentialStorage,
+    db: &HostDb,
+    local_vault: &crate::vault::LocalVault,
+) -> Result<AuthMethod, SshError> {
+    if credential_storage == CredentialStorage::LocalVault {
+        if auth_type != "password" {
+            return Err(SshError::ConnectionFailed(
+                "local vault credentials are supported only for password authentication"
+                    .to_string(),
+            ));
+        }
+        let credential =
+            vault::resolve_host_credential(db, local_vault, host_id, CredentialStorage::LocalVault)
+                .map_err(|error| SshError::ConnectionFailed(error.to_string()))?;
+        return match &credential {
+            vault::StoredCredential::Password { password } => Ok(AuthMethod::Password {
+                password: password.clone(),
+            }),
+            _ => Err(SshError::ConnectionFailed(
+                "local vault entry is not a password credential".to_string(),
+            )),
+        };
+    }
+
     match auth_type {
         /* Raw key credentials are kept in the vault and materialized only in
          * this Rust-side connection configuration. */
@@ -622,19 +652,19 @@ fn resolve_auth_method(host_id: &str, auth_type: &str, key_path: Option<String>)
                 vault::StoredCredential::PrivateKeyData {
                     key_data,
                     passphrase,
-                } => AuthMethod::PrivateKeyData {
+                } => Ok(AuthMethod::PrivateKeyData {
                     key_data: key_data.clone(),
                     passphrase: passphrase.clone(),
-                },
-                _ => AuthMethod::PrivateKeyData {
+                }),
+                _ => Ok(AuthMethod::PrivateKeyData {
                     key_data: String::new(),
                     passphrase: None,
-                },
+                }),
             },
-            Err(_) => AuthMethod::PrivateKeyData {
+            Err(_) => Ok(AuthMethod::PrivateKeyData {
                 key_data: String::new(),
                 passphrase: None,
-            },
+            }),
         },
         "privateKey" => {
             let path = key_path.unwrap_or_default();
@@ -647,10 +677,10 @@ fn resolve_auth_method(host_id: &str, auth_type: &str, key_path: Option<String>)
                 },
                 Err(_) => None,
             };
-            AuthMethod::PrivateKey {
+            Ok(AuthMethod::PrivateKey {
                 key_path: path,
                 passphrase,
-            }
+            })
         }
         _ => {
             let password = match vault::get_credential(host_id) {
@@ -660,7 +690,7 @@ fn resolve_auth_method(host_id: &str, auth_type: &str, key_path: Option<String>)
                 },
                 Err(_) => String::new(),
             };
-            AuthMethod::Password { password }
+            Ok(AuthMethod::Password { password })
         }
     }
 }
@@ -672,9 +702,10 @@ fn resolve_auth_method(host_id: &str, auth_type: &str, key_path: Option<String>)
 ///
 /// A missing jump host surfaces as a clear `"tunnel host ... not found"` error
 /// rather than the generic not-found message used for the top-level host.
-fn build_host_config_blocking(
+pub(crate) fn build_host_config_blocking(
     host_id: &str,
     db: &HostDb,
+    local_vault: &crate::vault::LocalVault,
     visited: &mut Vec<String>,
 ) -> Result<HostConfig, SshError> {
     if visited.iter().any(|v| v == host_id) {
@@ -689,18 +720,26 @@ fn build_host_config_blocking(
         .map_err(|e| SshError::IoError(e.to_string()))?
         .ok_or_else(|| SshError::SessionNotFound(format!("host not found: {host_id}")))?;
 
-    let auth_method = resolve_auth_method(host_id, &saved_host.auth_type, saved_host.key_path);
+    let auth_method = resolve_auth_method(
+        host_id,
+        &saved_host.auth_type,
+        saved_host.key_path,
+        saved_host.credential_storage,
+        db,
+        local_vault,
+    )?;
 
     // Resolve the ProxyJump target (if any) into a nested HostConfig.
     let jump_host = match saved_host.proxy_jump_host_id.as_deref() {
         Some(jump_id) if !jump_id.is_empty() => {
-            let jump_cfg =
-                build_host_config_blocking(jump_id, db, visited).map_err(|e| match e {
+            let jump_cfg = build_host_config_blocking(jump_id, db, local_vault, visited).map_err(
+                |e| match e {
                     SshError::SessionNotFound(_) => SshError::ConnectionFailed(format!(
                         "tunnel host not found in saved hosts (id {jump_id})"
                     )),
                     other => other,
-                })?;
+                },
+            )?;
             Some(Box::new(jump_cfg))
         }
         _ => None,
@@ -732,11 +771,13 @@ pub async fn connect_saved_host_no_pty(
     attempt_id: Option<String>,
     state: State<'_, SshManager>,
     db: State<'_, Arc<HostDb>>,
+    local_vault: State<'_, Arc<crate::vault::LocalVault>>,
 ) -> Result<SessionId, SshError> {
     let db_clone = Arc::clone(&db);
+    let local_vault_clone = Arc::clone(&local_vault);
     let id_for_db = host_id.clone();
     let config = tokio::task::spawn_blocking(move || {
-        build_host_config_blocking(&id_for_db, &db_clone, &mut Vec::new())
+        build_host_config_blocking(&id_for_db, &db_clone, &local_vault_clone, &mut Vec::new())
     })
     .await
     .map_err(|e| SshError::IoError(format!("task panicked: {e}")))??;
