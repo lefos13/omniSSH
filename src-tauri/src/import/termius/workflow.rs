@@ -2696,7 +2696,7 @@ mod tests {
 
     #[tokio::test]
     async fn local_vault_commit_sweeps_passwords_and_leaves_keys() {
-        let (db_unarc, _path) = temp_db();
+        let (db_unarc, path) = temp_db();
         let db = Arc::new(db_unarc);
         let previews = Arc::new(TermiusImportState::new());
         let vault = Arc::new(crate::vault::LocalVault::new());
@@ -2749,11 +2749,12 @@ mod tests {
 
         assert!(crate::vault::get_credential(&h1_saved.id).is_err());
         assert!(crate::vault::get_credential(&h2_saved.id).is_ok());
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[tokio::test]
     async fn local_vault_commit_when_locked_leaves_credentials_in_keychain_with_warning() {
-        let (db_unarc, _path) = temp_db();
+        let (db_unarc, path) = temp_db();
         let db = Arc::new(db_unarc);
         let previews = Arc::new(TermiusImportState::new());
         let vault = Arc::new(crate::vault::LocalVault::new());
@@ -2796,6 +2797,7 @@ mod tests {
             crate::db::CredentialStorage::Keychain
         );
         assert!(crate::vault::get_credential(&h1_saved.id).is_ok()); // Stays in keychain
+        let _ = std::fs::remove_dir_all(path);
     }
 
     use super::*;
@@ -3658,6 +3660,7 @@ mod tests {
         assert_eq!(saved_host.username, "joined-user");
         assert_eq!(saved_host.auth_type, "privateKeyData");
         assert_eq!(saved_host.proxy_jump, None);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -3844,6 +3847,7 @@ mod tests {
         let saved_host = &db.list_hosts().expect("list hosts")[0];
         assert_eq!(saved_host.auth_type, "privateKeyData");
         assert_eq!(saved_host.proxy_jump, None);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -3895,6 +3899,7 @@ mod tests {
         )
         .expect("commit without proxy text");
         assert!(db.list_hosts().unwrap()[0].proxy_jump.is_none());
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -4015,6 +4020,7 @@ mod tests {
             db.list_hosts().expect("list hosts")[0].group_id.as_deref(),
             Some(groups[0].id.as_str())
         );
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -4205,6 +4211,7 @@ mod tests {
         assert_ne!(db.list_hosts().unwrap()[0].updated_at, "datetime('now')");
         let serialized = serde_json::to_string(&result.0).expect("serialize result");
         assert!(!serialized.contains("secret"));
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -4230,6 +4237,7 @@ mod tests {
             db.list_hosts().expect("list hosts")[0].auth_type,
             "password"
         );
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -4261,6 +4269,7 @@ mod tests {
             .iter()
             .any(|(_, credential)| { matches!(credential, StoredCredential::Password { .. }) }));
         assert_eq!(db.list_hosts().unwrap()[0].auth_type, "privateKey");
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -4276,6 +4285,7 @@ mod tests {
         ));
         assert_eq!(vault.saved_len(), 0);
         assert!(db.list_hosts().expect("list hosts").is_empty());
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -4324,6 +4334,7 @@ mod tests {
         assert!(!serde_json::to_string(&result.0)
             .unwrap()
             .contains("fixture"));
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -4360,6 +4371,7 @@ mod tests {
         assert_eq!(result.0.imported_hosts, 2);
         assert_eq!(result.0.skipped_hosts, 2);
         assert_eq!(db.list_hosts().expect("list hosts").len(), 3);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -4389,6 +4401,7 @@ mod tests {
             assert_eq!(vault.saved_len(), 0);
             assert_eq!(vault.deleted_len(), 3);
             assert!(db.list_hosts().expect("list hosts").is_empty());
+            let _ = std::fs::remove_dir_all(path);
         }
     }
 
@@ -4416,6 +4429,7 @@ mod tests {
         assert_eq!(vault.deleted_len(), 1);
         assert!(db.list_groups().expect("list groups").is_empty());
         assert!(db.list_hosts().expect("list hosts").is_empty());
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -4451,6 +4465,7 @@ mod tests {
         assert!(!snapshot
             .windows("cleanup-secret".len())
             .any(|window| window == b"cleanup-secret"));
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -4472,6 +4487,7 @@ mod tests {
         assert!(recover_vault_cleanup(&db, &vault));
         assert_eq!(vault.saved_len(), 0);
         assert!(db.list_vault_cleanup().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -4500,5 +4516,6 @@ mod tests {
         assert_eq!(result.0.credentials_stored, 0);
         assert_eq!(vault.saved_len(), 0);
         assert!(db.list_vault_cleanup().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(path);
     }
 }

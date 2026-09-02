@@ -5,9 +5,9 @@ use zeroize::Zeroize;
 
 pub(crate) mod local;
 
+pub(crate) use local::migrate_hosts_to_vault;
 pub(crate) use local::resolve_host_credential;
 pub use local::LocalVault;
-pub(crate) use local::migrate_hosts_to_vault;
 
 // ---------------------------------------------------------------------------
 // Constants
