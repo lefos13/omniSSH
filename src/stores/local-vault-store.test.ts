@@ -45,4 +45,18 @@ describe("local-vault-store", () => {
       masterPassword: "master-password",
     });
   });
+
+  it("forwards current and replacement master passwords without retaining either", async () => {
+    invoke.mockResolvedValue(undefined);
+
+    await useLocalVaultStore
+      .getState()
+      .changeMasterPassword("current-master-password", "replacement-master-password");
+
+    expect(invoke).toHaveBeenCalledWith("local_vault_change_master_password", {
+      currentMasterPassword: "current-master-password",
+      newMasterPassword: "replacement-master-password",
+    });
+    expect(useLocalVaultStore.getState()).not.toHaveProperty("masterPassword");
+  });
 });

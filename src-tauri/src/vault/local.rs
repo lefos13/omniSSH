@@ -4,10 +4,10 @@
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use argon2::{Algorithm, Argon2, Params, Version};
-use std::sync::Arc;
+use std::sync::{Arc, MutexGuard};
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::db::{CredentialStorage, HostDb, VaultMetadata};
+use crate::db::{CredentialStorage, HostDb, VaultCredentialRekey, VaultMetadata};
 
 use super::{StoredCredential, VaultError};
 
@@ -17,6 +17,7 @@ const ARGON2_P: u32 = 1;
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 12;
 const KEY_LEN: usize = 32;
+const MIN_MASTER_PASSWORD_LEN: usize = 12;
 const CREDENTIAL_AAD_PREFIX: &[u8] = b"omniSSH/local-vault/credential/";
 const VERIFIER_AAD: &[u8] = b"omniSSH/local-vault/verifier/v1";
 const VERIFIER_PLAINTEXT: &[u8] = b"omniSSH-local-vault-verifier-v1";
@@ -25,13 +26,21 @@ const VERIFIER_PLAINTEXT: &[u8] = b"omniSSH-local-vault-verifier-v1";
 /// this mutex is the sole owner of the key after setup or successful unlock.
 pub struct LocalVault {
     session_key: std::sync::Mutex<Option<Zeroizing<[u8; KEY_LEN]>>>,
+    operation_lock: std::sync::Mutex<()>,
 }
 
 impl LocalVault {
     pub fn new() -> Self {
         Self {
             session_key: std::sync::Mutex::new(None),
+            operation_lock: std::sync::Mutex::new(()),
         }
+    }
+
+    fn begin_operation(&self) -> Result<MutexGuard<'_, ()>, VaultError> {
+        self.operation_lock.lock().map_err(|error| {
+            VaultError::Database(format!("local vault operation lock poisoned: {error}"))
+        })
     }
 
     fn set_session_key(&self, key: [u8; KEY_LEN]) -> Result<(), VaultError> {
@@ -60,8 +69,10 @@ impl LocalVault {
     }
 
     pub fn lock_session(&self) {
-        if let Ok(mut session_key) = self.session_key.lock() {
-            session_key.take();
+        if let Ok(_operation) = self.begin_operation() {
+            if let Ok(mut session_key) = self.session_key.lock() {
+                session_key.take();
+            }
         }
     }
 }
@@ -98,6 +109,15 @@ fn derive_key(master_password: &str, salt: &[u8]) -> Result<Zeroizing<[u8; KEY_L
         .hash_password_into(master_password.as_bytes(), salt, &mut key)
         .map_err(|error| VaultError::Crypto(error.to_string()))?;
     Ok(Zeroizing::new(key))
+}
+
+fn validate_new_master_password(master_password: &str) -> Result<(), VaultError> {
+    if master_password.len() < MIN_MASTER_PASSWORD_LEN {
+        return Err(VaultError::InvalidData(format!(
+            "master password must be at least {MIN_MASTER_PASSWORD_LEN} characters"
+        )));
+    }
+    Ok(())
 }
 
 fn credential_aad(host_id: &str) -> Vec<u8> {
@@ -190,6 +210,22 @@ fn decrypt_credential(
         .map_err(|_| VaultError::InvalidData("local vault credential is corrupt".to_string()))
 }
 
+fn zeroize_credential(credential: &mut StoredCredential) {
+    match credential {
+        StoredCredential::Password { password } => password.zeroize(),
+        StoredCredential::KeyPassphrase { passphrase } => passphrase.zeroize(),
+        StoredCredential::PrivateKeyData {
+            key_data,
+            passphrase,
+        } => {
+            key_data.zeroize();
+            if let Some(passphrase) = passphrase {
+                passphrase.zeroize();
+            }
+        }
+    }
+}
+
 fn random_bytes<const N: usize>() -> Result<[u8; N], VaultError> {
     let mut bytes = [0u8; N];
     getrandom::getrandom(&mut bytes).map_err(|error| VaultError::Crypto(error.to_string()))?;
@@ -204,9 +240,11 @@ fn setup_local_vault(
     state: &LocalVault,
     master_password: &str,
 ) -> Result<(), VaultError> {
+    let _operation = state.begin_operation()?;
     if db.is_local_vault_configured()? {
         return Err(VaultError::LocalVaultAlreadyConfigured);
     }
+    validate_new_master_password(master_password)?;
     let salt = random_bytes::<SALT_LEN>()?;
     let key = derive_key(master_password, &salt)?;
     let verifier_nonce = random_bytes::<NONCE_LEN>()?;
@@ -227,9 +265,18 @@ fn unlock_local_vault(
     state: &LocalVault,
     master_password: &str,
 ) -> Result<(), VaultError> {
+    let _operation = state.begin_operation()?;
     let metadata = db
         .get_vault_metadata()?
         .ok_or(VaultError::LocalVaultNotConfigured)?;
+    let key = verify_master_password(&metadata, master_password)?;
+    state.set_session_key(*key)
+}
+
+fn verify_master_password(
+    metadata: &VaultMetadata,
+    master_password: &str,
+) -> Result<Zeroizing<[u8; KEY_LEN]>, VaultError> {
     let key = derive_key(master_password, &metadata.salt)
         .map_err(|_| VaultError::InvalidMasterPassword)?;
     let verifier = decrypt_bytes(
@@ -242,6 +289,53 @@ fn unlock_local_vault(
     if verifier.as_slice() != VERIFIER_PLAINTEXT {
         return Err(VaultError::InvalidMasterPassword);
     }
+    Ok(key)
+}
+
+/* Rekeying authenticates the current password, re-encrypts every host value
+ * with fresh nonces, and commits metadata plus ciphertext in one transaction. */
+fn change_local_vault_master_password(
+    db: &HostDb,
+    state: &LocalVault,
+    current_master_password: &str,
+    new_master_password: &str,
+) -> Result<(), VaultError> {
+    let _operation = state.begin_operation()?;
+    validate_new_master_password(new_master_password)?;
+    let previous_metadata = db
+        .get_vault_metadata()?
+        .ok_or(VaultError::LocalVaultNotConfigured)?;
+    let previous_key = verify_master_password(&previous_metadata, current_master_password)?;
+
+    let salt = random_bytes::<SALT_LEN>()?;
+    let key = derive_key(new_master_password, &salt)?;
+    let verifier_nonce = random_bytes::<NONCE_LEN>()?;
+    let verifier_ciphertext =
+        encrypt_bytes(&key, &verifier_nonce, VERIFIER_AAD, VERIFIER_PLAINTEXT)?;
+    let metadata = VaultMetadata {
+        salt: salt.to_vec(),
+        verifier_nonce: verifier_nonce.to_vec(),
+        verifier_ciphertext,
+    };
+
+    let credentials = db
+        .list_local_vault_credentials()?
+        .into_iter()
+        .map(|(host_id, previous_ciphertext)| {
+            let (nonce, ciphertext) = unpack_credential_blob(&previous_ciphertext)?;
+            let mut credential = decrypt_credential(&previous_key, &host_id, nonce, ciphertext)?;
+            let encrypted = encrypt_credential(&key, &host_id, &credential);
+            zeroize_credential(&mut credential);
+            let (nonce, ciphertext) = encrypted?;
+            Ok(VaultCredentialRekey {
+                host_id,
+                previous_ciphertext,
+                ciphertext: pack_credential_blob(&nonce, &ciphertext)?,
+            })
+        })
+        .collect::<Result<Vec<_>, VaultError>>()?;
+
+    db.replace_vault_metadata_and_credentials(&previous_metadata, &metadata, &credentials)?;
     state.set_session_key(*key)
 }
 
@@ -281,6 +375,7 @@ pub(crate) fn resolve_host_credential(
     host_id: &str,
     storage: CredentialStorage,
 ) -> Result<StoredCredential, VaultError> {
+    let _operation = state.begin_operation()?;
     match storage {
         CredentialStorage::Keychain => super::get_credential(host_id),
         CredentialStorage::LocalVault => {
@@ -295,6 +390,7 @@ pub(crate) fn resolve_host_credential(
 }
 
 fn migrate_host_password(db: &HostDb, state: &LocalVault, host_id: &str) -> Result<(), VaultError> {
+    let _operation = state.begin_operation()?;
     let host = db
         .get_host(host_id)?
         .ok_or_else(|| VaultError::NotFound(host_id.to_string()))?;
@@ -341,6 +437,7 @@ fn migrate_host_password(db: &HostDb, state: &LocalVault, host_id: &str) -> Resu
 }
 
 fn move_host_to_keychain(db: &HostDb, state: &LocalVault, host_id: &str) -> Result<(), VaultError> {
+    let _operation = state.begin_operation()?;
     let host = db
         .get_host(host_id)?
         .ok_or_else(|| VaultError::NotFound(host_id.to_string()))?;
@@ -423,6 +520,31 @@ pub async fn local_vault_unlock(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+pub async fn local_vault_change_master_password(
+    current_master_password: String,
+    new_master_password: String,
+    db: tauri::State<'_, Arc<HostDb>>,
+    state: tauri::State<'_, Arc<LocalVault>>,
+) -> Result<(), VaultError> {
+    /* Both inputs live only for this blocking operation. The new derived key
+     * replaces the session key only after SQLite commits every ciphertext. */
+    let current_master_password = Zeroizing::new(current_master_password);
+    let new_master_password = Zeroizing::new(new_master_password);
+    let db = Arc::clone(&db);
+    let state = Arc::clone(&state);
+    tokio::task::spawn_blocking(move || {
+        change_local_vault_master_password(
+            &db,
+            &state,
+            &current_master_password,
+            &new_master_password,
+        )
+    })
+    .await
+    .map_err(blocking_task_error)?
+}
+
+#[tauri::command(rename_all = "camelCase")]
 pub async fn local_vault_lock(state: tauri::State<'_, Arc<LocalVault>>) -> Result<(), VaultError> {
     state.lock_session();
     Ok(())
@@ -474,6 +596,36 @@ pub async fn local_vault_move_host_to_keychain(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::SavedHost;
+
+    fn password_host(id: &str) -> SavedHost {
+        SavedHost {
+            id: id.to_string(),
+            label: id.to_string(),
+            host: "192.0.2.1".to_string(),
+            port: 22,
+            username: "test".to_string(),
+            auth_type: "password".to_string(),
+            credential_storage: CredentialStorage::Keychain,
+            group_id: None,
+            created_at: "2026-01-01T00:00:00".to_string(),
+            updated_at: "2026-01-01T00:00:00".to_string(),
+            key_path: None,
+            color: None,
+            notes: None,
+            environment: None,
+            os_type: None,
+            startup_command: None,
+            proxy_jump: None,
+            proxy_jump_host_id: None,
+            start_directory: None,
+            keep_alive_interval: None,
+            default_shell: None,
+            font_size: None,
+            last_connected_at: None,
+            connection_count: None,
+        }
+    }
 
     fn derive_test_key(master_password: &str, salt: &[u8]) -> Zeroizing<[u8; KEY_LEN]> {
         derive_key(master_password, salt).expect("derive test key")
@@ -576,6 +728,117 @@ mod tests {
             setup_local_vault(&db, &state, "another-password"),
             Err(VaultError::LocalVaultAlreadyConfigured)
         ));
+    }
+
+    #[test]
+    fn changing_the_master_password_invalidates_the_previous_password() {
+        /* Rekeying must authenticate the old secret, atomically replace vault
+         * metadata, and leave the session usable with only the new secret. */
+        let directory = tempfile::tempdir().expect("tempdir");
+        let db = HostDb::new(directory.path()).expect("database");
+        let state = LocalVault::new();
+
+        setup_local_vault(&db, &state, "original-master-password").expect("setup");
+        change_local_vault_master_password(
+            &db,
+            &state,
+            "original-master-password",
+            "replacement-master-password",
+        )
+        .expect("change master password");
+
+        state.lock_session();
+        assert!(matches!(
+            unlock_local_vault(&db, &state, "original-master-password"),
+            Err(VaultError::InvalidMasterPassword)
+        ));
+        unlock_local_vault(&db, &state, "replacement-master-password")
+            .expect("unlock with replacement password");
+    }
+
+    #[test]
+    fn changing_the_master_password_reencrypts_existing_host_credentials() {
+        /* A rekey must preserve host secrets while making both the former key
+         * and the previous ciphertext unusable for subsequent resolution. */
+        let directory = tempfile::tempdir().expect("tempdir");
+        let db = HostDb::new(directory.path()).expect("database");
+        let state = LocalVault::new();
+        db.save_host(&password_host("vault-host"))
+            .expect("save host");
+        setup_local_vault(&db, &state, "original-master-password").expect("setup");
+
+        let key = state.session_key().expect("session key");
+        let credential = StoredCredential::Password {
+            password: "host-password".to_string(),
+        };
+        let (nonce, ciphertext) =
+            encrypt_credential(&key, "vault-host", &credential).expect("encrypt");
+        let original_blob = pack_credential_blob(&nonce, &ciphertext).expect("pack credential");
+        db.save_local_vault_credential("vault-host", &original_blob)
+            .expect("save encrypted credential");
+        db.set_credential_storage("vault-host", CredentialStorage::LocalVault)
+            .expect("mark encrypted credential");
+
+        change_local_vault_master_password(
+            &db,
+            &state,
+            "original-master-password",
+            "replacement-master-password",
+        )
+        .expect("change master password");
+
+        let replacement_blob = db
+            .get_local_vault_credential("vault-host")
+            .expect("read encrypted credential")
+            .expect("credential exists");
+        assert_ne!(replacement_blob, original_blob);
+        state.lock_session();
+        unlock_local_vault(&db, &state, "replacement-master-password")
+            .expect("unlock with replacement password");
+        assert!(matches!(
+            resolve_host_credential(&db, &state, "vault-host", CredentialStorage::LocalVault),
+            Ok(StoredCredential::Password { ref password }) if password == "host-password"
+        ));
+    }
+
+    #[test]
+    fn wrong_current_password_leaves_the_vault_unchanged() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let db = HostDb::new(directory.path()).expect("database");
+        let state = LocalVault::new();
+        setup_local_vault(&db, &state, "original-master-password").expect("setup");
+        let metadata = db.get_vault_metadata().expect("metadata");
+
+        assert!(matches!(
+            change_local_vault_master_password(
+                &db,
+                &state,
+                "wrong-master-password",
+                "replacement-master-password",
+            ),
+            Err(VaultError::InvalidMasterPassword)
+        ));
+        assert_eq!(db.get_vault_metadata().expect("metadata"), metadata);
+        assert!(state.is_unlocked());
+        state.lock_session();
+        unlock_local_vault(&db, &state, "original-master-password")
+            .expect("original password remains valid");
+    }
+
+    #[test]
+    fn changing_the_master_password_enforces_the_minimum_length_in_rust() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let db = HostDb::new(directory.path()).expect("database");
+        let state = LocalVault::new();
+        setup_local_vault(&db, &state, "original-master-password").expect("setup");
+
+        assert!(matches!(
+            change_local_vault_master_password(&db, &state, "original-master-password", "short"),
+            Err(VaultError::InvalidData(_))
+        ));
+        state.lock_session();
+        unlock_local_vault(&db, &state, "original-master-password")
+            .expect("original password remains valid");
     }
 
     #[test]

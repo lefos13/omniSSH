@@ -179,6 +179,16 @@ pub struct VaultMetadata {
     pub verifier_ciphertext: Vec<u8>,
 }
 
+/* A rekey writes only ciphertext and its prior value. Keeping both values lets
+ * the transaction reject concurrent vault edits instead of committing mixed
+ * encryption keys. */
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VaultCredentialRekey {
+    pub host_id: String,
+    pub previous_ciphertext: Vec<u8>,
+    pub ciphertext: Vec<u8>,
+}
+
 /// A named group that hosts can be assigned to.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostGroup {
@@ -854,6 +864,84 @@ impl HostDb {
                 &metadata.verifier_ciphertext
             ],
         )?;
+        Ok(())
+    }
+
+    pub fn list_local_vault_credentials(&self) -> Result<Vec<(String, Vec<u8>)>, DbError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let credentials = conn
+            .prepare("SELECT host_id, ciphertext FROM local_vault_credentials ORDER BY host_id")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(DbError::from)?;
+        Ok(credentials)
+    }
+
+    /* The prior metadata and ciphertext are compared inside one immediate
+     * transaction, so a failed or concurrent rekey cannot leave the vault
+     * encrypted under more than one master password. */
+    pub fn replace_vault_metadata_and_credentials(
+        &self,
+        previous_metadata: &VaultMetadata,
+        metadata: &VaultMetadata,
+        credentials: &[VaultCredentialRekey],
+    ) -> Result<(), DbError> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let updated_metadata = tx.execute(
+            "UPDATE local_vault_metadata
+             SET salt = ?1, verifier_nonce = ?2, verifier_ciphertext = ?3
+             WHERE id = 1 AND salt = ?4 AND verifier_nonce = ?5 AND verifier_ciphertext = ?6",
+            params![
+                &metadata.salt,
+                &metadata.verifier_nonce,
+                &metadata.verifier_ciphertext,
+                &previous_metadata.salt,
+                &previous_metadata.verifier_nonce,
+                &previous_metadata.verifier_ciphertext,
+            ],
+        )?;
+        if updated_metadata != 1 {
+            return Err(DbError::Validation(
+                "local vault changed while updating the master password".to_string(),
+            ));
+        }
+
+        let current_count: usize =
+            tx.query_row("SELECT COUNT(*) FROM local_vault_credentials", [], |row| {
+                row.get(0)
+            })?;
+        if current_count != credentials.len() {
+            return Err(DbError::Validation(
+                "local vault credentials changed while updating the master password".to_string(),
+            ));
+        }
+
+        for credential in credentials {
+            let updated = tx.execute(
+                "UPDATE local_vault_credentials
+                 SET ciphertext = ?1
+                 WHERE host_id = ?2 AND ciphertext = ?3",
+                params![
+                    &credential.ciphertext,
+                    &credential.host_id,
+                    &credential.previous_ciphertext,
+                ],
+            )?;
+            if updated != 1 {
+                return Err(DbError::Validation(
+                    "local vault credentials changed while updating the master password"
+                        .to_string(),
+                ));
+            }
+        }
+        tx.commit()?;
         Ok(())
     }
 

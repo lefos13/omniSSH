@@ -5,9 +5,11 @@ import { useSettingsStore } from "../../stores/settings-store";
 import { CustomSelect, type SelectOption } from "../shared/CustomSelect";
 import { useUpdaterStore } from "../../stores/updater-store";
 import { toast } from "../../stores/toast-store";
-import { RefreshCw, CheckCircle2, AlertCircle, Palette, SquareTerminal, ArrowUpDown, Info, ExternalLink, Check, FileCode, Plus, Trash2, FolderOpen, Star, Search, Database, Download, Upload, ShieldCheck } from "lucide-react";
+import { RefreshCw, CheckCircle2, AlertCircle, Palette, SquareTerminal, ArrowUpDown, Info, ExternalLink, Check, FileCode, Plus, Trash2, FolderOpen, Star, Search, Database, Download, Upload, ShieldCheck, KeyRound } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { CursorStyle, ThemeMode, EditorConfig, PasteButton, DoubleClickAction } from "../../stores/settings-store";
+import { useLocalVaultStore } from "../../stores/local-vault-store";
+import { ChangeVaultPasswordDialog } from "../vault";
 
 // ─── Shared styles ───────────────────────────────────────────────────────────
 
@@ -47,7 +49,7 @@ const REPO_URL = "https://github.com/lefos13/omniSSH";
 // Each settings category is a section here. To add a new category, add an entry
 // to SECTIONS, a description, and render its content in <SectionContent />.
 
-type SectionId = "appearance" | "terminal" | "explorer" | "transfers" | "editors" | "data" | "about";
+type SectionId = "appearance" | "terminal" | "explorer" | "transfers" | "editors" | "security" | "data" | "about";
 
 const SECTIONS: { id: SectionId; label: string; icon: LucideIcon }[] = [
   { id: "appearance", label: "Appearance", icon: Palette },
@@ -55,6 +57,7 @@ const SECTIONS: { id: SectionId; label: string; icon: LucideIcon }[] = [
   { id: "explorer", label: "Explorer", icon: FolderOpen },
   { id: "transfers", label: "Transfers", icon: ArrowUpDown },
   { id: "editors", label: "Editors", icon: FileCode },
+  { id: "security", label: "Security & Vault", icon: KeyRound },
   { id: "data", label: "Data", icon: Database },
   { id: "about", label: "About & Updates", icon: Info },
 ];
@@ -65,6 +68,7 @@ const SECTION_DESCRIPTIONS: Record<SectionId, string> = {
   explorer: "How the file browser behaves.",
   transfers: "Control how files are transferred.",
   editors: "Editors used by “Edit” / “Open With” in the file browser.",
+  security: "Manage encrypted local host passwords.",
   data: "Back up, restore, and reset your data.",
   about: "App information, links, and updates.",
 };
@@ -156,6 +160,8 @@ function SectionContent({ section }: { section: SectionId }) {
       return <TransferSettings />;
     case "editors":
       return <EditorsSettings />;
+    case "security":
+      return <SecuritySettings />;
     case "data":
       return <DataSettings />;
     case "about":
@@ -1157,6 +1163,107 @@ function EditorsSettings() {
       )}
 
       <AddEditorModal open={customOpen} onClose={() => setCustomOpen(false)} onAdd={addEditor} />
+    </>
+  );
+}
+
+/* Vault status comes from Rust on every Settings mount. Password changes are
+ * delegated to the dialog, so no secret is retained in this page's state. */
+function SecuritySettings() {
+  const configured = useLocalVaultStore((state) => state.configured);
+  const unlocked = useLocalVaultStore((state) => state.unlocked);
+  const loading = useLocalVaultStore((state) => state.loading);
+  const loadStatus = useLocalVaultStore((state) => state.loadStatus);
+  const lockVault = useLocalVaultStore((state) => state.lockVault);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+
+  useEffect(() => {
+    void loadStatus().catch(() => {
+      toast.error("Couldn’t load encrypted vault status.");
+    });
+  }, [loadStatus]);
+
+  const lock = useCallback(async () => {
+    try {
+      await lockVault();
+      toast.success("Encrypted vault locked.");
+    } catch {
+      toast.error("Couldn’t lock encrypted vault.");
+    }
+  }, [lockVault]);
+
+  return (
+    <>
+      <SettingsGroup label="Encrypted App Vault">
+        {!configured ? (
+          <div className="rounded-xl border border-border/50 bg-bg-surface px-4 py-3">
+            <p className={LABEL_CLASS}>No encrypted vault set up</p>
+            <p className={DESC_CLASS}>
+              Choose “Encrypted App Vault” while editing a password-authenticated host to create one.
+            </p>
+          </div>
+        ) : (
+          <>
+            <SettingRow>
+              <div>
+                <p className={LABEL_CLASS}>Vault Status</p>
+                <p className={DESC_CLASS}>
+                  {unlocked
+                    ? "Unlocked for this OmniSSH session."
+                    : "Locked. Enter the current master password to change it."}
+                </p>
+              </div>
+              <span
+                data-testid="settings-vault-status"
+                className={`rounded-full px-2 py-1 text-[length:var(--text-2xs)] font-medium ${
+                  unlocked ? "bg-status-success/10 text-status-success" : "bg-bg-overlay text-text-muted"
+                }`}
+              >
+                {unlocked ? "Unlocked" : "Locked"}
+              </span>
+            </SettingRow>
+            <SettingRow>
+              <div>
+                <p className={LABEL_CLASS}>Master Password</p>
+                <p className={DESC_CLASS}>
+                  Re-encrypt every locally stored host password with a new master password.
+                </p>
+              </div>
+              <button
+                type="button"
+                data-testid="settings-vault-change-master-password"
+                onClick={() => setChangePasswordOpen(true)}
+                disabled={loading}
+                className={BTN_SECONDARY}
+              >
+                Change password…
+              </button>
+            </SettingRow>
+            {unlocked && (
+              <SettingRow>
+                <div>
+                  <p className={LABEL_CLASS}>Session Access</p>
+                  <p className={DESC_CLASS}>Lock now to require the master password again.</p>
+                </div>
+                <button
+                  type="button"
+                  data-testid="settings-vault-lock"
+                  onClick={() => void lock()}
+                  disabled={loading}
+                  className={BTN_SECONDARY}
+                >
+                  Lock vault
+                </button>
+              </SettingRow>
+            )}
+          </>
+        )}
+      </SettingsGroup>
+      <ChangeVaultPasswordDialog
+        open={changePasswordOpen}
+        onClose={() => setChangePasswordOpen(false)}
+        onSuccess={() => toast.success("Master password changed. The vault remains unlocked.")}
+      />
     </>
   );
 }

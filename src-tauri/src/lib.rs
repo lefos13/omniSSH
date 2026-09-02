@@ -293,6 +293,7 @@ pub fn run() {
             vault::vault_has_credential,
             vault::local::local_vault_setup,
             vault::local::local_vault_unlock,
+            vault::local::local_vault_change_master_password,
             vault::local::local_vault_lock,
             vault::local::local_vault_status,
             vault::local::local_vault_migrate_host_password,

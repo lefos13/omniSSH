@@ -17,6 +17,7 @@ interface LocalVaultState extends LocalVaultStatus {
   loadStatus: () => Promise<LocalVaultStatus>;
   setupVault: (masterPassword: string) => Promise<void>;
   unlockVault: (masterPassword: string) => Promise<void>;
+  changeMasterPassword: (currentMasterPassword: string, newMasterPassword: string) => Promise<void>;
   lockVault: () => Promise<void>;
 }
 
@@ -60,6 +61,21 @@ export const useLocalVaultStore = create<LocalVaultState>((set) => ({
       set({ unlocked: true, loading: false });
     } catch (error) {
       set({ loading: false, error: messageFrom(error, "Incorrect master password") });
+      throw error;
+    }
+  },
+
+  changeMasterPassword: async (currentMasterPassword, newMasterPassword) => {
+    set({ loading: true, error: null });
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("local_vault_change_master_password", {
+        currentMasterPassword,
+        newMasterPassword,
+      });
+      set({ configured: true, unlocked: true, loading: false });
+    } catch (error) {
+      set({ loading: false, error: messageFrom(error, "Failed to change master password") });
       throw error;
     }
   },
