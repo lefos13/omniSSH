@@ -133,16 +133,16 @@ export function HostListRow({
         onContextMenu={handleContextMenu}
         title={`Connect to ${displayName}`}
         className={[
-          "group relative isolate flex items-center justify-between gap-3.5 px-3.5 py-2.5 rounded-xl text-left w-full cursor-grab active:cursor-grabbing overflow-hidden",
+          "group relative isolate flex items-center justify-between gap-3.5 px-3.5 py-2.5 rounded-xl text-left w-full cursor-grab active:cursor-grabbing",
           "bg-bg-surface border border-border",
-          "hover:border-border-focus hover:bg-bg-overlay",
+          "hover:border-border-focus hover:bg-bg-overlay hover:z-20 focus-within:z-20",
           "transition-[background-color,border-color] duration-[var(--duration-fast)]",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         ].join(" ")}
       >
         {/* Accent background gradient */}
         <div
-          className="absolute inset-0 pointer-events-none -z-10 opacity-60 group-hover:opacity-100 transition-opacity duration-[var(--duration-fast)]"
+          className="absolute inset-0 rounded-xl pointer-events-none -z-10 opacity-60 group-hover:opacity-100 transition-opacity duration-[var(--duration-fast)]"
           style={{
             background: `radial-gradient(circle at left center, ${avatarColor}22, transparent 35%)`,
           }}

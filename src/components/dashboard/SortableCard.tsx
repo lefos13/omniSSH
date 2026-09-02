@@ -28,7 +28,7 @@ export function SortableCard({ id, children }: SortableCardProps) {
     // Lift the dragged card above its neighbours and dim it so the drop target
     // reads clearly. @dnd-kit drives the position; we only style the feedback.
     opacity: isDragging ? 0.5 : 1,
-    zIndex: isDragging ? 10 : undefined,
+    zIndex: isDragging ? 30 : undefined,
   };
 
   return (
@@ -37,7 +37,7 @@ export function SortableCard({ id, children }: SortableCardProps) {
       style={style}
       // touch-none lets the TouchSensor own the gesture once a drag begins
       // instead of the browser scrolling the page.
-      className="relative h-full touch-none"
+      className="relative h-full touch-none hover:z-20 focus-within:z-20"
       {...attributes}
       {...listeners}
     >

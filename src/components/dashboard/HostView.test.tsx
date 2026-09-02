@@ -139,7 +139,9 @@ describe("Host UI enhancements", () => {
         />,
       );
 
-      expect(screen.getByTestId("host-card-host-1")).toBeInTheDocument();
+      const row = screen.getByTestId("host-card-host-1");
+      expect(row).toBeInTheDocument();
+      expect(row.className).not.toContain("overflow-hidden");
       expect(screen.getByText("Production DB")).toBeInTheDocument();
       expect(screen.getByText("192.168.1.100:2222")).toBeInTheDocument();
       expect(screen.getByText("PROD")).toBeInTheDocument();
@@ -149,6 +151,23 @@ describe("Host UI enhancements", () => {
 
       fireEvent.click(screen.getByTestId("host-card-host-1-explorer"));
       expect(onExplore).toHaveBeenCalledWith(sampleHostWithLabel);
+    });
+
+    it("renders action button tooltips for ping, terminal, and explorer without overflow clipping", () => {
+      render(
+        <HostListRow
+          host={sampleHostWithLabel}
+          onConnect={() => {}}
+          onExplore={() => {}}
+          onEdit={() => {}}
+          onDelete={() => {}}
+          onDuplicate={() => {}}
+        />,
+      );
+
+      expect(screen.getByText("Ping")).toBeInTheDocument();
+      expect(screen.getByText("Terminal")).toBeInTheDocument();
+      expect(screen.getByText("Explorer")).toBeInTheDocument();
     });
   });
 

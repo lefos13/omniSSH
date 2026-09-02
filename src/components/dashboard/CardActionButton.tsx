@@ -57,7 +57,7 @@ export function CardActionButton({
       />
       <span
         className={[
-          "absolute top-full right-0 mt-1 z-10 pointer-events-none",
+          "absolute top-full right-0 mt-1 z-20 pointer-events-none",
           "px-1.5 py-0.5 rounded-md bg-bg-overlay border border-border shadow-[var(--shadow-md)]",
           "whitespace-nowrap text-[length:var(--text-xs)] font-medium text-text-primary",
           "opacity-0 group-hover/btn:opacity-100 group-focus-visible/btn:opacity-100 transition-opacity duration-[var(--duration-fast)]",
