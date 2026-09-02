@@ -14,3 +14,21 @@ export interface BackupPreflightSummary {
 }
 
 export type CredentialStorage = "keychain" | "localVault";
+
+export interface MigrationPreflightSummary {
+  migratable: number;
+  alreadyInVault: number;
+  nonMigratable: number;
+}
+
+export interface BulkMigrationFailure {
+  hostId: string;
+  hostLabel: string;
+  error: string;
+}
+
+export interface BulkMigrationResult {
+  migrated: number;
+  skipped: number;
+  failed: BulkMigrationFailure[];
+}

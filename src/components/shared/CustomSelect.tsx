@@ -38,7 +38,7 @@ export function CustomSelect({
 }: CustomSelectProps) {
   const [open, setOpen] = useState(false);
   const [highlightIndex, setHighlightIndex] = useState(-1);
-  const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number; width: number; maxWidth: number } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -85,7 +85,12 @@ export function CustomSelect({
   const computePos = () => {
     if (triggerRef.current) {
       const rect = triggerRef.current.getBoundingClientRect();
-      setDropdownPos({ top: rect.bottom + 4, left: rect.left, width: rect.width });
+      setDropdownPos({
+        top: rect.bottom + 4,
+        left: rect.left,
+        width: rect.width,
+        maxWidth: Math.max(rect.width, window.innerWidth - rect.left - 16),
+      });
     }
   };
 
@@ -169,9 +174,9 @@ export function CustomSelect({
           ref={listRef}
           role="listbox"
           aria-label={ariaLabel}
-          style={{ top: dropdownPos.top, left: dropdownPos.left, width: dropdownPos.width }}
+          style={{ top: dropdownPos.top, left: dropdownPos.left, minWidth: dropdownPos.width, maxWidth: dropdownPos.maxWidth }}
           className={[
-            "fixed z-[100]",
+            "fixed z-[100] w-max",
             "max-h-[200px] overflow-y-auto",
             "bg-bg-overlay border border-border rounded-lg",
             "shadow-[var(--shadow-lg)]",

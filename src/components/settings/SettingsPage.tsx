@@ -8,9 +8,9 @@ import { toast } from "../../stores/toast-store";
 import { RefreshCw, CheckCircle2, AlertCircle, Palette, SquareTerminal, ArrowUpDown, Info, ExternalLink, Check, FileCode, Plus, Trash2, FolderOpen, Star, Search, Database, Download, Upload, ShieldCheck, KeyRound } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { CursorStyle, ThemeMode, EditorConfig, PasteButton, DoubleClickAction } from "../../stores/settings-store";
-import type { BackupPreflightSummary } from "../../types";
+import type { BackupPreflightSummary, BulkMigrationResult, CredentialStorage, MigrationPreflightSummary } from "../../types";
 import { useLocalVaultStore } from "../../stores/local-vault-store";
-import { ChangeVaultPasswordDialog } from "../vault";
+import { ChangeVaultPasswordDialog, UnlockVaultDialog } from "../vault";
 
 // ─── Shared styles ───────────────────────────────────────────────────────────
 
@@ -1287,21 +1287,42 @@ function EditorsSettings() {
   );
 }
 
-/* Vault status comes from Rust on every Settings mount. Password changes are
- * delegated to the dialog, so no secret is retained in this page's state. */
+/* Vault status comes from Rust on every Settings mount. Password changes and
+ * Keychain migration are delegated to dialogs and IPC commands without
+ * retaining secrets in this page's state. */
 function SecuritySettings() {
   const configured = useLocalVaultStore((state) => state.configured);
   const unlocked = useLocalVaultStore((state) => state.unlocked);
   const loading = useLocalVaultStore((state) => state.loading);
   const loadStatus = useLocalVaultStore((state) => state.loadStatus);
   const lockVault = useLocalVaultStore((state) => state.lockVault);
+  const defaultCredentialStorage = useSettingsStore((s) => s.defaultCredentialStorage);
+  const setDefaultCredentialStorage = useSettingsStore((s) => s.setDefaultCredentialStorage);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const [unlockOpen, setUnlockOpen] = useState(false);
+  const [preflight, setPreflight] = useState<MigrationPreflightSummary | null>(null);
+  const [preflightLoading, setPreflightLoading] = useState(false);
+  const [migrating, setMigrating] = useState(false);
+
+  const fetchPreflight = useCallback(async () => {
+    setPreflightLoading(true);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const summary = await invoke<MigrationPreflightSummary>("local_vault_migration_preflight");
+      setPreflight(summary);
+    } catch {
+      // Non-fatal preflight inspection
+    } finally {
+      setPreflightLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     void loadStatus().catch(() => {
       toast.error("Couldn’t load encrypted vault status.");
     });
-  }, [loadStatus]);
+    void fetchPreflight();
+  }, [loadStatus, fetchPreflight]);
 
   const lock = useCallback(async () => {
     try {
@@ -1311,6 +1332,42 @@ function SecuritySettings() {
       toast.error("Couldn’t lock encrypted vault.");
     }
   }, [lockVault]);
+
+  /* Invokes bulk credential migration from macOS Keychain into the App Vault.
+   * Unlocks the vault if needed before running, surfaces outcome feedback,
+   * and refreshes preflight metrics upon completion. */
+  const runMigration = useCallback(async () => {
+    setMigrating(true);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<BulkMigrationResult>("local_vault_migrate_all_from_keychain");
+      if (result.failed.length === 0) {
+        const skippedSuffix = result.skipped > 0 ? ` (skipped ${result.skipped} without keychain entries)` : "";
+        toast.success(`Migrated ${result.migrated} credential${result.migrated === 1 ? "" : "s"} to App Vault${skippedSuffix}.`);
+      } else {
+        const failedLabels = result.failed.slice(0, 3).map((f) => f.hostLabel || f.hostId).join(", ");
+        const extraCount = result.failed.length > 3 ? `, +${result.failed.length - 3} more` : "";
+        const total = result.migrated + result.failed.length;
+        toast.error(`Migrated ${result.migrated} of ${total} credentials. Failed: ${failedLabels}${extraCount}.`);
+      }
+    } catch (e: unknown) {
+      const msg = e && typeof e === "object" && "message" in e
+        ? String((e as { message: unknown }).message)
+        : (typeof e === "string" ? e : null);
+      toast.error(msg ?? "Couldn’t migrate credentials to App Vault.");
+    } finally {
+      await fetchPreflight();
+      setMigrating(false);
+    }
+  }, [fetchPreflight]);
+
+  const handleMigrateClick = useCallback(() => {
+    if (!unlocked) {
+      setUnlockOpen(true);
+    } else {
+      void runMigration();
+    }
+  }, [unlocked, runMigration]);
 
   return (
     <>
@@ -1376,13 +1433,93 @@ function SecuritySettings() {
                 </button>
               </SettingRow>
             )}
+            {preflight && preflight.migratable > 0 ? (
+              <div className="rounded-xl border border-border/50 bg-bg-surface px-4 py-3 flex flex-col gap-3">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className={LABEL_CLASS}>Migrate Credentials to App Vault</p>
+                    <p className={DESC_CLASS}>
+                      Moving System Keychain credentials into the encrypted App Vault eliminates
+                      repeated macOS Keychain prompts during backups and daily use.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    data-testid="settings-vault-migrate"
+                    onClick={handleMigrateClick}
+                    disabled={migrating || preflightLoading}
+                    className={BTN_SECONDARY}
+                  >
+                    {migrating && (
+                      <RefreshCw size={13} strokeWidth={2} className="motion-safe:animate-spin" />
+                    )}
+                    Migrate all to App Vault
+                  </button>
+                </div>
+                <div className="flex flex-col gap-1 pt-1 border-t border-border/40">
+                  <p
+                    data-testid="settings-vault-migrate-count"
+                    className="text-[length:var(--text-xs)] text-text-secondary"
+                  >
+                    {preflight.migratable} credential{preflight.migratable === 1 ? "" : "s"} on System Keychain · {preflight.alreadyInVault} already in App Vault.
+                    {preflight.nonMigratable > 0 && (
+                      <span className="text-text-muted">
+                        {" "}{preflight.nonMigratable} host{preflight.nonMigratable === 1 ? "" : "s"} {preflight.nonMigratable === 1 ? "uses" : "use"} SSH keys and can’t be moved to the App Vault yet.
+                      </span>
+                    )}
+                  </p>
+                  <p className="text-[length:var(--text-xs)] text-text-muted">
+                    macOS may request Keychain access once to authorize reading your credentials.
+                  </p>
+                </div>
+              </div>
+            ) : preflight && preflight.migratable === 0 && preflight.alreadyInVault > 0 ? (
+              <SettingRow>
+                <div>
+                  <p className={LABEL_CLASS}>Credential Migration</p>
+                  <p
+                    data-testid="settings-vault-migration-status"
+                    className={DESC_CLASS}
+                  >
+                    All eligible credentials are stored in the App Vault.
+                  </p>
+                </div>
+              </SettingRow>
+            ) : null}
           </>
         )}
+      </SettingsGroup>
+      <SettingsGroup label="New Host Credentials">
+        <SettingRow>
+          <div>
+            <p className={LABEL_CLASS}>Default Password Storage</p>
+            <p className={DESC_CLASS}>
+              Where new password-authenticated hosts store their credential by default. Choosing the App Vault creates it on first save.
+            </p>
+          </div>
+          <CustomSelect
+            id="security-default-storage"
+            data-testid="security-default-storage"
+            value={defaultCredentialStorage}
+            onChange={(value) => setDefaultCredentialStorage(value as CredentialStorage)}
+            options={[
+              { value: "keychain", label: "System Keychain" },
+              { value: "localVault", label: "Encrypted App Vault" },
+            ]}
+          />
+        </SettingRow>
       </SettingsGroup>
       <ChangeVaultPasswordDialog
         open={changePasswordOpen}
         onClose={() => setChangePasswordOpen(false)}
         onSuccess={() => toast.success("Master password changed. The vault remains unlocked.")}
+      />
+      <UnlockVaultDialog
+        open={unlockOpen}
+        onClose={() => setUnlockOpen(false)}
+        onSuccess={() => {
+          void runMigration();
+        }}
       />
     </>
   );

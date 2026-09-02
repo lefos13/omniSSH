@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { CredentialStorage } from "../types/vault";
 
 export type CursorStyle = "block" | "bar" | "underline";
 export type ThemeMode = "dark" | "light";
@@ -56,6 +57,9 @@ interface SettingsState {
   // Transfers
   transferConcurrency: number;
 
+  // Credentials
+  defaultCredentialStorage: CredentialStorage;
+
   // External editors
   editors: EditorConfig[];
   defaultEditorId: string | null;
@@ -82,6 +86,7 @@ interface SettingsState {
   setTerminalPasteButton: (button: PasteButton) => void;
   setExplorerDoubleClickAction: (action: DoubleClickAction) => void;
   setTransferConcurrency: (n: number) => void;
+  setDefaultCredentialStorage: (storage: CredentialStorage) => void;
   addEditor: (editor: Omit<EditorConfig, "id">) => void;
   updateEditor: (id: string, patch: Partial<Omit<EditorConfig, "id">>) => void;
   removeEditor: (id: string) => void;
@@ -109,6 +114,7 @@ const DEFAULTS = {
   terminalPasteButton: "none" as PasteButton,
   explorerDoubleClickAction: "download" as DoubleClickAction,
   transferConcurrency: 3,
+  defaultCredentialStorage: "keychain" as CredentialStorage,
   editors: [] as EditorConfig[],
   defaultEditorId: null as string | null,
 };
@@ -329,6 +335,11 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     })();
   },
 
+  setDefaultCredentialStorage: (storage) => {
+    set({ defaultCredentialStorage: storage });
+    persist("default_credential_storage", storage);
+  },
+
   addEditor: (editor) => set((s) => {
     const next = [...s.editors, { ...editor, id: crypto.randomUUID() }];
     // The first editor added becomes the default automatically.
@@ -389,6 +400,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
           case "app_auto_update": updates.autoUpdate = value !== "false"; break;
           case "app_skipped_update": updates.skippedUpdateVersion = value || null; break;
           case "hosts_view_mode": updates.hostsViewMode = value === "list" ? "list" : "cards"; break;
+          case "default_credential_storage": updates.defaultCredentialStorage = value === "localVault" ? "localVault" : "keychain"; break;
           case "editors_config": {
             try {
               const parsed = JSON.parse(value) as { editors?: EditorConfig[]; defaultEditorId?: string | null };

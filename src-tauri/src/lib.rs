@@ -299,6 +299,8 @@ pub fn run() {
             vault::local::local_vault_status,
             vault::local::local_vault_migrate_host_password,
             vault::local::local_vault_move_host_to_keychain,
+            vault::local::local_vault_migration_preflight,
+            vault::local::local_vault_migrate_all_from_keychain,
             // S3
             s3::commands::s3_connect,
             s3::commands::s3_disconnect,

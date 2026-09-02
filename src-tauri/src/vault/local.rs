@@ -389,8 +389,15 @@ pub(crate) fn resolve_host_credential(
     }
 }
 
-fn migrate_host_password(db: &HostDb, state: &LocalVault, host_id: &str) -> Result<(), VaultError> {
-    let _operation = state.begin_operation()?;
+/* Bulk migration shares the per-host keychain-to-vault move, so the steps
+ * live here without the operation and session locks: callers hold the
+ * operation guard and pass the derived session key, keeping single-host and
+ * bulk sweeps on one code path with identical checks and rollback ordering. */
+fn migrate_host_to_vault(
+    db: &HostDb,
+    key: &[u8; KEY_LEN],
+    host_id: &str,
+) -> Result<(), VaultError> {
     let host = db
         .get_host(host_id)?
         .ok_or_else(|| VaultError::NotFound(host_id.to_string()))?;
@@ -403,7 +410,6 @@ fn migrate_host_password(db: &HostDb, state: &LocalVault, host_id: &str) -> Resu
         ));
     }
 
-    let key = state.session_key()?;
     let credential = super::get_credential(host_id)?;
     let password = match &credential {
         StoredCredential::Password { .. } => &credential,
@@ -413,7 +419,7 @@ fn migrate_host_password(db: &HostDb, state: &LocalVault, host_id: &str) -> Resu
             ))
         }
     };
-    let (nonce, ciphertext) = encrypt_credential(&key, host_id, password)?;
+    let (nonce, ciphertext) = encrypt_credential(key, host_id, password)?;
     let blob = pack_credential_blob(&nonce, &ciphertext)?;
 
     db.save_local_vault_credential(host_id, &blob)?;
@@ -434,6 +440,12 @@ fn migrate_host_password(db: &HostDb, state: &LocalVault, host_id: &str) -> Resu
         return Err(error);
     }
     Ok(())
+}
+
+fn migrate_host_password(db: &HostDb, state: &LocalVault, host_id: &str) -> Result<(), VaultError> {
+    let _operation = state.begin_operation()?;
+    let key = state.session_key()?;
+    migrate_host_to_vault(db, &key, host_id)
 }
 
 fn move_host_to_keychain(db: &HostDb, state: &LocalVault, host_id: &str) -> Result<(), VaultError> {
@@ -485,6 +497,82 @@ fn move_host_to_keychain(db: &HostDb, state: &LocalVault, host_id: &str) -> Resu
 pub struct LocalVaultStatus {
     pub configured: bool,
     pub unlocked: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationPreflightSummary {
+    pub migratable: usize,
+    pub already_in_vault: usize,
+    pub non_migratable: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkMigrationResult {
+    pub migrated: usize,
+    pub skipped: usize,
+    pub failed: Vec<BulkMigrationFailure>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkMigrationFailure {
+    pub host_id: String,
+    pub host_label: String,
+    pub error: String,
+}
+
+/* The preflight only counts persisted storage markers, so the frontend can
+ * size the migration offer while the vault is locked; no key material or
+ * keychain access happens. */
+fn migration_preflight(db: &HostDb) -> Result<MigrationPreflightSummary, VaultError> {
+    let mut summary = MigrationPreflightSummary {
+        migratable: 0,
+        already_in_vault: 0,
+        non_migratable: 0,
+    };
+    for host in db.list_hosts()? {
+        match host.credential_storage {
+            CredentialStorage::LocalVault => summary.already_in_vault += 1,
+            CredentialStorage::Keychain if host.auth_type == "password" => summary.migratable += 1,
+            CredentialStorage::Keychain => summary.non_migratable += 1,
+        }
+    }
+    Ok(summary)
+}
+
+/* The sweep holds the single operation guard across the whole loop:
+ * re-entering the per-host wrapper would deadlock on the non-reentrant
+ * operation lock. The session key is captured once up front, so a locked
+ * vault fails before any host is touched, and per-host failures are recorded
+ * instead of aborting the remaining hosts. */
+fn migrate_all_from_keychain(
+    db: &HostDb,
+    state: &LocalVault,
+) -> Result<BulkMigrationResult, VaultError> {
+    let _operation = state.begin_operation()?;
+    let key = state.session_key()?;
+    let mut result = BulkMigrationResult {
+        migrated: 0,
+        skipped: 0,
+        failed: Vec::new(),
+    };
+    for host in db.list_hosts()? {
+        if host.credential_storage != CredentialStorage::Keychain || host.auth_type != "password" {
+            continue;
+        }
+        match migrate_host_to_vault(db, &key, &host.id) {
+            Ok(()) => result.migrated += 1,
+            Err(VaultError::NotFound(_)) => result.skipped += 1,
+            Err(error) => result.failed.push(BulkMigrationFailure {
+                host_id: host.id.clone(),
+                host_label: host.label.clone(),
+                error: error.to_string(),
+            }),
+        }
+    }
+    Ok(result)
 }
 
 fn blocking_task_error(error: tokio::task::JoinError) -> VaultError {
@@ -589,6 +677,28 @@ pub async fn local_vault_move_host_to_keychain(
     let db = Arc::clone(&db);
     let state = Arc::clone(&state);
     tokio::task::spawn_blocking(move || move_host_to_keychain(&db, &state, &host_id))
+        .await
+        .map_err(blocking_task_error)?
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn local_vault_migration_preflight(
+    db: tauri::State<'_, Arc<HostDb>>,
+) -> Result<MigrationPreflightSummary, VaultError> {
+    let db = Arc::clone(&db);
+    tokio::task::spawn_blocking(move || migration_preflight(&db))
+        .await
+        .map_err(blocking_task_error)?
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn local_vault_migrate_all_from_keychain(
+    db: tauri::State<'_, Arc<HostDb>>,
+    state: tauri::State<'_, Arc<LocalVault>>,
+) -> Result<BulkMigrationResult, VaultError> {
+    let db = Arc::clone(&db);
+    let state = Arc::clone(&state);
+    tokio::task::spawn_blocking(move || migrate_all_from_keychain(&db, &state))
         .await
         .map_err(blocking_task_error)?
 }
@@ -851,5 +961,70 @@ mod tests {
             resolve_host_credential(&db, &state, "host-a", CredentialStorage::LocalVault),
             Err(VaultError::LocalVaultLocked)
         ));
+    }
+
+    #[test]
+    fn migration_preflight_counts_storage_and_auth_combinations() {
+        /* Counts must match the bulk-migration eligibility rule exactly:
+         * keychain password hosts are migratable, local-vault hosts are done,
+         * and every other keychain auth type must never be offered migration. */
+        let directory = tempfile::tempdir().expect("tempdir");
+        let db = HostDb::new(directory.path()).expect("database");
+        db.save_host(&password_host("keychain-password-a"))
+            .expect("save host");
+        db.save_host(&password_host("keychain-password-b"))
+            .expect("save host");
+        db.save_host(&password_host("vault-password"))
+            .expect("save host");
+        db.set_credential_storage("vault-password", CredentialStorage::LocalVault)
+            .expect("mark local vault storage");
+        let mut keychain_key_host = password_host("keychain-key");
+        keychain_key_host.auth_type = "privateKey".to_string();
+        db.save_host(&keychain_key_host).expect("save host");
+        let mut keychain_key_data_host = password_host("keychain-key-data");
+        keychain_key_data_host.auth_type = "privateKeyData".to_string();
+        db.save_host(&keychain_key_data_host).expect("save host");
+
+        let summary = migration_preflight(&db).expect("preflight summary");
+        assert_eq!(summary.migratable, 2);
+        assert_eq!(summary.already_in_vault, 1);
+        assert_eq!(summary.non_migratable, 2);
+    }
+
+    #[test]
+    fn bulk_migration_requires_an_unlocked_vault() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let db = HostDb::new(directory.path()).expect("database");
+        let state = LocalVault::new();
+        db.save_host(&password_host("locked-vault-candidate"))
+            .expect("save host");
+
+        assert!(matches!(
+            migrate_all_from_keychain(&db, &state),
+            Err(VaultError::LocalVaultLocked)
+        ));
+    }
+
+    #[test]
+    fn bulk_migration_ignores_hosts_outside_the_keychain_password_sweep() {
+        /* An unlocked sweep with no eligible hosts must complete without
+         * touching the OS keychain: already-vaulted and non-password rows are
+         * filtered before any credential lookup would happen. */
+        let directory = tempfile::tempdir().expect("tempdir");
+        let db = HostDb::new(directory.path()).expect("database");
+        let state = LocalVault::new();
+        setup_local_vault(&db, &state, "master-password").expect("setup");
+        db.save_host(&password_host("already-in-vault"))
+            .expect("save host");
+        db.set_credential_storage("already-in-vault", CredentialStorage::LocalVault)
+            .expect("mark local vault storage");
+        let mut keychain_key_host = password_host("keychain-key");
+        keychain_key_host.auth_type = "privateKey".to_string();
+        db.save_host(&keychain_key_host).expect("save host");
+
+        let result = migrate_all_from_keychain(&db, &state).expect("bulk migration");
+        assert_eq!(result.migrated, 0);
+        assert_eq!(result.skipped, 0);
+        assert!(result.failed.is_empty());
     }
 }

@@ -76,6 +76,9 @@ export type {
 
 export type {
   BackupPreflightSummary,
+  BulkMigrationFailure,
+  BulkMigrationResult,
   CredentialStorage,
   LocalVaultStatus,
+  MigrationPreflightSummary,
 } from "./vault";

@@ -11,6 +11,7 @@ import { HOST_COLORS } from "./HostCard";
 import { CustomSelect } from "../shared/CustomSelect";
 import { CreateVaultDialog, UnlockVaultDialog } from "../vault";
 import { useLocalVaultStore } from "../../stores/local-vault-store";
+import { useSettingsStore } from "../../stores/settings-store";
 
 // ─── Field types ─────────────────────────────────────────────────────────────
 
@@ -210,7 +211,9 @@ export function HostEditModal() {
     loadHosts().catch(() => {/* non-fatal */});
 
     if (isNewHost) {
-      // New host — no fetch needed
+      // New host — no fetch needed. Start from the user's configured default
+      // credential storage instead of always assuming the OS keychain.
+      setCredentialStorage(useSettingsStore.getState().defaultCredentialStorage);
       setLoadingHost(false);
       return;
     }
@@ -704,7 +707,7 @@ export function HostEditModal() {
                       onChange={(value) => setCredentialStorage(value as CredentialStorage)}
                       disabled={isBusy}
                       options={[
-                        { value: "keychain", label: "System Keychain (default)" },
+                        { value: "keychain", label: "System Keychain" },
                         { value: "localVault", label: "Encrypted App Vault" },
                       ]}
                     />

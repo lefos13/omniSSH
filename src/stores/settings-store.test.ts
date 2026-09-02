@@ -214,3 +214,42 @@ describe("settings-store — hosts view mode", () => {
     expect(useSettingsStore.getState().hostsViewMode).toBe("cards");
   });
 });
+
+describe("settings-store — default credential storage", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockResolvedValue(undefined);
+    useSettingsStore.setState({ defaultCredentialStorage: "keychain" });
+  });
+
+  it("defaults to the system keychain", () => {
+    expect(useSettingsStore.getState().defaultCredentialStorage).toBe("keychain");
+  });
+
+  it("sets and persists the default storage choice", async () => {
+    useSettingsStore.getState().setDefaultCredentialStorage("localVault");
+    expect(useSettingsStore.getState().defaultCredentialStorage).toBe("localVault");
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("save_setting", {
+        key: "default_credential_storage",
+        value: "localVault",
+      }),
+    );
+  });
+
+  it("loads the storage choice, falling back to keychain for an unknown value", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "load_all_settings") {
+        return [
+          ["default_credential_storage", "localVault"],
+          ["editors_seeded", "true"],
+        ];
+      }
+      return undefined;
+    });
+
+    await useSettingsStore.getState().loadSettings();
+
+    expect(useSettingsStore.getState().defaultCredentialStorage).toBe("localVault");
+  });
+});
