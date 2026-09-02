@@ -2665,7 +2665,9 @@ pub(crate) async fn import_commit_termius_inner(
                 match vault::migrate_hosts_to_vault(&db, &local_vault, &password_host_ids) {
                     Ok(result) => {
                         response.credentials_in_vault += result.migrated;
-                        response.credentials_in_keychain -= result.migrated;
+                        // Skips (e.g. NotFound) and failures stay in the keychain, so we only
+                        // subtract the successfully migrated count from the keychain total.
+                        response.credentials_in_keychain = response.credentials_in_keychain.saturating_sub(result.migrated);
                         if !result.failed.is_empty() {
                             push_warning(
                                 &mut response.warnings,
