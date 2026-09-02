@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.3] - 2026-09-02
+
+### 🚀 Highlights & New Features
+
+#### 1. Encrypted App Vault Management
+* **Master Password Controls**: Added Security & Vault settings to change the encrypted App Vault master password and lock/unlock the vault for the current session.
+* **Live Vault Status**: Settings now surfaces whether the vault is configured, locked, or unlocked, alongside session access controls.
+
+#### 2. Backup Credential Scope
+* **Preflight Credential Counts**: Backup export inspects credential sources up front and reports how many System Keychain reads (and prompts) a full backup requires.
+* **Opt-In Keychain Export**: Choose to skip System Keychain credentials during export to avoid repeated macOS authorization prompts, while App Vault credentials stay protected inside the encrypted snapshot.
+
+#### 3. Bulk Keychain → App Vault Migration
+* **One-Click Migration**: Move all System Keychain password credentials into the encrypted App Vault in a single pass, eliminating repeated Keychain prompts during backups and daily use.
+* **Resilient Per-Host Sweep**: Migration continues past individual host failures and reports skipped/failed hosts; a keychain entry is removed only after its encrypted vault copy is persisted.
+* **Default Password Storage**: Added a setting to choose where new password-authenticated hosts store their credential by default (System Keychain or Encrypted App Vault).
+
+---
+
 ## [1.0.1] - 2026-09-01
 
 ### 🚀 Highlights & New Features
