@@ -37,6 +37,7 @@ pub async fn import_parse_ssh_config(
 pub fn save_imported_hosts(
     db: &HostDb,
     entries: &[SshConfigImportEntry],
+    credential_storage: Option<crate::db::CredentialStorage>,
 ) -> Result<ImportResult, DbError> {
     let mut imported = 0u32;
     let mut skipped = 0u32;
@@ -124,18 +125,25 @@ pub fn save_imported_hosts(
             None => None,
         };
 
+        let auth_type = if entry.identity_file.is_some() {
+            "privateKey".to_string()
+        } else {
+            "password".to_string()
+        };
+        let storage = if auth_type == "password" {
+            credential_storage.unwrap_or_default()
+        } else {
+            Default::default()
+        };
+
         let host = SavedHost {
             id: id.clone(),
             label: entry.host_alias.clone(),
             host: entry.hostname.clone(),
             port: entry.port as _,
             username: entry.user.clone(),
-            auth_type: if entry.identity_file.is_some() {
-                "privateKey".to_string()
-            } else {
-                "password".to_string()
-            },
-            credential_storage: Default::default(),
+            auth_type,
+            credential_storage: storage,
             key_path: entry.identity_file.clone(),
             group_id,
             color: None,
@@ -210,9 +218,16 @@ pub fn save_imported_hosts(
 #[instrument(skip(entries, db))]
 pub async fn import_save_ssh_hosts(
     entries: Vec<SshConfigImportEntry>,
+    credential_storage: Option<crate::db::CredentialStorage>,
     db: State<'_, Arc<HostDb>>,
 ) -> Result<ImportResult, DbError> {
-    save_imported_hosts_command(entries, Arc::clone(&db), "ssh_config_imported").await
+    save_imported_hosts_command(
+        entries,
+        credential_storage,
+        Arc::clone(&db),
+        "ssh_config_imported",
+    )
+    .await
 }
 
 /// Parse a MobaXterm `.mxtsessions` or `MobaXterm.ini` file and return a
@@ -244,22 +259,31 @@ pub async fn import_parse_mobaxterm(
 #[instrument(skip(entries, db))]
 pub async fn import_save_mobaxterm_hosts(
     entries: Vec<SshConfigImportEntry>,
+    credential_storage: Option<crate::db::CredentialStorage>,
     db: State<'_, Arc<HostDb>>,
 ) -> Result<ImportResult, DbError> {
-    save_imported_hosts_command(entries, Arc::clone(&db), "mobaxterm_imported").await
+    save_imported_hosts_command(
+        entries,
+        credential_storage,
+        Arc::clone(&db),
+        "mobaxterm_imported",
+    )
+    .await
 }
 
 /* Keep source-specific IPC commands thin while preserving a single save path
  * for groups, metadata, ProxyJump linking, deduplication, and diagnostics. */
 async fn save_imported_hosts_command(
     entries: Vec<SshConfigImportEntry>,
+    credential_storage: Option<crate::db::CredentialStorage>,
     db: Arc<HostDb>,
     telemetry_event: &'static str,
 ) -> Result<ImportResult, DbError> {
     let host_count = entries.len();
-    let result = task::spawn_blocking(move || save_imported_hosts(&db, &entries))
-        .await
-        .map_err(|e| DbError::InitError(format!("task panicked: {e}")))?;
+    let result =
+        task::spawn_blocking(move || save_imported_hosts(&db, &entries, credential_storage))
+            .await
+            .map_err(|e| DbError::InitError(format!("task panicked: {e}")))?;
 
     crate::telemetry::capture(
         telemetry_event,
@@ -505,7 +529,7 @@ mod tests {
     fn deduplicates_existing_and_repeated_import_keys() {
         let fixture = test_db();
         let existing = sample_import_entry("existing");
-        save_imported_hosts(&fixture.db, &[existing]).expect("save existing host");
+        save_imported_hosts(&fixture.db, &[existing], None).expect("save existing host");
 
         let mut duplicate = sample_import_entry("duplicate-label");
         duplicate.hostname = "existing.example.com".to_string();
@@ -513,7 +537,7 @@ mod tests {
         repeated.host_alias = "repeated-label".to_string();
         let unique = sample_import_entry("unique");
 
-        let result = save_imported_hosts(&fixture.db, &[duplicate, repeated, unique])
+        let result = save_imported_hosts(&fixture.db, &[duplicate, repeated, unique], None)
             .expect("save deduplicated entries");
         assert_eq!(result.imported, 1);
         assert_eq!(result.skipped, 2);
@@ -532,7 +556,7 @@ mod tests {
             .execute_batch("DROP TABLE saved_hosts")
             .expect("drop host table");
 
-        let error = save_imported_hosts(&fixture.db, &[]).expect_err("host read must fail");
+        let error = save_imported_hosts(&fixture.db, &[], None).expect_err("host read must fail");
         assert!(error.to_string().contains("no such table"));
     }
 
@@ -549,7 +573,8 @@ mod tests {
 
         let mut entry = sample_import_entry("must-not-save");
         entry.group_path = Some("Imported".to_string());
-        let error = save_imported_hosts(&fixture.db, &[entry]).expect_err("group read must fail");
+        let error =
+            save_imported_hosts(&fixture.db, &[entry], None).expect_err("group read must fail");
 
         assert!(error.to_string().contains("no such table"));
         assert!(fixture.db.list_hosts().expect("list hosts").is_empty());
@@ -563,7 +588,8 @@ mod tests {
         let mut h2 = sample_import_entry("web2");
         h2.group_path = Some("Production / Web".to_string());
 
-        let result = save_imported_hosts(&fixture.db, &[h1, h2]).expect("save_imported_hosts");
+        let result =
+            save_imported_hosts(&fixture.db, &[h1, h2], None).expect("save_imported_hosts");
         assert_eq!(result.imported, 2);
         assert_eq!(result.skipped, 0);
         assert!(result.errors.is_empty());
@@ -589,7 +615,7 @@ mod tests {
         let mut h1 = sample_import_entry("stage1");
         h1.group_path = Some("Staging".to_string());
 
-        let result = save_imported_hosts(&fixture.db, &[h1]).expect("save_imported_hosts");
+        let result = save_imported_hosts(&fixture.db, &[h1], None).expect("save_imported_hosts");
         assert_eq!(result.imported, 1);
         assert_eq!(result.skipped, 0);
         assert!(result.errors.is_empty());
@@ -609,7 +635,7 @@ mod tests {
         let fixture = test_db();
         let h1 = sample_import_entry("standalone");
 
-        let result = save_imported_hosts(&fixture.db, &[h1]).expect("save_imported_hosts");
+        let result = save_imported_hosts(&fixture.db, &[h1], None).expect("save_imported_hosts");
         assert_eq!(result.imported, 1);
         assert_eq!(result.skipped, 0);
 
@@ -629,7 +655,8 @@ mod tests {
         let mut h2 = sample_import_entry("h2");
         h2.group_path = Some("".to_string());
 
-        let result = save_imported_hosts(&fixture.db, &[h1, h2]).expect("save_imported_hosts");
+        let result =
+            save_imported_hosts(&fixture.db, &[h1, h2], None).expect("save_imported_hosts");
         assert_eq!(result.imported, 2);
 
         let groups = fixture.db.list_groups().expect("list_groups");
@@ -648,7 +675,7 @@ mod tests {
         h.identity_file = Some("/home/user/.ssh/id_ed25519".to_string());
         h.keep_alive_interval = Some(60);
 
-        let result = save_imported_hosts(&fixture.db, &[h]).expect("save_imported_hosts");
+        let result = save_imported_hosts(&fixture.db, &[h], None).expect("save_imported_hosts");
         assert_eq!(result.imported, 1);
 
         let hosts = fixture.db.list_hosts().expect("list_hosts");
@@ -674,7 +701,7 @@ mod tests {
         h.notes = Some("Development jump machine".to_string());
         h.start_directory = Some("/srv/www".to_string());
 
-        let result = save_imported_hosts(&fixture.db, &[h]).expect("save_imported_hosts");
+        let result = save_imported_hosts(&fixture.db, &[h], None).expect("save_imported_hosts");
         assert_eq!(result.imported, 1);
 
         let hosts = fixture.db.list_hosts().expect("list_hosts");
@@ -704,7 +731,8 @@ mod tests {
         let mut h2 = sample_import_entry("srv2");
         h2.group_path = Some("Fourth".to_string());
 
-        let result = save_imported_hosts(&fixture.db, &[h1, h2]).expect("save_imported_hosts");
+        let result =
+            save_imported_hosts(&fixture.db, &[h1, h2], None).expect("save_imported_hosts");
         assert_eq!(result.imported, 2);
 
         let groups = fixture.db.list_groups().expect("list_groups");

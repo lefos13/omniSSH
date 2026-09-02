@@ -1072,6 +1072,12 @@ function BackupPasswordModal({ mode, open, path, onClose }: {
             </div>
           )}
 
+          {!isExport && (
+            <p className="text-[length:var(--text-xs)] text-text-muted mt-2">
+              Credentials are restored to their original storage location. You can migrate them afterwards from Settings → Security.
+            </p>
+          )}
+
         </form>
     </ModalShell>
   );

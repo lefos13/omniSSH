@@ -631,17 +631,34 @@ fn resolve_auth_method(
                     .to_string(),
             ));
         }
-        let credential =
-            vault::resolve_host_credential(db, local_vault, host_id, CredentialStorage::LocalVault)
-                .map_err(|error| SshError::ConnectionFailed(error.to_string()))?;
-        return match &credential {
-            vault::StoredCredential::Password { password } => Ok(AuthMethod::Password {
-                password: password.clone(),
-            }),
-            _ => Err(SshError::ConnectionFailed(
-                "local vault entry is not a password credential".to_string(),
-            )),
-        };
+        match vault::resolve_host_credential(
+            db,
+            local_vault,
+            host_id,
+            CredentialStorage::LocalVault,
+        ) {
+            Ok(vault::StoredCredential::Password { ref password }) => {
+                return Ok(AuthMethod::Password {
+                    password: password.clone(),
+                });
+            }
+            Ok(_) => {
+                return Err(SshError::ConnectionFailed(
+                    "local vault entry is not a password credential".to_string(),
+                ));
+            }
+            Err(crate::vault::VaultError::NotFound(_)) => {
+                /* Fall back to an empty password string for interactive prompt, matching
+                 * the Keychain behavior for freshly imported hosts with no secret attached.
+                 * We preserve the failure on Locked and Decrypt to avoid silent fallback. */
+                return Ok(AuthMethod::Password {
+                    password: String::new(),
+                });
+            }
+            Err(error) => {
+                return Err(SshError::ConnectionFailed(error.to_string()));
+            }
+        }
     }
 
     match auth_type {
@@ -783,4 +800,57 @@ pub async fn connect_saved_host_no_pty(
     .map_err(|e| SshError::IoError(format!("task panicked: {e}")))??;
 
     state.connect_no_pty(config, attempt_id).await
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::*;
+    use crate::db::HostDb;
+    use crate::vault::LocalVault;
+
+    fn setup_test_db() -> (HostDb, LocalVault) {
+        let temp_dir = tempfile::tempdir().expect("temp_dir");
+        let db_path = temp_dir.path().join("test.db");
+        let db = HostDb::new(&db_path).expect("HostDb");
+        let vault = LocalVault::new();
+        (db, vault)
+    }
+
+    #[test]
+    fn resolve_auth_method_local_vault_missing_cipher_returns_empty_password() {
+        let (db, vault) = setup_test_db();
+        vault.set_session_key([0; 32]).expect("unlock");
+
+        let result = resolve_auth_method(
+            "some-id",
+            "password",
+            None,
+            CredentialStorage::LocalVault,
+            &db,
+            &vault,
+        )
+        .expect("should resolve to empty password");
+
+        match result {
+            AuthMethod::Password { ref password } => assert_eq!(password, ""),
+            _ => panic!("Expected AuthMethod::Password"),
+        }
+    }
+
+    #[test]
+    fn resolve_auth_method_local_vault_locked_returns_error() {
+        let (db, vault) = setup_test_db();
+
+        let err = resolve_auth_method(
+            "some-id",
+            "password",
+            None,
+            CredentialStorage::LocalVault,
+            &db,
+            &vault,
+        )
+        .expect_err("should return error when locked");
+
+        assert!(err.to_string().contains("locked"));
+    }
 }

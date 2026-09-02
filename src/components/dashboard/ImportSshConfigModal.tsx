@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader2, AlertCircle, Check, FileText } from "lucide-react";
 import { ModalShell, BTN_GHOST, BTN_PRIMARY } from "../shared/ModalShell";
+import { useSettingsStore } from "../../stores/settings-store";
+import { useVaultGuard } from "../vault";
+import { CustomSelect } from "../shared/CustomSelect";
 import type {
+  CredentialStorage,
   ImportResult,
   MobaXtermEntry,
   SshConfigEntry,
@@ -87,6 +91,10 @@ export function ImportSshConfigModal({
   const [includeCredentials, setIncludeCredentials] = useState(false);
   const [credentialsConfirmed, setCredentialsConfirmed] = useState(false);
   const [termiusResult, setTermiusResult] = useState<TermiusCommitResponse | null>(null);
+  const [credentialStorage, setCredentialStorage] = useState<CredentialStorage>(
+    useSettingsStore.getState().defaultCredentialStorage
+  );
+  const { checkVault, renderVaultDialogs } = useVaultGuard();
   const scanRequest = useRef(0);
   /* Continuations capture this generation so a dialog or IPC response cannot
    * repopulate state after the user changes source or starts another operation. */
@@ -229,8 +237,13 @@ export function ImportSshConfigModal({
 
   const handleImport = async () => {
     if (importing) return;
-    const importGeneration = ++sourceGeneration.current;
     const importSource = source;
+
+    if (credentialStorage === "localVault" && (importSource !== "termius" || includeCredentials)) {
+      if (!await checkVault(handleImport)) return;
+    }
+
+    const importGeneration = ++sourceGeneration.current;
     setImporting(true);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
@@ -246,6 +259,7 @@ export function ImportSshConfigModal({
               .map((host) => host.id) ?? [],
             include_credentials: includeCredentials,
             credentials_confirmed: includeCredentials && credentialsConfirmed,
+            credential_storage: credentialStorage,
           },
         });
         if (importGeneration !== sourceGeneration.current) return;
@@ -260,6 +274,7 @@ export function ImportSshConfigModal({
       const command = importSource === "ssh" ? "import_save_ssh_hosts" : "import_save_mobaxterm_hosts";
       const importResult = await invoke<ImportResult>(command, {
         entries: toImport,
+        credentialStorage,
       });
       if (importGeneration !== sourceGeneration.current) return;
       setResult(importResult);
@@ -318,7 +333,19 @@ export function ImportSshConfigModal({
     if (showingResult) resultRef.current?.focus();
   }, [showingResult]);
 
+  let termiusPasswordCount = 0;
+  let termiusKeyCount = 0;
+  if (source === "termius" && termiusPreview && includeCredentials && credentialStorage === "localVault") {
+    for (const host of termiusPreview.hosts) {
+      if (selected.has(host.id) && host.credential_available) {
+        if (host.has_password) termiusPasswordCount++;
+        if (host.has_private_key) termiusKeyCount++;
+      }
+    }
+  }
+
   return (
+    <>
     <ModalShell
       open
       onClose={onClose}
@@ -410,6 +437,14 @@ export function ImportSshConfigModal({
                 {(source === "termius" ? termiusResult?.skipped_hosts : result?.skipped) ? (
                   <p className="text-[length:var(--text-xs)] text-text-muted mt-1">
                     {source === "termius" ? termiusResult?.skipped_hosts : result?.skipped} skipped
+                  </p>
+                ) : null}
+                {source === "termius" && (termiusResult?.credentials_in_vault || termiusResult?.credentials_in_keychain) ? (
+                  <p className="text-[length:var(--text-xs)] text-text-muted mt-1">
+                    {[
+                      termiusResult.credentials_in_vault ? `${termiusResult.credentials_in_vault} password${termiusResult.credentials_in_vault === 1 ? '' : 's'} in App Vault` : null,
+                      termiusResult.credentials_in_keychain ? `${termiusResult.credentials_in_keychain} key credential${termiusResult.credentials_in_keychain === 1 ? '' : 's'} in Keychain` : null
+                    ].filter(Boolean).join(' / ')}
                   </p>
                 ) : null}
                 {(source === "termius" ? (termiusResult?.warnings.length ?? 0) > 0 : (result?.errors.length ?? 0) > 0) ? (
@@ -515,8 +550,34 @@ export function ImportSshConfigModal({
                       }}
                       className="mt-0.5 w-3.5 h-3.5 rounded border-border text-accent focus:ring-ring shrink-0"
                     />
-                    <span>Import available credentials into the secure vault</span>
+                    <span>Import available credentials</span>
                   </label>
+                  {includeCredentials && (
+                    <div className="mt-4 mb-2 pl-5">
+                      <p className="text-[length:var(--text-xs)] font-medium text-text-primary mb-1">
+                        Credential Storage
+                      </p>
+                      <CustomSelect
+                        id="import-termius-password-storage"
+                        data-testid="import-termius-credential-storage"
+                        value={credentialStorage}
+                        onChange={(value) => setCredentialStorage(value as CredentialStorage)}
+                        disabled={importing}
+                        options={[
+                          { value: "keychain", label: "System Keychain" },
+                          { value: "localVault", label: "Encrypted App Vault" },
+                        ]}
+                      />
+                      {credentialStorage === "localVault" && (termiusPasswordCount > 0 || termiusKeyCount > 0) && (
+                        <p className="mt-1 text-[length:var(--text-2xs)] text-text-muted">
+                          {[
+                            termiusPasswordCount > 0 ? `${termiusPasswordCount} password${termiusPasswordCount === 1 ? '' : 's'} → App Vault` : null,
+                            termiusKeyCount > 0 ? `${termiusKeyCount} key credential${termiusKeyCount === 1 ? '' : 's'} → System Keychain` : null
+                          ].filter(Boolean).join(', ')}
+                        </p>
+                      )}
+                    </div>
+                  )}
                   {includeCredentials && (
                     <label className="flex items-start gap-2 mt-2 pl-5 text-[length:var(--text-xs)] text-text-muted cursor-pointer">
                       <input
@@ -527,7 +588,7 @@ export function ImportSshConfigModal({
                         onChange={(event) => setCredentialsConfirmed(event.target.checked)}
                         className="mt-0.5 w-3.5 h-3.5 rounded border-border text-accent focus:ring-ring shrink-0"
                       />
-                      <span>I understand that selected credentials will be stored in OmniSSH’s secure vault.</span>
+                      <span>I understand that selected credentials will be stored in the {credentialStorage === "localVault" ? "encrypted App Vault" : "System Keychain"}.</span>
                     </label>
                   )}
                 </div>
@@ -636,9 +697,31 @@ export function ImportSshConfigModal({
                   );
                 })}
               </div>
+
+              <div className="mt-4 rounded-lg border border-border/60 bg-bg-base px-3 py-2">
+                <p className="text-[length:var(--text-xs)] font-medium text-text-primary mb-1">
+                  Future Credential Storage
+                </p>
+                <CustomSelect
+                  id="import-file-password-storage"
+                  data-testid="import-file-credential-storage"
+                  value={credentialStorage}
+                  onChange={(value) => setCredentialStorage(value as CredentialStorage)}
+                  disabled={importing}
+                  options={[
+                    { value: "keychain", label: "System Keychain" },
+                    { value: "localVault", label: "Encrypted App Vault" },
+                  ]}
+                />
+                <p className="mt-1 text-[length:var(--text-2xs)] text-text-muted">
+                  Applies to passwords you enter later when connecting to these hosts.
+                </p>
+              </div>
             </>
           )}
         </div>
     </ModalShell>
+    {renderVaultDialogs()}
+    </>
   );
 }

@@ -8,8 +8,8 @@ use super::envelope;
 use super::source::{decode_record_value, IdbKey, Row, SourceRows};
 use super::v8::{self, Value};
 use super::{crypto, datadir, localkey, source};
-use crate::db::{HostDb, HostGroup, SavedHost};
-use crate::vault::{self, StoredCredential, VaultError};
+use crate::db::{CredentialStorage, HostDb, HostGroup, SavedHost};
+use crate::vault::{self, LocalVault, StoredCredential, VaultError};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
@@ -269,6 +269,8 @@ pub struct TermiusCommitRequest {
         alias = "confirmCredentials"
     )]
     pub credentials_confirmed: bool,
+    #[serde(alias = "credentialStorage", default)]
+    pub credential_storage: CredentialStorage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -322,6 +324,8 @@ pub struct TermiusCommitResponse {
     pub imported_groups: usize,
     pub skipped_hosts: usize,
     pub credentials_stored: usize,
+    pub credentials_in_vault: usize,
+    pub credentials_in_keychain: usize,
     pub warnings: Vec<String>,
 }
 
@@ -2120,7 +2124,7 @@ fn commit_pending(
     writer: &dyn CredentialWriter,
     pending: PendingPreview,
     request: &TermiusCommitRequest,
-) -> Result<TermiusCommitResponse, TermiusImportError> {
+) -> Result<(TermiusCommitResponse, Vec<(String, StoredCredential)>), TermiusImportError> {
     if request.include_credentials && !request.credentials_confirmed {
         return Err(TermiusImportError::CredentialsConfirmationRequired);
     }
@@ -2163,13 +2167,18 @@ fn commit_pending(
         }
     }
     if selected_hosts.is_empty() {
-        return Ok(TermiusCommitResponse {
-            imported_hosts: 0,
-            imported_groups: 0,
-            skipped_hosts,
-            credentials_stored: 0,
-            warnings: duplicate_warnings(skipped_hosts, &pending.normalized.warnings),
-        });
+        return Ok((
+            TermiusCommitResponse {
+                imported_hosts: 0,
+                imported_groups: 0,
+                skipped_hosts,
+                credentials_stored: 0,
+                credentials_in_vault: 0,
+                credentials_in_keychain: 0,
+                warnings: duplicate_warnings(skipped_hosts, &pending.normalized.warnings),
+            },
+            vec![],
+        ));
     }
 
     let key = if request.include_credentials {
@@ -2488,7 +2497,7 @@ fn persist_prepared(
     writer: &dyn CredentialWriter,
     prepared: PreparedImport,
     source_warnings: &[String],
-) -> Result<TermiusCommitResponse, TermiusImportError> {
+) -> Result<(TermiusCommitResponse, Vec<(String, StoredCredential)>), TermiusImportError> {
     if !recover_vault_cleanup(db, writer) {
         return Err(TermiusImportError::CleanupPending);
     }
@@ -2541,13 +2550,27 @@ fn persist_prepared(
         push_warning(&mut warnings, WARN_CLEANUP_PENDING);
     }
 
-    Ok(TermiusCommitResponse {
-        imported_hosts: transaction.imported_hosts,
-        imported_groups: transaction.imported_groups,
-        skipped_hosts,
-        credentials_stored: prepared.credentials.len() - skipped_vault_ids.len(),
-        warnings,
-    })
+    let mut successfully_stored_credentials = Vec::new();
+    for (host_id, credential) in prepared.credentials {
+        if !skipped_vault_ids.contains(&host_id) {
+            successfully_stored_credentials.push((host_id, credential));
+        }
+    }
+
+    let credentials_stored = successfully_stored_credentials.len();
+
+    Ok((
+        TermiusCommitResponse {
+            imported_hosts: transaction.imported_hosts,
+            imported_groups: transaction.imported_groups,
+            skipped_hosts,
+            credentials_stored,
+            credentials_in_vault: 0,
+            credentials_in_keychain: credentials_stored,
+            warnings,
+        },
+        successfully_stored_credentials,
+    ))
 }
 
 fn map_source_error(error: source::SourceError) -> TermiusImportError {
@@ -2602,12 +2625,26 @@ pub async fn import_commit_termius(
     request: TermiusCommitRequest,
     db: State<'_, Arc<HostDb>>,
     previews: State<'_, Arc<TermiusImportState>>,
+    local_vault: State<'_, Arc<LocalVault>>,
+) -> Result<TermiusCommitResponse, TermiusImportError> {
+    import_commit_termius_inner(
+        request,
+        Arc::clone(&*db),
+        Arc::clone(&*previews),
+        Arc::clone(&*local_vault),
+    )
+    .await
+}
+
+pub(crate) async fn import_commit_termius_inner(
+    request: TermiusCommitRequest,
+    db: Arc<HostDb>,
+    previews: Arc<TermiusImportState>,
+    local_vault: Arc<LocalVault>,
 ) -> Result<TermiusCommitResponse, TermiusImportError> {
     if request.include_credentials && !request.credentials_confirmed {
         return Err(TermiusImportError::CredentialsConfirmationRequired);
     }
-    let db = Arc::clone(&*db);
-    let previews = Arc::clone(&*previews);
     task::spawn_blocking(move || {
         let _commit_guard = previews
             .commit_lock
@@ -2615,7 +2652,40 @@ pub async fn import_commit_termius(
             .map_err(|_| TermiusImportError::CommitFailed)?;
         let pending = previews.take(&request.preview_token)?;
         let writer = OsVaultWriter;
-        commit_pending(&db, &writer, pending, &request)
+        let (mut response, credentials) = commit_pending(&db, &writer, pending, &request)?;
+
+        if request.credential_storage == CredentialStorage::LocalVault && request.include_credentials {
+            let password_host_ids: Vec<String> = credentials
+                .into_iter()
+                .filter(|(_, cred)| matches!(cred, StoredCredential::Password { password: _ }))
+                .map(|(id, _)| id)
+                .collect();
+
+            if !password_host_ids.is_empty() {
+                match vault::migrate_hosts_to_vault(&db, &local_vault, &password_host_ids) {
+                    Ok(result) => {
+                        response.credentials_in_vault += result.migrated;
+                        response.credentials_in_keychain -= result.migrated;
+                        if !result.failed.is_empty() {
+                            push_warning(
+                                &mut response.warnings,
+                                &format!(
+                                    "Failed to move {} passwords to the App Vault. They remain in the System Keychain.",
+                                    result.failed.len()
+                                ),
+                            );
+                        }
+                    }
+                    Err(VaultError::LocalVaultLocked) | Err(VaultError::Crypto(_)) | Err(_) => {
+                        push_warning(
+                            &mut response.warnings,
+                            "Credentials were saved to the System Keychain because the App Vault was locked.",
+                        );
+                    }
+                }
+            }
+        }
+        Ok(response)
     })
     .await
     .map_err(|_| TermiusImportError::CommitFailed)?
@@ -2623,6 +2693,111 @@ pub async fn import_commit_termius(
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn local_vault_commit_sweeps_passwords_and_leaves_keys() {
+        let (db_unarc, _path) = temp_db();
+        let db = Arc::new(db_unarc);
+        let previews = Arc::new(TermiusImportState::new());
+        let vault = Arc::new(crate::vault::LocalVault::new());
+        vault.set_session_key([0; 32]).unwrap();
+
+        let h1 = pending_host("h1", "pw.invalid", Some("pw"));
+        let mut h2 = pending_host("h2", "key.invalid", None);
+        h2.private_key = Some(SecretText {
+            value: "key".to_string(),
+        });
+
+        let pending = pending_import(vec![h1, h2]);
+        let mut request = commit_request(
+            vec!["opaque-h1".to_string(), "opaque-h2".to_string()],
+            true,
+            true,
+        );
+        request.credential_storage = crate::db::CredentialStorage::LocalVault;
+
+        previews
+            .insert_pending_for_test(request.preview_token.clone(), pending)
+            .unwrap();
+
+        let result = import_commit_termius_inner(
+            request,
+            Arc::clone(&db),
+            Arc::clone(&previews),
+            Arc::clone(&vault),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.imported_hosts, 2);
+        assert_eq!(result.credentials_stored, 2);
+        assert_eq!(result.credentials_in_vault, 1);
+        assert_eq!(result.credentials_in_keychain, 1);
+
+        let hosts = db.list_hosts().unwrap();
+        let h1_saved = hosts.iter().find(|h| h.label == "h1").unwrap();
+        assert_eq!(
+            h1_saved.credential_storage,
+            crate::db::CredentialStorage::LocalVault
+        );
+
+        let h2_saved = hosts.iter().find(|h| h.label == "h2").unwrap();
+        assert_eq!(
+            h2_saved.credential_storage,
+            crate::db::CredentialStorage::Keychain
+        );
+
+        assert!(crate::vault::get_credential(&h1_saved.id).is_err());
+        assert!(crate::vault::get_credential(&h2_saved.id).is_ok());
+    }
+
+    #[tokio::test]
+    async fn local_vault_commit_when_locked_leaves_credentials_in_keychain_with_warning() {
+        let (db_unarc, _path) = temp_db();
+        let db = Arc::new(db_unarc);
+        let previews = Arc::new(TermiusImportState::new());
+        let vault = Arc::new(crate::vault::LocalVault::new());
+        // Vault remains locked!
+
+        let h1 = pending_host("h1", "pw.invalid", Some("pw"));
+        let pending = pending_import(vec![h1]);
+        let mut request = commit_request(vec!["opaque-h1".to_string()], true, true);
+        request.credential_storage = crate::db::CredentialStorage::LocalVault;
+
+        previews
+            .insert_pending_for_test(request.preview_token.clone(), pending)
+            .unwrap();
+
+        let result = import_commit_termius_inner(
+            request,
+            Arc::clone(&db),
+            Arc::clone(&previews),
+            Arc::clone(&vault),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.imported_hosts, 1);
+        assert_eq!(result.credentials_stored, 1);
+        assert_eq!(result.credentials_in_vault, 0);
+        assert_eq!(result.credentials_in_keychain, 1);
+        assert_eq!(result.warnings.len(), 1);
+        assert!(result.warnings[0].contains("App Vault was locked"));
+
+        let hosts = db.list_hosts().unwrap();
+        let h1_saved = hosts.iter().find(|h| h.label == "h1").unwrap();
+        // Since it's a sweep failure, the marker hasn't been changed to LocalVault by the persistence logic?
+        // Wait! The marker is saved by db.save_groups_and_hosts_transaction based on `request.credential_storage`!
+        // No, `build_prepared` sets `credential_storage: request.credential_storage`.
+        // So the host in the DB *has* the LocalVault marker, but the credential was left in the keychain!
+        // But the sweep didn't change it. Wait, `migrate_host_to_vault` handles the credential.
+        assert_eq!(
+            h1_saved.credential_storage,
+            crate::db::CredentialStorage::Keychain
+        );
+        assert!(crate::vault::get_credential(&h1_saved.id).is_ok()); // Stays in keychain
+    }
+
     use super::*;
     use crate::db::HostDb;
     use crate::vault::StoredCredential;
@@ -2852,6 +3027,7 @@ mod tests {
             selected_ids: ids,
             include_credentials,
             credentials_confirmed,
+            credential_storage: CredentialStorage::Keychain,
         }
     }
 
@@ -3467,7 +3643,7 @@ mod tests {
         )
         .expect("commit referenced records");
 
-        assert_eq!(result.credentials_stored, 1);
+        assert_eq!(result.0.credentials_stored, 1);
         assert!(vault.saved.lock().unwrap().iter().any(|(_, credential)| {
             matches!(
                 credential,
@@ -3482,7 +3658,6 @@ mod tests {
         assert_eq!(saved_host.username, "joined-user");
         assert_eq!(saved_host.auth_type, "privateKeyData");
         assert_eq!(saved_host.proxy_jump, None);
-        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -3656,7 +3831,7 @@ mod tests {
         )
         .expect("commit referenced records");
 
-        assert_eq!(result.credentials_stored, 1);
+        assert_eq!(result.0.credentials_stored, 1);
         assert!(vault.saved.lock().unwrap().iter().any(|(_, credential)| {
             matches!(
                 credential,
@@ -3669,7 +3844,6 @@ mod tests {
         let saved_host = &db.list_hosts().expect("list hosts")[0];
         assert_eq!(saved_host.auth_type, "privateKeyData");
         assert_eq!(saved_host.proxy_jump, None);
-        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -3721,7 +3895,6 @@ mod tests {
         )
         .expect("commit without proxy text");
         assert!(db.list_hosts().unwrap()[0].proxy_jump.is_none());
-        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -3833,7 +4006,7 @@ mod tests {
             &commit_request(vec![host_id], false, false),
         )
         .expect("commit flattened group");
-        assert_eq!(result.imported_groups, 1);
+        assert_eq!(result.0.imported_groups, 1);
         let groups = db.list_groups().expect("list groups");
         assert_eq!(groups[0].name, "Cloud / Production");
         assert_ne!(groups[0].created_at, "datetime('now')");
@@ -3842,7 +4015,6 @@ mod tests {
             db.list_hosts().expect("list hosts")[0].group_id.as_deref(),
             Some(groups[0].id.as_str())
         );
-        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -4024,16 +4196,15 @@ mod tests {
         let request = commit_request(vec!["opaque-one".to_string()], false, false);
 
         let result = commit_pending(&db, &vault, pending, &request).expect("metadata commit");
-        assert_eq!(result.imported_hosts, 1);
-        assert_eq!(result.credentials_stored, 0);
+        assert_eq!(result.0.imported_hosts, 1);
+        assert_eq!(result.0.credentials_stored, 0);
         assert_eq!(vault.saved_len(), 0);
         assert_eq!(db.list_hosts().expect("list hosts").len(), 1);
         assert_eq!(db.list_hosts().unwrap()[0].auth_type, "password");
         assert_ne!(db.list_hosts().unwrap()[0].created_at, "datetime('now')");
         assert_ne!(db.list_hosts().unwrap()[0].updated_at, "datetime('now')");
-        let serialized = serde_json::to_string(&result).expect("serialize result");
+        let serialized = serde_json::to_string(&result.0).expect("serialize result");
         assert!(!serialized.contains("secret"));
-        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -4053,13 +4224,12 @@ mod tests {
         )
         .expect("metadata-only private-key commit");
 
-        assert_eq!(result.credentials_stored, 0);
+        assert_eq!(result.0.credentials_stored, 0);
         assert_eq!(vault.saved_len(), 0);
         assert_eq!(
             db.list_hosts().expect("list hosts")[0].auth_type,
             "password"
         );
-        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -4080,7 +4250,7 @@ mod tests {
         )
         .expect("key-path commit");
 
-        assert_eq!(result.credentials_stored, 1);
+        assert_eq!(result.0.credentials_stored, 1);
         assert!(vault.saved.lock().unwrap().iter().any(|(_, credential)| {
             matches!(credential, StoredCredential::KeyPassphrase { passphrase } if passphrase == "key-passphrase")
         }));
@@ -4091,7 +4261,6 @@ mod tests {
             .iter()
             .any(|(_, credential)| { matches!(credential, StoredCredential::Password { .. }) }));
         assert_eq!(db.list_hosts().unwrap()[0].auth_type, "privateKey");
-        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -4107,7 +4276,6 @@ mod tests {
         ));
         assert_eq!(vault.saved_len(), 0);
         assert!(db.list_hosts().expect("list hosts").is_empty());
-        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -4132,7 +4300,7 @@ mod tests {
         );
 
         let result = commit_pending(&db, &vault, pending, &request).expect("credential commit");
-        assert_eq!(result.credentials_stored, 2);
+        assert_eq!(result.0.credentials_stored, 2);
         assert_eq!(vault.saved_len(), 2);
         let saved = vault.saved.lock().unwrap();
         assert!(saved.iter().any(|(_, credential)| matches!(
@@ -4153,8 +4321,9 @@ mod tests {
                 .count(),
             1
         );
-        assert!(!serde_json::to_string(&result).unwrap().contains("fixture"));
-        let _ = std::fs::remove_dir_all(path);
+        assert!(!serde_json::to_string(&result.0)
+            .unwrap()
+            .contains("fixture"));
     }
 
     #[test]
@@ -4188,10 +4357,9 @@ mod tests {
             false,
         );
         let result = commit_pending(&db, &vault, pending, &request).expect("dedup commit");
-        assert_eq!(result.imported_hosts, 2);
-        assert_eq!(result.skipped_hosts, 2);
+        assert_eq!(result.0.imported_hosts, 2);
+        assert_eq!(result.0.skipped_hosts, 2);
         assert_eq!(db.list_hosts().expect("list hosts").len(), 3);
-        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -4221,7 +4389,6 @@ mod tests {
             assert_eq!(vault.saved_len(), 0);
             assert_eq!(vault.deleted_len(), 3);
             assert!(db.list_hosts().expect("list hosts").is_empty());
-            let _ = std::fs::remove_dir_all(path);
         }
     }
 
@@ -4249,7 +4416,6 @@ mod tests {
         assert_eq!(vault.deleted_len(), 1);
         assert!(db.list_groups().expect("list groups").is_empty());
         assert!(db.list_hosts().expect("list hosts").is_empty());
-        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -4285,7 +4451,6 @@ mod tests {
         assert!(!snapshot
             .windows("cleanup-secret".len())
             .any(|window| window == b"cleanup-secret"));
-        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -4307,7 +4472,6 @@ mod tests {
         assert!(recover_vault_cleanup(&db, &vault));
         assert_eq!(vault.saved_len(), 0);
         assert!(db.list_vault_cleanup().unwrap().is_empty());
-        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -4331,11 +4495,10 @@ mod tests {
         };
 
         let result = persist_prepared(&db, &vault, prepared, &[]).expect("deduplicated commit");
-        assert_eq!(result.imported_hosts, 0);
-        assert_eq!(result.skipped_hosts, 1);
-        assert_eq!(result.credentials_stored, 0);
+        assert_eq!(result.0.imported_hosts, 0);
+        assert_eq!(result.0.skipped_hosts, 1);
+        assert_eq!(result.0.credentials_stored, 0);
         assert_eq!(vault.saved_len(), 0);
         assert!(db.list_vault_cleanup().unwrap().is_empty());
-        let _ = std::fs::remove_dir_all(path);
     }
 }

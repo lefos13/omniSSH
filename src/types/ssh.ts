@@ -1,4 +1,5 @@
 export type SessionId = string;
+import type { CredentialStorage } from "./vault";
 
 export type AuthMethod =
   | { type: "password"; password: string }
@@ -186,6 +187,7 @@ export interface TermiusCommitRequest {
   selected_ids: string[];
   include_credentials: boolean;
   credentials_confirmed: boolean;
+  credential_storage: CredentialStorage;
 }
 
 export interface TermiusHostPreview {
@@ -234,6 +236,8 @@ export interface TermiusCommitResponse {
   imported_groups: number;
   skipped_hosts: number;
   credentials_stored: number;
+  credentials_in_vault: number;
+  credentials_in_keychain: number;
   warnings: string[];
 }
 

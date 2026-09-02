@@ -43,7 +43,7 @@ impl LocalVault {
         })
     }
 
-    fn set_session_key(&self, key: [u8; KEY_LEN]) -> Result<(), VaultError> {
+    pub(crate) fn set_session_key(&self, key: [u8; KEY_LEN]) -> Result<(), VaultError> {
         let mut session_key = self.session_key.lock().map_err(|error| {
             VaultError::Database(format!("local vault state lock poisoned: {error}"))
         })?;
@@ -393,7 +393,7 @@ pub(crate) fn resolve_host_credential(
  * live here without the operation and session locks: callers hold the
  * operation guard and pass the derived session key, keeping single-host and
  * bulk sweeps on one code path with identical checks and rollback ordering. */
-fn migrate_host_to_vault(
+pub(crate) fn migrate_host_to_vault(
     db: &HostDb,
     key: &[u8; KEY_LEN],
     host_id: &str,
@@ -448,7 +448,11 @@ fn migrate_host_password(db: &HostDb, state: &LocalVault, host_id: &str) -> Resu
     migrate_host_to_vault(db, &key, host_id)
 }
 
-fn move_host_to_keychain(db: &HostDb, state: &LocalVault, host_id: &str) -> Result<(), VaultError> {
+pub(crate) fn move_host_to_keychain(
+    db: &HostDb,
+    state: &LocalVault,
+    host_id: &str,
+) -> Result<(), VaultError> {
     let _operation = state.begin_operation()?;
     let host = db
         .get_host(host_id)?
@@ -547,6 +551,38 @@ fn migration_preflight(db: &HostDb) -> Result<MigrationPreflightSummary, VaultEr
  * operation lock. The session key is captured once up front, so a locked
  * vault fails before any host is touched, and per-host failures are recorded
  * instead of aborting the remaining hosts. */
+pub(crate) fn migrate_hosts_to_vault(
+    db: &HostDb,
+    state: &LocalVault,
+    host_ids: &[String],
+) -> Result<BulkMigrationResult, VaultError> {
+    let _operation = state.begin_operation()?;
+    let key = state.session_key()?;
+    let mut result = BulkMigrationResult {
+        migrated: 0,
+        skipped: 0,
+        failed: Vec::new(),
+    };
+    for host_id in host_ids {
+        let host_label = db
+            .get_host(host_id)
+            .ok()
+            .flatten()
+            .map(|host| host.label)
+            .unwrap_or_else(|| host_id.clone());
+        match migrate_host_to_vault(db, &key, host_id) {
+            Ok(()) => result.migrated += 1,
+            Err(VaultError::NotFound(_)) => result.skipped += 1,
+            Err(error) => result.failed.push(BulkMigrationFailure {
+                host_id: host_id.clone(),
+                host_label,
+                error: error.to_string(),
+            }),
+        }
+    }
+    Ok(result)
+}
+
 fn migrate_all_from_keychain(
     db: &HostDb,
     state: &LocalVault,
@@ -705,6 +741,66 @@ pub async fn local_vault_migrate_all_from_keychain(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn migrate_hosts_to_vault_happy_path() {
+        let db_path = tempfile::tempdir().unwrap().path().join("test.db");
+        let db = HostDb::new(&db_path).unwrap();
+        let vault = LocalVault::new();
+        vault.set_session_key([0; 32]).unwrap();
+
+        let host = password_host("h1");
+        db.save_groups_and_hosts_transaction(&[], std::slice::from_ref(&host))
+            .unwrap();
+        crate::vault::save_credential(
+            "h1",
+            &crate::vault::StoredCredential::Password {
+                password: "pw".to_string(),
+            },
+        )
+        .unwrap();
+
+        let result = migrate_hosts_to_vault(&db, &vault, &["h1".to_string()]).unwrap();
+        assert_eq!(result.migrated, 1);
+        assert_eq!(result.failed.len(), 0);
+
+        let saved = db.get_host("h1").unwrap().unwrap();
+        assert_eq!(saved.credential_storage, CredentialStorage::LocalVault);
+        assert!(crate::vault::get_credential("h1").is_err()); // Removed from keychain
+    }
+
+    #[test]
+    fn migrate_hosts_to_vault_partial_failure() {
+        let db_path = tempfile::tempdir().unwrap().path().join("test.db");
+        let db = HostDb::new(&db_path).unwrap();
+        let vault = LocalVault::new();
+        vault.set_session_key([0; 32]).unwrap();
+
+        let h1 = password_host("h1");
+        let mut h2 = password_host("h2");
+        h2.auth_type = "privateKey".to_string();
+        h2.host = "192.0.2.2".to_string(); // Will fail
+        db.save_groups_and_hosts_transaction(&[], &[h1, h2])
+            .unwrap();
+        crate::vault::save_credential(
+            "h1",
+            &crate::vault::StoredCredential::Password {
+                password: "pw".to_string(),
+            },
+        )
+        .unwrap();
+
+        let result =
+            migrate_hosts_to_vault(&db, &vault, &["h1".to_string(), "h2".to_string()]).unwrap();
+        assert_eq!(result.migrated, 1);
+        assert_eq!(result.failed.len(), 1);
+
+        let saved1 = db.get_host("h1").unwrap().unwrap();
+        assert_eq!(saved1.credential_storage, CredentialStorage::LocalVault);
+
+        let saved2 = db.get_host("h2").unwrap().unwrap();
+        assert_eq!(saved2.credential_storage, CredentialStorage::Keychain); // Not migrated
+    }
+
     use super::*;
     use crate::db::SavedHost;
 

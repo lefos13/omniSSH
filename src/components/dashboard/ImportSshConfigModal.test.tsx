@@ -2,6 +2,8 @@ import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { ImportSshConfigModal } from "./ImportSshConfigModal";
+import { useSettingsStore } from "../../stores/settings-store";
+import { useLocalVaultStore } from "../../stores/local-vault-store";
 
 const { invoke, dialogOpen } = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -18,6 +20,31 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 /* This test locks the MobaXterm IPC names, dialog filter, and shared payload
  * keys so frontend changes cannot silently drift from Rust registration. */
 describe("ImportSshConfigModal — MobaXterm source", () => {
+
+  it("defaults selector from useSettingsStore and sends credentialStorage: 'localVault'", async () => {
+    useSettingsStore.setState({ defaultCredentialStorage: "localVault" });
+    useLocalVaultStore.setState({
+      loadStatus: vi.fn().mockResolvedValue({ configured: true, unlocked: true }),
+      unlockVault: vi.fn().mockResolvedValue(undefined)
+    });
+    dialogOpen.mockResolvedValue("/tmp/MobaXterm.ini");
+    render(<ImportSshConfigModal initialSource="mobaxterm" onClose={() => {}} onImported={() => {}} />);
+    
+    fireEvent.click(screen.getByRole("button", { name: "Browse for MobaXterm file" }));
+    await screen.findByText(/web.example/); // wait for results
+    
+    expect(screen.getByTestId("import-file-credential-storage")).toHaveTextContent("Encrypted App Vault");
+    
+    fireEvent.click(screen.getByTestId("import-mobaxterm-submit"));
+    
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith(
+      "import_save_mobaxterm_hosts",
+      expect.objectContaining({
+        credentialStorage: "localVault",
+      }),
+    ));
+  });
+
   const entry = {
     host_alias: "Production web",
     hostname: "web.example",
@@ -36,6 +63,7 @@ describe("ImportSshConfigModal — MobaXterm source", () => {
   };
 
   beforeEach(() => {
+    useSettingsStore.setState({ defaultCredentialStorage: "keychain" });
     invoke.mockReset();
     dialogOpen.mockReset();
     invoke.mockImplementation(async (command: string) => {
@@ -79,6 +107,7 @@ describe("ImportSshConfigModal — MobaXterm source", () => {
           notes: "Imported note",
           start_directory: "/srv/www",
         }],
+        credentialStorage: "keychain",
       },
     ));
   });
@@ -115,7 +144,7 @@ describe("ImportSshConfigModal — MobaXterm source", () => {
 
     render(<ImportSshConfigModal initialSource="mobaxterm" onClose={() => {}} onImported={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: "Browse for MobaXterm file" }));
-    await screen.findByText(/api\.example/);
+    await screen.findByText(/web.example/);
 
     const checkboxes = screen.getAllByRole("checkbox");
     expect(checkboxes).toHaveLength(2);
@@ -141,6 +170,81 @@ describe("ImportSshConfigModal — MobaXterm source", () => {
  * so credentials cannot accidentally cross the React boundary during a UI
  * refactor. */
 describe("ImportSshConfigModal — Termius source", () => {
+
+  it("shows App Vault split counts and correct consent copy", async () => {
+    const mixedPreview = {
+      preview_token: "mixed-token",
+      metadata_only: false,
+      counts: { credential_available: 2 },
+      warnings: [],
+      hosts: [
+        { id: "h1", credential_available: true, has_password: true, has_private_key: false, warnings: [] },
+        { id: "h2", credential_available: true, has_password: false, has_private_key: true, warnings: [] },
+        { id: "h3", credential_available: true, has_password: true, has_private_key: true, warnings: [] }
+      ]
+    };
+    invoke.mockImplementation(async (c: string) => c === "import_preview_termius" ? mixedPreview : undefined);
+    
+    useSettingsStore.setState({ defaultCredentialStorage: "keychain" });
+    render(<ImportSshConfigModal initialSource="termius" onClose={() => {}} onImported={() => {}} />);
+    
+    await screen.findByTestId("import-termius-host-h1");
+    fireEvent.click(screen.getByTestId("import-termius-credentials"));
+    
+    // Default keychain wording
+    expect(screen.getByText("I understand that selected credentials will be stored in the System Keychain.")).toBeInTheDocument();
+    
+    // Switch to localVault
+    fireEvent.click(screen.getByTestId("import-termius-credential-storage"));
+    fireEvent.click(screen.getByRole("option", { name: "Encrypted App Vault" }));
+    
+    expect(screen.getByText("I understand that selected credentials will be stored in the encrypted App Vault.")).toBeInTheDocument();
+    expect(screen.getByText(/2 passwords → App Vault/)).toBeInTheDocument();
+    expect(screen.getByText(/2 key credentials → System Keychain/)).toBeInTheDocument();
+  });
+
+  it("halts commit to open UnlockVaultDialog when locked, then proceeds on success", async () => {
+    useSettingsStore.setState({ defaultCredentialStorage: "localVault" });
+    const mockLoadStatus = vi.fn().mockResolvedValue({ configured: true, unlocked: false });
+    useLocalVaultStore.setState({
+      loadStatus: mockLoadStatus,
+      unlockVault: vi.fn().mockResolvedValue(undefined)
+    });
+    
+    render(<ImportSshConfigModal initialSource="termius" onClose={() => {}} onImported={() => {}} />);
+    await screen.findByTestId("import-termius-host-opaque-host-1");
+    
+    fireEvent.click(screen.getByTestId("import-termius-credentials"));
+    fireEvent.click(screen.getByTestId("import-termius-credentials-confirm"));
+    fireEvent.click(screen.getByTestId("import-termius-submit"));
+    
+    // Dialog should appear
+    expect(await screen.findByTestId("local-vault-unlock-dialog")).toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith("import_commit_termius", expect.anything());
+    
+    // Now simulate successful unlock
+    mockLoadStatus.mockResolvedValue({ configured: true, unlocked: true });
+    fireEvent.change(screen.getByPlaceholderText("Enter master password"), { target: { value: "pass" } });
+    
+    const origInvoke = invoke.getMockImplementation();
+    invoke.mockImplementation(async (cmd: string, args: unknown) => {
+      if (cmd === "local_vault_verify") return true;
+      if (origInvoke) return origInvoke(cmd, args);
+      return undefined;
+    });
+    
+    fireEvent.click(screen.getByRole("button", { name: "Unlock Vault" }));
+    
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith(
+      "import_commit_termius",
+      expect.objectContaining({
+        request: expect.objectContaining({
+          credential_storage: "localVault"
+        })
+      })
+    ));
+  });
+
   const termiusPreview = {
     preview_token: "opaque-preview-token",
     metadata_only: true,
@@ -188,6 +292,7 @@ describe("ImportSshConfigModal — Termius source", () => {
   };
 
   beforeEach(() => {
+    useSettingsStore.setState({ defaultCredentialStorage: "keychain" });
     invoke.mockReset();
     dialogOpen.mockReset();
     invoke.mockImplementation(async (command: string) => {
@@ -239,6 +344,7 @@ describe("ImportSshConfigModal — Termius source", () => {
           selected_ids: ["opaque-host-1"],
           include_credentials: true,
           credentials_confirmed: true,
+          credential_storage: "keychain",
         },
       },
     ));
@@ -322,6 +428,7 @@ describe("ImportSshConfigModal — Termius source", () => {
           selected_ids: ["opaque-host-2"],
           include_credentials: false,
           credentials_confirmed: false,
+          credential_storage: "keychain",
         },
       },
     ));

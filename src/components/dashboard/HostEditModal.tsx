@@ -9,8 +9,7 @@ import { useTabStore } from "../../stores/tab-store";
 import type { CredentialStorage, SavedHost, HostConfig, StoredCredential } from "../../types";
 import { HOST_COLORS } from "./HostCard";
 import { CustomSelect } from "../shared/CustomSelect";
-import { CreateVaultDialog, UnlockVaultDialog } from "../vault";
-import { useLocalVaultStore } from "../../stores/local-vault-store";
+import { useVaultGuard } from "../vault";
 import { useSettingsStore } from "../../stores/settings-store";
 
 // ─── Field types ─────────────────────────────────────────────────────────────
@@ -150,11 +149,7 @@ export function HostEditModal() {
   /** True when the user has explicitly clicked "Clear" on the saved credential. */
   const [credCleared, setCredCleared] = useState(false);
   const [credentialStorage, setCredentialStorage] = useState<CredentialStorage>("keychain");
-  const [createVaultOpen, setCreateVaultOpen] = useState(false);
-  const [unlockVaultOpen, setUnlockVaultOpen] = useState(false);
-  const [pendingAction, setPendingAction] = useState<"save" | "connect" | null>(null);
-
-  const loadVaultStatus = useLocalVaultStore((s) => s.loadStatus);
+  const { checkVault, renderVaultDialogs } = useVaultGuard();
 
   const firstInputRef = useRef<HTMLInputElement>(null);
 
@@ -201,9 +196,6 @@ export function HostEditModal() {
     setHasSavedCred(false);
     setCredCleared(false);
     setCredentialStorage("keychain");
-    setCreateVaultOpen(false);
-    setUnlockVaultOpen(false);
-    setPendingAction(null);
     setTunnelEnabled(false);
 
     // Load groups + hosts (for the tunnel dropdown) in parallel
@@ -372,27 +364,12 @@ export function HostEditModal() {
 
   /* The local vault remains opt-in and locked between launches. This gate opens
    * setup or unlock only for password hosts that are about to use it. */
-  const prepareCredentialStorage = async (action: "save" | "connect"): Promise<boolean> => {
+  const prepareCredentialStorage = async (action: () => void): Promise<boolean> => {
     if (form.authType !== "password") return true;
     const needsVault = credentialStorage === "localVault" ||
       originalHost?.credential_storage === "localVault";
     if (!needsVault) return true;
-
-    const status = await loadVaultStatus();
-    if (!status.configured) {
-      if (credentialStorage === "localVault") {
-        setPendingAction(action);
-        setCreateVaultOpen(true);
-        return false;
-      }
-      return true;
-    }
-    if (!status.unlocked) {
-      setPendingAction(action);
-      setUnlockVaultOpen(true);
-      return false;
-    }
-    return true;
+    return checkVault(action, form.label || form.host, credentialStorage === "localVault");
   };
 
   const applyCredentialStorage = async (
@@ -411,7 +388,7 @@ export function HostEditModal() {
   const handleSave = async () => {
     const validationError = validate();
     if (validationError) { setError(validationError); return; }
-    if (!await prepareCredentialStorage("save")) return;
+    if (!await prepareCredentialStorage(handleSave)) return;
 
     setSaving(true);
     setError(null);
@@ -435,7 +412,7 @@ export function HostEditModal() {
   const handleConnect = async () => {
     const validationError = validate();
     if (validationError) { setError(validationError); return; }
-    if (!await prepareCredentialStorage("connect")) return;
+    if (!await prepareCredentialStorage(handleConnect)) return;
 
     setConnecting(true);
     setError(null);
@@ -1049,29 +1026,7 @@ export function HostEditModal() {
           )}
         </div>
     </ModalShell>
-    <CreateVaultDialog
-      open={createVaultOpen}
-      onClose={() => { setCreateVaultOpen(false); setPendingAction(null); }}
-      onSuccess={() => {
-        setCreateVaultOpen(false);
-        const action = pendingAction;
-        setPendingAction(null);
-        if (action === "save") void handleSave();
-        if (action === "connect") void handleConnect();
-      }}
-    />
-    <UnlockVaultDialog
-      open={unlockVaultOpen}
-      onClose={() => { setUnlockVaultOpen(false); setPendingAction(null); }}
-      onSuccess={() => {
-        setUnlockVaultOpen(false);
-        const action = pendingAction;
-        setPendingAction(null);
-        if (action === "save") void handleSave();
-        if (action === "connect") void handleConnect();
-      }}
-      hostLabel={form.label || form.host}
-    />
+    {renderVaultDialogs()}
     </>
   );
 }
