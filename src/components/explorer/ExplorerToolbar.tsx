@@ -75,14 +75,23 @@ const SEGMENT_BTN_LINK_CLASS =
  * folder itself instead of its contents.
  */
 function normalizePath(
-  providerType: FileSystemProvider["type"],
+  provider: FileSystemProvider,
   raw: string,
 ): string {
   const trimmed = raw.trim();
-  if (providerType === "sftp") {
+  if (provider.normalizePath) {
+    return provider.normalizePath(trimmed);
+  }
+  if (provider.type === "sftp") {
     const stripped = trimmed.replace(/\/+$/, "");
     if (stripped === "") return "/";
     return stripped.startsWith("/") ? stripped : `/${stripped}`;
+  }
+  if (provider.type === "local") {
+    const root = provider.rootPath ? provider.rootPath() : "/";
+    if (trimmed === root) return root;
+    const stripped = trimmed.replace(/[/\\]+$/, "");
+    return stripped === "" ? root : stripped;
   }
   const prefix = trimmed.replace(/^\/+/, "");
   return prefix && !prefix.endsWith("/") ? `${prefix}/` : prefix;
@@ -108,7 +117,6 @@ export const ExplorerToolbar = memo(function ExplorerToolbar({
   onSearchChange,
 }: ExplorerToolbarProps) {
   const caps = provider.capabilities;
-  const providerType = provider.type;
 
   const [isEditing, setIsEditing] = useState(false);
   const [draftPath, setDraftPath] = useState(currentPath);
@@ -136,10 +144,10 @@ export const ExplorerToolbar = memo(function ExplorerToolbar({
     setIsEditing(false);
     const trimmed = draftPath.trim();
     if (trimmed.length > 0 && trimmed !== currentPath) {
-      const normalized = normalizePath(providerType, trimmed);
+      const normalized = normalizePath(provider, trimmed);
       if (normalized !== currentPath) onNavigate(normalized);
     }
-  }, [draftPath, currentPath, providerType, onNavigate]);
+  }, [draftPath, currentPath, provider, onNavigate]);
   const cancelEdit = useCallback(() => {
     setDraftPath(currentPath);
     setIsEditing(false);
@@ -156,22 +164,30 @@ export const ExplorerToolbar = memo(function ExplorerToolbar({
     },
     [cancelEdit],
   );
-  const handleHome = useCallback(
-    () => onNavigate(providerType === "sftp" ? "/" : ""),
-    [onNavigate, providerType],
-  );
+  const homeTarget =
+    provider.type === "local"
+      ? (provider.homePath?.() || provider.rootPath?.() || "/")
+      : provider.type === "sftp"
+        ? "/"
+        : "";
+  const handleHome = useCallback(() => {
+    onNavigate(homeTarget);
+  }, [onNavigate, homeTarget]);
   const isAtRoot =
-    providerType === "sftp" ? currentPath === "/" : currentPath === "";
-
+    provider.type === "sftp"
+      ? currentPath === "/"
+      : provider.type === "local"
+        ? (provider.isAtRoot ? provider.isAtRoot(currentPath) : currentPath === homeTarget)
+        : currentPath === "";
   return (
-    <div className="flex items-center h-10 px-2 border-b border-border bg-bg-surface shrink-0 gap-1 no-select">
+    <div className="flex items-center h-10 px-2 border-b border-border bg-bg-surface shrink-0 gap-1 no-select min-w-0 overflow-hidden">
       {/* Home button */}
       <button
         data-testid="explorer-home"
         onClick={handleHome}
         disabled={loading || isAtRoot}
-        title={`Go to ${provider.rootLabel()}`}
-        aria-label="Go to root"
+        title={provider.type === "local" && provider.homePath ? "Go to Home" : `Go to ${provider.rootLabel()}`}
+        aria-label={provider.type === "local" && provider.homePath ? "Go to home" : "Go to root"}
         className={ICON_BTN_CLASS}
       >
         <Home size={15} strokeWidth={1.8} aria-hidden="true" />
@@ -260,7 +276,7 @@ export const ExplorerToolbar = memo(function ExplorerToolbar({
 
       {/* Search / Filter */}
       {onSearchChange && (
-        <div className="relative flex items-center shrink-0 w-36 sm:w-44">
+        <div className="relative flex items-center shrink-0 w-28 sm:w-36 lg:w-44">
           <Search
             size={13}
             strokeWidth={2}

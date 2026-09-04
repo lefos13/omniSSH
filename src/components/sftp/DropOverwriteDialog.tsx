@@ -8,13 +8,14 @@ interface DropOverwriteDialogProps {
   onConfirm: () => void;
   onBackupAndCopy?: () => void;
   onCancel: () => void;
+  /** Action verb for backup explanation, e.g. "uploading" or "downloading". Defaults to "uploading". */
+  actionVerb?: string;
 }
 
-/**
- * Confirmation shown when a drag-drop upload would overwrite existing remote
- * entries. The conflict list is computed from top-level basenames, so for a
- * dropped folder the match means the folder already exists — its contents are
- * merged and only same-named files inside are replaced.
+/*
+ * Confirmation shown when an upload, download, or copy operation would
+ * overwrite existing entries in the destination directory. Omission of
+ * onBackupAndCopy hides both the backup action button and its explanatory text.
  */
 export function DropOverwriteDialog({
   conflicts,
@@ -22,6 +23,7 @@ export function DropOverwriteDialog({
   onConfirm,
   onBackupAndCopy,
   onCancel,
+  actionVerb = "uploading",
 }: DropOverwriteDialogProps) {
   const count = conflicts.length;
 
@@ -72,18 +74,20 @@ export function DropOverwriteDialog({
           </ul>
         )}
         <div className="flex flex-col gap-1 text-[length:var(--text-2xs)] text-text-muted">
-          <p>
-            <strong className="text-text-secondary font-medium">Backup &amp; Copy:</strong>{" "}
-            {count === 1 ? (
-              <>
-                Renames existing file to <span className="font-mono text-text-secondary">{backupFilename(conflicts[0])}</span> before uploading.
-              </>
-            ) : (
-              <>
-                Renames existing files to <span className="font-mono text-text-secondary">&lt;name&gt;.{formatBackupDate()}.bak</span> before uploading.
-              </>
-            )}
-          </p>
+          {onBackupAndCopy && (
+            <p>
+              <strong className="text-text-secondary font-medium">Backup &amp; Copy:</strong>{" "}
+              {count === 1 ? (
+                <>
+                  Renames existing file to <span className="font-mono text-text-secondary">{backupFilename(conflicts[0])}</span> before {actionVerb}.
+                </>
+              ) : (
+                <>
+                  Renames existing files to <span className="font-mono text-text-secondary">&lt;name&gt;.{formatBackupDate()}.bak</span> before {actionVerb}.
+                </>
+              )}
+            </p>
+          )}
           <p>
             <strong className="text-text-secondary font-medium">Overwrite:</strong> Files are replaced; folders are merged, replacing only same-named files inside.
           </p>

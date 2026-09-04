@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### 🚀 Highlights & New Features
+
+#### 1. Dual-Pane Host Explorer (SFTP / SCP)
+* **Side-by-Side Local & Remote Browsing**: Standalone host explorer tabs render a dual-pane layout with the local filesystem on the left and the connected host filesystem on the right.
+* **Bidirectional Selected Transfers**: Copy files and recursive folder hierarchies between the local and remote current directories using dedicated action buttons on the center rail ("Copy selected to remote" and "Copy selected to local").
+* **Queue & Conflict Integration**: Seamlessly routes transfers through the existing SFTP/SCP transfer queue with real-time progress indicators, cancellation, and destination conflict prompts before overwriting.
+* **Transport Fallback & Pane Scoping**: Fully compatible with both SFTP and transparent SCP fallback sessions; keyboard navigation, search, and action shortcuts are isolated to the focused pane.
+
+---
+
 ## [1.0.4] - 2026-09-02
 
 ### 🚀 Highlights & New Features

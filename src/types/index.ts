@@ -75,6 +75,12 @@ export type {
 } from "./explorer";
 
 export type {
+  BreadcrumbSegment,
+  LocalEntry,
+  LocalDirectoryListing,
+} from "./local-fs";
+
+export type {
   BackupPreflightSummary,
   BulkMigrationFailure,
   BulkMigrationResult,

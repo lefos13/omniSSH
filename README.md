@@ -43,7 +43,7 @@
 
 - **GPU-Accelerated SSH Terminals** with split panes, regex search, and command snippet automation.
 - **Linked Terminal Explorer** that follows your shell's working directory in real time via **OSC 7** notifications.
-- **Multi-Tab SFTP / SCP File Manager** with drag-and-drop uploads, conflict resolution, and VS Code remote editing.
+- **Dual-Pane SFTP / SCP Host Explorer** with local and remote filesystems side by side, bidirectional copy transfers, drag-and-drop uploads, conflict resolution, and VS Code remote editing.
 - **S3 Cloud Storage Desktop Browser** compatible with AWS S3, MinIO, Cloudflare R2, Backblaze B2, Wasabi, and DigitalOcean Spaces.
 - **Universal Connection Importer** allowing one-click migration from **OpenSSH** (`~/.ssh/config`), **MobaXterm** session files, and **Termius** local encrypted databases (with zero cloud dependency).
 - **SSH Port Forwarding & Tunnels** for local and remote port redirection with service presets.
@@ -57,6 +57,7 @@
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | **SSH Terminal** | **Yes (WebGL)** | Yes | No | Yes (X11) | Yes | No |
 | **Linked Terminal File Explorer** | **Yes (OSC 7)** | No | No | Yes | No | No |
+| **Dual-Pane Host File Manager** | **Yes** | No | Yes | Yes | No | No |
 | **SFTP & SCP Multi-Tab Browser** | **Yes** | Yes | Yes | Yes | No | Yes |
 | **S3 Cloud Storage Browser** | **Yes** | No | No | No | No | Yes |
 | **Split Terminal Panes** | **Yes (H / V)** | Yes | No | Yes | No | No |
@@ -92,9 +93,10 @@
 * **Selective Previews & Atomic Commits**: Review all detected connections, select individual hosts, map custom host groups, and commit transactionally with automatic rollback protection.
 
 ### 📁 4. SFTP & SCP Multi-Protocol File Explorer
+* **Dual-Pane Host Explorer**: Standalone host explorer tabs render a dual-pane layout with the local filesystem on the left and the connected host on the right. Navigate local and remote directories independently, select files and folders, and copy entries in either direction via central action buttons ("Copy selected to remote" and "Copy selected to local") through the existing transfer queue. The local pane is read-only apart from receiving downloads. (S3 bucket tabs and terminal-linked explorer panels retain their focused single-pane views.)
 * **Tabbed Remote Browsing**: Open multiple remote servers and directories in concurrent tabs.
 * **Drag-and-Drop Operations**: Drag files and folders from your native desktop (Finder/Explorer) directly into the remote file tree.
-* **Conflict Resolution**: Smart overwrite dialog with file size/timestamp comparison and batch actions (Overwrite, Skip, Cancel).
+* **Conflict Resolution**: Smart overwrite dialog with file size/timestamp comparison and batch actions (Overwrite, Backup & Copy, Cancel).
 * **Remote Editing in VS Code**: Open remote files directly in your local editor—OmniSSH automatically watches and uploads changes upon saving.
 * **Protocol Fallback**: Automatically switches between SFTP and SCP transports depending on remote server capabilities.
 * **Transfer Queue Management**: Real-time progress indicators, transfer speed calculation, ETA, and concurrent file worker pools.

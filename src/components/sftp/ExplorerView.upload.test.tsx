@@ -297,4 +297,34 @@ describe("ExplorerView — drag-and-drop upload and conflict handling", () => {
       remoteDir: CURRENT_PATH,
     });
   });
+
+  it("ignores drops outside the remote pane subtree when position hit-test fails", async () => {
+    const externalDiv = document.createElement("div");
+    externalDiv.setAttribute("data-explorer-pane", "local");
+    document.body.appendChild(externalDiv);
+
+    const origElementFromPoint = document.elementFromPoint;
+    document.elementFromPoint = vi.fn(() => externalDiv);
+
+    try {
+      render(<ExplorerView sessionId={SESSION_ID} isActive />);
+      await waitFor(() => expect(dropListeners.current).not.toBeNull());
+
+      dropListeners.current!({
+        payload: {
+          type: "drop",
+          paths: ["/local/file-over-local-pane.txt"],
+          position: { x: 150, y: 200 },
+        },
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(enqueueCall()).toBeUndefined();
+      expect(screen.queryByTestId("explorer-overwrite-confirm")).not.toBeInTheDocument();
+    } finally {
+      document.elementFromPoint = origElementFromPoint;
+      document.body.removeChild(externalDiv);
+    }
+  });
 });

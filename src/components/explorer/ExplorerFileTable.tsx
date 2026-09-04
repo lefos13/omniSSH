@@ -48,6 +48,10 @@ import { FilePropertiesDialog } from "./FilePropertiesDialog";
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface ExplorerFileTableProps {
+  /** Which explorer pane this table represents in a dual-pane layout. Defaults to "remote". */
+  pane?: "local" | "remote";
+  /** Whether the owning explorer tab/view is currently active/visible. Defaults to true. */
+  isActive?: boolean;
   provider: FileSystemProvider;
   entries: ExplorerEntry[];
   sortBy: "name" | "size" | "modified";
@@ -97,6 +101,8 @@ interface ExplorerFileTableProps {
   onCdToTerminal?: (path: string) => void;
   searchQuery?: string;
   onClearSearch?: () => void;
+  /** Optional callback invoked when the internal selection set changes. */
+  onSelectionChange?: (entries: ExplorerEntry[]) => void;
 }
 
 interface ContextMenuState {
@@ -339,6 +345,8 @@ function NewFileRow({
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function ExplorerFileTable({
+  pane = "remote",
+  isActive = true,
   provider,
   entries,
   sortBy,
@@ -369,6 +377,7 @@ export function ExplorerFileTable({
   onCdToTerminal,
   searchQuery,
   onClearSearch,
+  onSelectionChange,
 }: ExplorerFileTableProps) {
   const caps = provider.capabilities;
   const editors = useSettingsStore((s) => s.editors);
@@ -403,6 +412,24 @@ export function ExplorerFileTable({
   useLayoutEffect(() => {
     if (tableRef.current) tableRef.current.scrollTop = 0;
   }, [currentPath]);
+  // Clear selection when navigating to a different directory.
+  useEffect(() => {
+    setSelectedIds(new Set());
+    lastClickedId.current = null;
+  }, [currentPath]);
+
+  /*
+   * Notify external observer when selection changes without making the table
+   * controlled. Keyed on the internal selection set and entries array so that
+   * mouse, keyboard, range, Cmd+A, and clearing all report.
+   */
+  const onSelectionChangeRef = useRef(onSelectionChange);
+  onSelectionChangeRef.current = onSelectionChange;
+  useEffect(() => {
+    if (!onSelectionChangeRef.current) return;
+    const selected = entries.filter((e) => selectedIds.has(e.id));
+    onSelectionChangeRef.current(selected);
+  }, [selectedIds, entries, onSelectionChange]);
 
   // Cut entry dimming
   const cutIds =
@@ -459,14 +486,20 @@ export function ExplorerFileTable({
     }
   };
 
-  // E2E test hook — drives rename programmatically. Two modes:
-  //   - hook(name)          opens the inline rename input (UI flow)
-  //   - hook(name, newName) calls onRename directly (bypasses the inline
-  //                          input whose autoFocus + onBlur cancel races
-  //                          with WebDriver's setValue). Exercises the
-  //                          same backend invoke + listing update path.
+  /*
+   * Pane-scoped E2E test hooks. Singletons registered on `window` coordinate
+   * dual-pane and multi-tab testing:
+   * - `__e2eExplorerStartRename` and `__e2eExplorerChmod` are exclusive to the
+   *   active remote table (the local pane is read-only).
+   * - `__e2eExplorerSetSelection` defaults to the active remote table, while
+   *   an optional second `pane` parameter or `__e2eExplorerSetSelectionLocal`
+   *   allows explicit local-pane selection.
+   * Gated on `isActive` so hidden explorer tabs do not overwrite the visible tab's hooks.
+   */
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined" || pane === "local" || !isActive || !caps.canRename || !onRename) {
+      return;
+    }
     const hook = (name: string, newName?: string) => {
       const entry = sortedEntries.find((e) => e.name === name);
       if (!entry) return;
@@ -476,28 +509,31 @@ export function ExplorerFileTable({
         setRenamingId(entry.id);
       }
     };
-    (
-      window as unknown as {
-        __e2eExplorerStartRename?: (n: string, newName?: string) => void;
-      }
-    ).__e2eExplorerStartRename = hook;
-    return () => {
-      (
-        window as unknown as {
-          __e2eExplorerStartRename?:
-            | ((n: string, newName?: string) => void)
-            | null;
-        }
-      ).__e2eExplorerStartRename = null;
-    };
-  }, [sortedEntries, onRename]);
 
-  // E2E test hook — apply chmod permission bits to an entry by name. Drives
-  // the same onApplyPermissions path the Properties dialog "Apply" uses, but
-  // bypasses the dialog UI (checkbox + octal-input interplay is awkward to
-  // drive reliably in WebDriver). `mode` is the octal value as a number.
+    const w = window as unknown as {
+      __e2eExplorerRegistry?: {
+        remoteRename?: ((n: string, newName?: string) => void) | null;
+      };
+      __e2eExplorerStartRename?: ((n: string, newName?: string) => void) | null;
+    };
+    const reg = (w.__e2eExplorerRegistry ??= {});
+    reg.remoteRename = hook;
+    w.__e2eExplorerStartRename = (n: string, newName?: string) => {
+      reg.remoteRename?.(n, newName);
+    };
+
+    return () => {
+      if (reg.remoteRename === hook) {
+        reg.remoteRename = null;
+        w.__e2eExplorerStartRename = null;
+      }
+    };
+  }, [sortedEntries, onRename, pane, isActive, caps.canRename]);
+
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined" || pane === "local" || !isActive || !onApplyPermissions) {
+      return;
+    }
     const hook = (
       name: string,
       mode: number,
@@ -507,35 +543,29 @@ export function ExplorerFileTable({
       if (!entry || !onApplyPermissions) return undefined;
       return onApplyPermissions(entry, mode, recursive);
     };
-    (
-      window as unknown as {
-        __e2eExplorerChmod?: (
-          n: string,
-          mode: number,
-          recursive?: boolean,
-        ) => Promise<ChmodResult | void> | undefined;
-      }
-    ).__e2eExplorerChmod = hook;
-    return () => {
-      (
-        window as unknown as {
-          __e2eExplorerChmod?:
-            | ((
-                n: string,
-                mode: number,
-                recursive?: boolean,
-              ) => Promise<ChmodResult | void> | undefined)
-            | null;
-        }
-      ).__e2eExplorerChmod = null;
-    };
-  }, [sortedEntries, onApplyPermissions]);
 
-  // E2E test hook — select a specific set of entries by name. Multi-select
-  // via Ctrl-click is awkward to drive in WebDriver because the row needs
-  // keyboard focus AND modifier-key chord handling at the same time.
+    const w = window as unknown as {
+      __e2eExplorerRegistry?: {
+        remoteChmod?: ((n: string, mode: number, recursive?: boolean) => Promise<ChmodResult | void> | undefined) | null;
+      };
+      __e2eExplorerChmod?: ((n: string, mode: number, recursive?: boolean) => Promise<ChmodResult | void> | undefined) | null;
+    };
+    const reg = (w.__e2eExplorerRegistry ??= {});
+    reg.remoteChmod = hook;
+    w.__e2eExplorerChmod = (n: string, mode: number, recursive?: boolean) => {
+      return reg.remoteChmod?.(n, mode, recursive);
+    };
+
+    return () => {
+      if (reg.remoteChmod === hook) {
+        reg.remoteChmod = null;
+        w.__e2eExplorerChmod = null;
+      }
+    };
+  }, [sortedEntries, onApplyPermissions, pane, isActive]);
+
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined" || !isActive) return;
     const hook = (names: string[]) => {
       const ids = new Set(
         names
@@ -544,19 +574,46 @@ export function ExplorerFileTable({
       );
       setSelectedIds(ids);
     };
-    (
-      window as unknown as {
-        __e2eExplorerSetSelection?: (names: string[]) => void;
-      }
-    ).__e2eExplorerSetSelection = hook;
-    return () => {
-      (
-        window as unknown as {
-          __e2eExplorerSetSelection?: ((names: string[]) => void) | null;
-        }
-      ).__e2eExplorerSetSelection = null;
+
+    const w = window as unknown as {
+      __e2eExplorerRegistry?: {
+        remoteSetSelection?: ((names: string[]) => void) | null;
+        localSetSelection?: ((names: string[]) => void) | null;
+      };
+      __e2eExplorerSetSelection?: ((names: string[], targetPane?: "remote" | "local") => void) | null;
+      __e2eExplorerSetSelectionLocal?: ((names: string[]) => void) | null;
     };
-  }, [sortedEntries]);
+    const reg = (w.__e2eExplorerRegistry ??= {});
+    if (pane === "local") {
+      reg.localSetSelection = hook;
+    } else {
+      reg.remoteSetSelection = hook;
+    }
+
+    w.__e2eExplorerSetSelection = (names: string[], targetPane: "remote" | "local" = "remote") => {
+      if (targetPane === "local") {
+        reg.localSetSelection?.(names);
+      } else {
+        reg.remoteSetSelection?.(names);
+      }
+    };
+
+    w.__e2eExplorerSetSelectionLocal = (names: string[]) => {
+      reg.localSetSelection?.(names);
+    };
+
+    return () => {
+      if (pane === "local") {
+        if (reg.localSetSelection === hook) reg.localSetSelection = null;
+      } else {
+        if (reg.remoteSetSelection === hook) reg.remoteSetSelection = null;
+      }
+      if (!reg.remoteSetSelection && !reg.localSetSelection) {
+        w.__e2eExplorerSetSelection = null;
+        w.__e2eExplorerSetSelectionLocal = null;
+      }
+    };
+  }, [sortedEntries, pane, isActive]);
 
   // ─── Selection ───────────────────────────────────────────────────────────
 
@@ -1050,7 +1107,7 @@ export function ExplorerFileTable({
 
   if (loading && entries.length === 0) {
     return (
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto explorer-table-container" data-pane={pane}>
         <div className="flex flex-col gap-1 p-2">
           {Array.from({ length: 8 }).map((_, i) => (
             <div
@@ -1077,7 +1134,7 @@ export function ExplorerFileTable({
   // ─── Render ───────────────────────────────────────────────────────────────
 
   return (
-    <>
+    <div className="flex flex-col flex-1 min-h-0 overflow-hidden relative explorer-table-container" data-pane={pane}>
       {/* Column header — a fixed row above the list, a sibling of the scroller
           rather than a child, so the scroller stays a direct flex child of the
           pane column and scrolls. The right padding reserves the scrollbar
@@ -1109,7 +1166,7 @@ export function ExplorerFileTable({
 
         <button
           data-testid="explorer-sort-modified"
-          className={`w-44 text-center ${thClass("modified")}`}
+          className={`w-44 text-center explorer-col-modified ${thClass("modified")}`}
           onClick={() => handleSortClick("modified")}
           aria-sort={
             sortBy === "modified"
@@ -1124,7 +1181,7 @@ export function ExplorerFileTable({
         </button>
 
         {/* Last column: Permissions for SFTP, Class for S3 */}
-        <span className="w-24 text-[length:var(--text-xs)] font-semibold uppercase tracking-wide text-text-muted select-none">
+        <span className="w-24 text-[length:var(--text-xs)] font-semibold uppercase tracking-wide text-text-muted select-none explorer-col-permissions">
           {caps.hasPermissions
             ? "Permissions"
             : caps.hasStorageClass
@@ -1393,17 +1450,13 @@ export function ExplorerFileTable({
                       : formatBytes(entry.size)}
                   </span>
 
-                  {/* Modified — centered so it doesn't crowd the right-aligned
-                      Size on its left or leave dead space before Permissions;
-                      12px because mono reads visually larger than the 14px sans.
-                      Truncate + title as a safety net for wide locales (#109). */}
+                  {/* Modified */}
                   <span
-                    className="w-44 text-center text-[length:var(--text-xs)] text-text-muted shrink-0 font-mono tracking-tight truncate"
+                    className="w-44 text-center text-[length:var(--text-xs)] text-text-muted shrink-0 font-mono tracking-tight truncate explorer-col-modified"
                     title={formatModified(entry.modified)}
                   >
                     {formatModified(entry.modified)}
                   </span>
-
                   {/* Permissions / Storage Class */}
                   <span
                     data-entry-perms={
@@ -1411,7 +1464,7 @@ export function ExplorerFileTable({
                         ? (entry.permissionsDisplay ?? "")
                         : undefined
                     }
-                    className="w-24 font-mono text-[length:var(--text-xs)] text-text-muted shrink-0 tracking-tight whitespace-nowrap"
+                    className="w-24 font-mono text-[length:var(--text-xs)] text-text-muted shrink-0 tracking-tight whitespace-nowrap explorer-col-permissions"
                   >
                     {caps.hasPermissions
                       ? (entry.permissionsDisplay ?? "")
@@ -1465,7 +1518,7 @@ export function ExplorerFileTable({
             : `Move ${dragGhost.count} ${dragGhost.count === 1 ? "item" : "items"} · ⌥ to copy`}
         </div>
       )}
-    </>
+    </div>
   );
 }
 

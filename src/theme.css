@@ -256,3 +256,43 @@ input, textarea, [contenteditable="true"], .xterm {
   white-space: nowrap;
   pointer-events: none;
 }
+
+/* Dual-pane and constrained-width responsive table columns */
+.explorer-table-container {
+  container-type: inline-size;
+}
+
+/* Narrow panes (< 460px), e.g. 720px window with 50/50 dual pane (~332px each) or linked sidebar:
+   Hide Modified and Permissions/Class to prioritize Filename and Size without horizontal overflow */
+@container (max-width: 459px) {
+  .explorer-col-modified {
+    display: none !important;
+  }
+  .explorer-col-permissions {
+    display: none !important;
+  }
+}
+
+/* Medium panes (460px - 619px), e.g. 1024px window (~484px each):
+   Show Filename, Size, and Modified; hide Permissions */
+@container (min-width: 460px) and (max-width: 619px) {
+  .explorer-col-permissions {
+    display: none !important;
+  }
+}
+
+/* Window media query companion: guarantees no overflow when window <= 820px in dual pane */
+@media (max-width: 820px) {
+  [data-explorer-pane] .explorer-col-modified {
+    display: none !important;
+  }
+  [data-explorer-pane] .explorer-col-permissions {
+    display: none !important;
+  }
+}
+
+@media (min-width: 821px) and (max-width: 1100px) {
+  [data-explorer-pane] .explorer-col-permissions {
+    display: none !important;
+  }
+}

@@ -39,6 +39,24 @@ describe("DropOverwriteDialog", () => {
     expect(screen.getByText(/renames existing files to/i)).toBeInTheDocument();
     expect(screen.getByText(/<name>\.\d{8}\.bak/)).toBeInTheDocument();
   });
+  it("omits the backup button and backup explanation when onBackupAndCopy is not provided", () => {
+    render(
+      <DropOverwriteDialog
+        conflicts={["data.csv"]}
+        targetDir="/home/user/downloads"
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Overwrite item?")).toBeInTheDocument();
+    expect(screen.getByText("data.csv")).toBeInTheDocument();
+    expect(screen.queryByTestId("explorer-overwrite-backup-button")).toBeNull();
+    expect(screen.queryByText(/Backup & Copy/i)).toBeNull();
+    expect(screen.queryByText(/renames existing file to/i)).toBeNull();
+    expect(screen.getByTestId("explorer-overwrite-confirm-button")).toHaveTextContent("Overwrite");
+    expect(screen.getByTestId("explorer-overwrite-cancel")).toBeInTheDocument();
+  });
+
 
   it("explains that folders are merged rather than replaced", () => {
     renderDialog();

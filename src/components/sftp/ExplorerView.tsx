@@ -31,14 +31,19 @@ interface ExplorerViewProps {
   onCdToTerminal?: (path: string) => void;
   /** External path navigation request (e.g. from OSC 7 CWD synchronization). */
   externalNavigatePath?: string | null;
+  /** Optional callback invoked when the internal selection set changes. */
+  onSelectionChange?: (entries: ExplorerEntry[]) => void;
+  /** Optional callback invoked when the current directory path changes. */
+  onCurrentPathChange?: (path: string) => void;
 }
-
 export function ExplorerView({
   sessionId,
   transport = "sftp",
   isActive = true,
   onCdToTerminal,
   externalNavigatePath,
+  onSelectionChange,
+  onCurrentPathChange,
 }: ExplorerViewProps) {
   const session = useSftpStore((s) => s.sessions.get(sessionId));
   const setEntries = useSftpStore((s) => s.setEntries);
@@ -62,18 +67,38 @@ export function ExplorerView({
     setSearchQuery("");
   }, [session?.currentPath]);
 
-  // Focus search input on Cmd/Ctrl+F when this explorer tab is active
+  /*
+   * Focus search input on Cmd/Ctrl+F when this explorer tab is active.
+   * Scoped so that in dual-pane views, focus is only captured when the remote
+   * pane holds focus (preventing conflict when the local pane has focus).
+   * In single-pane linked-explorer usage, focus is allowed if the active
+   * element is inside the panel or not inside an input/terminal.
+   */
   useEffect(() => {
     if (!isActive) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "f") {
-        e.preventDefault();
-        const input = containerRef.current?.querySelector<HTMLInputElement>(
-          'input[data-testid="explorer-search-input"]',
-        );
-        input?.focus();
-        input?.select();
+        const remotePane = containerRef.current?.closest('[data-explorer-pane="remote"]') ?? containerRef.current;
+        const localPane = remotePane?.parentElement?.querySelector('[data-explorer-pane="local"]');
+        const activeEl = document.activeElement;
+
+        if (localPane?.contains(activeEl)) {
+          return;
+        }
+
+        const remoteHasFocus = Boolean(remotePane?.contains(activeEl));
+        const isInput = activeEl && ["INPUT", "TEXTAREA", "SELECT"].includes(activeEl.tagName);
+        const isTerminal = Boolean(activeEl?.closest(".xterm"));
+
+        if (remoteHasFocus || (!localPane && !isInput && !isTerminal)) {
+          e.preventDefault();
+          const input = containerRef.current?.querySelector<HTMLInputElement>(
+            'input[data-testid="explorer-search-input"]',
+          );
+          input?.focus();
+          input?.select();
+        }
       }
     };
 
@@ -97,6 +122,13 @@ export function ExplorerView({
   const isDraggingOut = useRef(false);
   const currentPathRef = useRef(session?.currentPath ?? "/");
   currentPathRef.current = session?.currentPath ?? "/";
+
+  // Notify parent coordinator when remote current path changes
+  useEffect(() => {
+    if (session?.currentPath && onCurrentPathChange) {
+      onCurrentPathChange(session.currentPath);
+    }
+  }, [session?.currentPath, onCurrentPathChange]);
 
   // Enqueue dropped local paths for upload, surfacing failures as a toast
   // (the per-file transfer progress/errors still show in the transfer popover).
@@ -165,13 +197,31 @@ export function ExplorerView({
   // already report CSS/logical pixels. `elementFromPoint` wants CSS pixels, so
   // we divide by devicePixelRatio ONLY on Windows; doing so elsewhere would
   // halve the coordinate on HiDPI/Retina and hit the wrong row.
+  /*
+   * Check if an event position falls within this remote explorer pane's subtree.
+   * Falls back to true when position is omitted or in environments without
+   * elementFromPoint (e.g. headless unit tests) so mock drops continue working.
+   */
+  const isPositionInRemotePane = useCallback(
+    (position?: { x: number; y: number }): boolean => {
+      if (!position || typeof document.elementFromPoint !== "function") return true;
+      const scale = isWindowsWebview() ? window.devicePixelRatio || 1 : 1;
+      const el = document.elementFromPoint(position.x / scale, position.y / scale);
+      if (!el) return true;
+      return Boolean(containerRef.current?.contains(el));
+    },
+    [],
+  );
+
   const resolveDropDir = useCallback(
     (position?: { x: number; y: number }): string => {
       const base = currentPathRef.current;
       if (!position) return base;
       const scale = isWindowsWebview() ? window.devicePixelRatio || 1 : 1;
       const el = document.elementFromPoint(position.x / scale, position.y / scale);
-      const row = el?.closest("[data-entry-row]") as HTMLElement | null;
+      const row = (el && containerRef.current?.contains(el)
+        ? el.closest("[data-entry-row]")
+        : null) as HTMLElement | null;
       if (row && row.dataset.entryType === "Directory") {
         const name = row.dataset.entryName;
         const entries = useSftpStore.getState().sessions.get(sessionId)?.entries ?? [];
@@ -219,12 +269,24 @@ export function ExplorerView({
           if (isDraggingOut.current) return;
 
           const type = event.payload?.type;
+          const pos = event.payload?.position;
+          const inPane = isPositionInRemotePane(pos);
+
           if (type === "enter" || type === "over") {
+            if (!inPane) {
+              setIsDragOver(false);
+              setDropTargetDir(null);
+              return;
+            }
             setIsDragOver(true);
-            setDropTargetDir(resolveDropDir(event.payload?.position));
+            setDropTargetDir(resolveDropDir(pos));
           } else if (type === "drop") {
             setIsDragOver(false);
             setDropTargetDir(null);
+
+            if (!inPane) {
+              return;
+            }
 
             const paths: string[] = event.payload?.paths ?? [];
             // Backstop for the self-drop guard above: never re-upload our own
@@ -272,7 +334,7 @@ export function ExplorerView({
 
     return () => { aborted = true; unlisten?.(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, transport, isActive, resolveDropDir, uploadDropped]);
+  }, [sessionId, transport, isActive, resolveDropDir, uploadDropped, isPositionInRemotePane]);
 
   // ─── Auto-refresh on upload completion ────────────────────────────────────
 
@@ -873,6 +935,8 @@ export function ExplorerView({
       )}
 
       <ExplorerFileTable
+        pane="remote"
+        isActive={isActive}
         provider={provider}
         entries={explorerEntries}
         sortBy={session.sortBy}
@@ -903,6 +967,7 @@ export function ExplorerView({
         onCdToTerminal={onCdToTerminal}
         searchQuery={searchQuery}
         onClearSearch={() => setSearchQuery("")}
+        onSelectionChange={onSelectionChange}
       />
       {isDragOver && (
         <ExplorerDropZone

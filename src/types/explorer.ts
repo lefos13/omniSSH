@@ -69,7 +69,7 @@ export interface ProviderCapabilities {
  * the shared ExplorerFileTable and ExplorerToolbar.
  */
 export interface FileSystemProvider {
-  readonly type: "sftp" | "s3";
+  readonly type: "sftp" | "s3" | "local";
   readonly sessionId: string;
   readonly capabilities: ProviderCapabilities;
 
@@ -77,6 +77,14 @@ export interface FileSystemProvider {
   joinPath(parent: string, child: string): string;
   /** Get the parent of a path. */
   parentPath(path: string): string;
-  /** Display label for the root (SFTP: "/", S3: bucket name). */
+  /** Display label for the root (SFTP: "/", S3: bucket name, local: root label). */
   rootLabel(): string;
+  /** Optional root path (SFTP: "/", S3: "", local: from listing metadata). */
+  rootPath?(): string;
+  /** Optional home path (local: user home directory). */
+  homePath?(): string;
+  /** Optional check whether a path is at the root. */
+  isAtRoot?(path: string): boolean;
+  /** Optional path normalizer for typed paths. */
+  normalizePath?(raw: string): string;
 }
