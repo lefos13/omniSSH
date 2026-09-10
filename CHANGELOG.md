@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [1.2.0] - 2026-09-10
+
+### 🚀 Highlights & New Features
+
+#### 1. Secure Stored Password Reveal
+* **Master Password Gated**: Reveal stored host passwords from the Encrypted App Vault directly in the Host Edit modal after verifying your App Vault master password.
+* **Ephemeral & Masked by Default**: Revealed passwords exist only in temporary dialog memory, remain masked until toggled with the eye icon, and are immediately cleared from memory when closing the dialog.
+* **Keychain Boundary & Migration**: Passwords stored in the System Keychain cannot be revealed with an app master password; a direct migration action transfers credentials into the Encrypted App Vault where they can be unlocked securely.
+* **Password Input Visibility Toggle**: Added an Eye toggle to view manual password inputs when editing or entering new host credentials.
+
+#### 2. MobaXterm Import Username Correction
+* **Preserve Unspecified Usernames**: MobaXterm bookmark entries with empty or default logins are no longer silently rewritten to "root".
+* **Preview Badging & Guidance**: Import previews flag sessions that require a username check before committing, preventing authentication failures caused by unintended user substitutions.
+
+---
+
 
 ## [1.1.0] - 2026-09-05
 
