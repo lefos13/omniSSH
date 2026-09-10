@@ -441,6 +441,43 @@ pub(crate) fn migrate_host_to_vault(
     }
     Ok(())
 }
+/* Decrypt and reveal a host password after verifying the master password.
+ * The operation derives the key dynamically from the supplied master password
+ * and verifies it against stored metadata, enforcing a fresh proof of knowledge
+ * check regardless of whether the session vault is currently unlocked. */
+fn reveal_local_vault_password(
+    db: &HostDb,
+    host_id: &str,
+    master_password: &str,
+) -> Result<String, VaultError> {
+    let metadata = db
+        .get_vault_metadata()?
+        .ok_or(VaultError::LocalVaultNotConfigured)?;
+    let key = verify_master_password(&metadata, master_password)?;
+
+    let host = db
+        .get_host(host_id)?
+        .ok_or_else(|| VaultError::NotFound(host_id.to_string()))?;
+
+    if host.credential_storage != CredentialStorage::LocalVault {
+        return Err(VaultError::UnsupportedCredential(
+            "Password is stored in the System Keychain. Migrate this host to the Encrypted App Vault to reveal it.".to_string(),
+        ));
+    }
+
+    let blob = db
+        .get_local_vault_credential(host_id)?
+        .ok_or_else(|| VaultError::NotFound(host_id.to_string()))?;
+    let (nonce, ciphertext) = unpack_credential_blob(&blob)?;
+    let credential = decrypt_credential(&key, host_id, nonce, ciphertext)?;
+
+    match credential {
+        StoredCredential::Password { ref password } => Ok(password.clone()),
+        _ => Err(VaultError::UnsupportedCredential(
+            "the stored credential is not a password".to_string(),
+        )),
+    }
+}
 
 fn migrate_host_password(db: &HostDb, state: &LocalVault, host_id: &str) -> Result<(), VaultError> {
     let _operation = state.begin_operation()?;
@@ -737,6 +774,26 @@ pub async fn local_vault_migrate_all_from_keychain(
     tokio::task::spawn_blocking(move || migrate_all_from_keychain(&db, &state))
         .await
         .map_err(blocking_task_error)?
+}
+/* One-shot command to reveal a host password from the Encrypted App Vault.
+ * Requires fresh master-password re-entry; the plaintext is returned directly
+ * without mutating in-memory vault session state or persisting to logs. */
+#[tauri::command(rename_all = "camelCase")]
+pub async fn local_vault_reveal_password(
+    host_id: String,
+    master_password: String,
+    db: tauri::State<'_, Arc<HostDb>>,
+    state: tauri::State<'_, Arc<LocalVault>>,
+) -> Result<String, VaultError> {
+    let master_password = Zeroizing::new(master_password);
+    let db = Arc::clone(&db);
+    let state = Arc::clone(&state);
+    tokio::task::spawn_blocking(move || {
+        let _operation = state.begin_operation()?;
+        reveal_local_vault_password(&db, &host_id, &master_password)
+    })
+    .await
+    .map_err(blocking_task_error)?
 }
 
 #[cfg(test)]
@@ -1122,5 +1179,50 @@ mod tests {
         assert_eq!(result.migrated, 0);
         assert_eq!(result.skipped, 0);
         assert!(result.failed.is_empty());
+    }
+
+    #[test]
+    fn reveal_local_vault_password_requires_correct_master_password() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let db = HostDb::new(directory.path()).expect("database");
+        let state = LocalVault::new();
+        setup_local_vault(&db, &state, "master-password-12").expect("setup");
+
+        let mut host = password_host("vault-host");
+        host.credential_storage = CredentialStorage::LocalVault;
+        db.save_host(&host).expect("save host");
+
+        let key = state.session_key().expect("session key");
+        let credential = StoredCredential::Password {
+            password: "super-secret-ssh-password".to_string(),
+        };
+        let (nonce, ciphertext) =
+            encrypt_credential(&key, "vault-host", &credential).expect("encrypt");
+        let blob = pack_credential_blob(&nonce, &ciphertext).expect("pack");
+        db.save_local_vault_credential("vault-host", &blob)
+            .expect("save blob");
+
+        // Correct master password reveals the password
+        let revealed =
+            reveal_local_vault_password(&db, "vault-host", "master-password-12").expect("reveal");
+        assert_eq!(revealed, "super-secret-ssh-password");
+
+        // Incorrect master password fails with InvalidMasterPassword
+        let err = reveal_local_vault_password(&db, "vault-host", "wrong-master-password-12")
+            .expect_err("wrong password");
+        assert!(matches!(err, VaultError::InvalidMasterPassword));
+
+        // Host in Keychain is rejected with UnsupportedCredential
+        let mut keychain_host = password_host("keychain-host");
+        keychain_host.credential_storage = CredentialStorage::Keychain;
+        db.save_host(&keychain_host).expect("save keychain host");
+        let err_keychain = reveal_local_vault_password(&db, "keychain-host", "master-password-12")
+            .expect_err("keychain host");
+        assert!(matches!(err_keychain, VaultError::UnsupportedCredential(_)));
+
+        // Non-existent host returns NotFound
+        let err_not_found = reveal_local_vault_password(&db, "missing-host", "master-password-12")
+            .expect_err("missing host");
+        assert!(matches!(err_not_found, VaultError::NotFound(_)));
     }
 }

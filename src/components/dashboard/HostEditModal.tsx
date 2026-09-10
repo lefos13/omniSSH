@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { Monitor } from "lucide-react";
+import { Monitor, Eye, EyeOff } from "lucide-react";
 import { ModalShell, BTN_GHOST, BTN_SECONDARY, BTN_PRIMARY } from "../shared/ModalShell";
 import { useUiStore } from "../../stores/ui-store";
 import { useHostsStore } from "../../stores/hosts-store";
@@ -10,6 +10,7 @@ import type { CredentialStorage, SavedHost, HostConfig, StoredCredential } from 
 import { HOST_COLORS } from "./HostCard";
 import { CustomSelect } from "../shared/CustomSelect";
 import { useVaultGuard } from "../vault";
+import { RevealPasswordDialog } from "../vault";
 import { useSettingsStore } from "../../stores/settings-store";
 
 // ─── Field types ─────────────────────────────────────────────────────────────
@@ -150,6 +151,8 @@ export function HostEditModal() {
   const [credCleared, setCredCleared] = useState(false);
   const [credentialStorage, setCredentialStorage] = useState<CredentialStorage>("keychain");
   const { checkVault, renderVaultDialogs } = useVaultGuard();
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [revealDialogOpen, setRevealDialogOpen] = useState(false);
 
   const firstInputRef = useRef<HTMLInputElement>(null);
 
@@ -197,6 +200,8 @@ export function HostEditModal() {
     setCredCleared(false);
     setCredentialStorage("keychain");
     setTunnelEnabled(false);
+    setShowNewPassword(false);
+    setRevealDialogOpen(false);
 
     // Load groups + hosts (for the tunnel dropdown) in parallel
     loadGroups().catch(() => {/* non-fatal */});
@@ -654,24 +659,39 @@ export function HostEditModal() {
                   <label htmlFor="hem-password" className={labelClass}>
                     Password
                   </label>
-                  <input
-                    id="hem-password"
-                    data-testid="host-modal-password"
-                    type="password"
-                    value={form.password}
-                    onChange={(e) => setField("password", e.target.value)}
-                    placeholder={
-                      hasSavedCred && !credCleared && !form.password
-                        ? "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
-                        : "Enter password to connect"
-                    }
-                    disabled={isBusy}
-                    className={inputClass}
-                  />
+                  <div className="relative">
+                    <input
+                      id="hem-password"
+                      data-testid="host-modal-password"
+                      type={showNewPassword ? "text" : "password"}
+                      value={form.password}
+                      onChange={(e) => setField("password", e.target.value)}
+                      placeholder={
+                        hasSavedCred && !credCleared && !form.password
+                          ? "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
+                          : "Enter password to connect"
+                      }
+                      disabled={isBusy}
+                      className={`${inputClass} pr-10`}
+                    />
+                    {form.password && (
+                      <button
+                        type="button"
+                        onClick={() => setShowNewPassword((prev) => !prev)}
+                        disabled={isBusy}
+                        aria-label={showNewPassword ? "Hide password" : "Show password"}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-text-muted hover:text-text-primary rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        {showNewPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                      </button>
+                    )}
+                  </div>
                   <CredentialStatus
                     visible={hasSavedCred && !credCleared && !form.password}
                     busy={isBusy}
+                    storage={credentialStorage}
                     onClear={() => setCredCleared(true)}
+                    onReveal={() => setRevealDialogOpen(true)}
                   />
                   <div className="mt-3">
                     <label htmlFor="hem-password-storage" className={labelClass}>
@@ -1026,6 +1046,16 @@ export function HostEditModal() {
           )}
         </div>
     </ModalShell>
+    <RevealPasswordDialog
+      open={revealDialogOpen}
+      onClose={() => setRevealDialogOpen(false)}
+      hostId={editingHostId && editingHostId !== NEW_HOST_ID ? editingHostId : ""}
+      hostLabel={form.label || form.host}
+      storage={credentialStorage}
+      onMigratedToVault={() => {
+        setCredentialStorage("localVault");
+      }}
+    />
     {renderVaultDialogs()}
     </>
   );
@@ -1192,7 +1222,9 @@ interface CredentialStatusProps {
   /** Whether to show the badge at all. */
   visible: boolean;
   busy: boolean;
+  storage?: CredentialStorage;
   onClear: () => void;
+  onReveal?: () => void;
 }
 
 /**
@@ -1200,7 +1232,7 @@ interface CredentialStatusProps {
  * saved in the OS keychain.  The actual secret is never sent to the frontend —
  * only the boolean "exists" flag comes from Rust.
  */
-function CredentialStatus({ visible, busy, onClear }: CredentialStatusProps) {
+function CredentialStatus({ visible, busy, storage = "keychain", onClear, onReveal }: CredentialStatusProps) {
   if (!visible) return null;
   return (
     <div className="flex items-center justify-between mt-1.5 px-2.5 py-1.5 rounded-md bg-bg-subtle border border-border">
@@ -1230,21 +1262,40 @@ function CredentialStatus({ visible, busy, onClear }: CredentialStatusProps) {
             strokeLinecap="round"
           />
         </svg>
-        Credential saved in system keychain
+        Credential saved in {storage === "localVault" ? "Encrypted App Vault" : "System Keychain"}
       </div>
-      <button
-        type="button"
-        onClick={onClear}
-        disabled={busy}
-        aria-label="Clear saved credential"
-        className={[
-          "text-[length:var(--text-xs)] text-text-muted hover:text-status-error",
-          "transition-colors duration-[var(--duration-fast)]",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded px-1",
-        ].join(" ")}
-      >
-        Clear
-      </button>
+      <div className="flex items-center gap-2">
+        {onReveal && (
+          <button
+            type="button"
+            data-testid="host-modal-reveal-password"
+            onClick={onReveal}
+            disabled={busy}
+            aria-label="Reveal saved credential"
+            className={[
+              "text-[length:var(--text-xs)] font-medium text-accent hover:text-accent-hover",
+              "transition-colors duration-[var(--duration-fast)]",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded px-1 disabled:opacity-50",
+            ].join(" ")}
+          >
+            Reveal
+          </button>
+        )}
+        <button
+          type="button"
+          data-testid="host-modal-clear-password"
+          onClick={onClear}
+          disabled={busy}
+          aria-label="Clear saved credential"
+          className={[
+            "text-[length:var(--text-xs)] text-text-muted hover:text-status-error",
+            "transition-colors duration-[var(--duration-fast)]",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded px-1",
+          ].join(" ")}
+        >
+          Clear
+        </button>
+      </div>
     </div>
   );
 }

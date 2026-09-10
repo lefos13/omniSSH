@@ -2,3 +2,4 @@ export { CreateVaultDialog, type CreateVaultDialogProps } from "./CreateVaultDia
 export { UnlockVaultDialog, type UnlockVaultDialogProps } from "./UnlockVaultDialog";
 export { ChangeVaultPasswordDialog, type ChangeVaultPasswordDialogProps } from "./ChangeVaultPasswordDialog";
 export { useVaultGuard } from "./useVaultGuard";
+export { RevealPasswordDialog, type RevealPasswordDialogProps } from "./RevealPasswordDialog";
