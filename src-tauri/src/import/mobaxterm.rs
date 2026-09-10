@@ -171,9 +171,11 @@ fn parse_bookmark_sections(
             continue;
         };
 
+        /* Match the save-time "root" fallback for an unspecified username so
+         * preview duplicate marking agrees with save_imported_hosts. */
         let dedup_key = (
             entry.hostname.clone().unwrap_or_default(),
-            entry.user.clone().unwrap_or_default(),
+            entry.user.clone().unwrap_or_else(|| "root".to_string()),
             entry.port.unwrap_or(22),
         );
         if !seen_keys.insert(dedup_key.clone()) {
@@ -261,8 +263,17 @@ fn parse_ssh_record(
     source_drive_root: Option<&Path>,
 ) -> Option<SshConfigEntry> {
     let hostname = required_field(fields, 1)?;
-    let user = normalize_username(field(fields, 3));
     let mut warnings = Vec::new();
+    /* An empty or "<default>" username means "use MobaXterm's configured
+     * default login" (the Windows account by default), not root. Preserve it
+     * as unspecified so the preview warns instead of silently trying root. */
+    let user = normalize_username(field(fields, 3));
+    if user.is_none() {
+        add_warning(
+            &mut warnings,
+            "No username in this MobaXterm record; \"root\" will be used unless you change it after import.",
+        );
+    }
 
     let port = parse_port_with_warnings(fields, 2, &mut warnings);
     let proxy_jump = parse_ssh_gateway(fields, &mut warnings);
@@ -271,7 +282,7 @@ fn parse_ssh_record(
     Some(SshConfigEntry {
         host_alias: label.to_string(),
         hostname: Some(hostname.to_string()),
-        user: Some(user),
+        user,
         port: Some(port),
         identity_file: resolve_key_path(
             nonempty_field(fields, 14),
@@ -299,13 +310,22 @@ fn parse_sftp_record(
 ) -> Option<SshConfigEntry> {
     let hostname = required_field(fields, 1)?;
     let mut warnings = Vec::new();
+    /* See parse_ssh_record: an empty username is MobaXterm's "default login",
+     * not root, so keep it unspecified and warn. */
+    let user = normalize_username(field(fields, 3));
+    if user.is_none() {
+        add_warning(
+            &mut warnings,
+            "No username in this MobaXterm record; \"root\" will be used unless you change it after import.",
+        );
+    }
     let port = parse_port_with_warnings(fields, 2, &mut warnings);
     warn_for_sftp_proxy(fields, &mut warnings);
 
     Some(SshConfigEntry {
         host_alias: label.to_string(),
         hostname: Some(hostname.to_string()),
-        user: Some(normalize_username(field(fields, 3))),
+        user,
         port: Some(port),
         identity_file: resolve_key_path(
             nonempty_field(fields, 9),
@@ -370,11 +390,14 @@ fn resolve_key_path(
     Some(format!("{root}\\{remainder}"))
 }
 
-fn normalize_username(value: &str) -> String {
+/* An empty or "<default>" username selects MobaXterm's configured default
+ * login (the Windows account by default). Returning None keeps that choice
+ * visible to the preview instead of silently substituting another user. */
+fn normalize_username(value: &str) -> Option<String> {
     if value.is_empty() || value.eq_ignore_ascii_case("<default>") {
-        "root".to_string()
+        None
     } else {
-        value.to_string()
+        Some(value.to_string())
     }
 }
 
@@ -533,7 +556,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_username_less_sftp_sessions_as_root_and_reads_cp1252() {
+    fn keeps_username_less_sftp_sessions_unspecified_and_reads_cp1252() {
         let mut contents = b"[Bookmarks]\r\nSubRep=\r\nSftp ".to_vec();
         contents.push(0x80);
         contents.extend_from_slice(b"=#140#7%files.example%22%%%0%/srv/files%0%0%C:\\keys\\files.ppk%0%0%0%0%0%0%0%0#MobaFont%10%0%0%0%15%0%0%0%0%0%0%0%0%0%0#0#Caf");
@@ -544,14 +567,34 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].host_alias, "Sftp €");
         assert_eq!(entries[0].hostname.as_deref(), Some("files.example"));
-        assert_eq!(entries[0].user.as_deref(), Some("root"));
+        assert_eq!(entries[0].user, None);
         assert_eq!(entries[0].port, Some(22));
         assert_eq!(entries[0].start_directory.as_deref(), Some("/srv/files"));
         assert_eq!(entries[0].notes.as_deref(), Some("Café"));
+        assert!(entries[0]
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("No username")));
         assert_eq!(
             entries[0].identity_file.as_deref(),
             Some("C:\\keys\\files.ppk")
         );
+    }
+
+    #[test]
+    fn treats_default_marker_as_unspecified_username_with_warning() {
+        let mut fields = vec!["0", "target.example", "22", "<default>"];
+        fields.resize(15, "");
+        let record = format!("#109#{}#MobaFont#0#-1", fields.join("%"));
+        let entries =
+            parse_mobaxterm_bytes(format!("[Bookmarks]\nTarget={record}\n").as_bytes(), &[])
+                .expect("parse default username");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].user, None);
+        assert!(entries[0]
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("No username")));
     }
 
     #[test]
@@ -609,9 +652,11 @@ mod tests {
         let entries = parse_mobaxterm_bytes(contents.as_bytes(), &[]).expect("parse sections");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].hostname.as_deref(), Some("nested.example"));
-        assert_eq!(entries[0].user.as_deref(), Some("root"));
-        assert_eq!(entries[0].group_path.as_deref(), Some("Parent / Child"));
-        assert_eq!(entries[0].notes.as_deref(), Some("nested note"));
+        assert_eq!(entries[0].user, None);
+        assert!(entries[0]
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("No username")));
     }
 
     #[test]

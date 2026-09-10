@@ -164,6 +164,33 @@ describe("ImportSshConfigModal — MobaXterm source", () => {
     const saveCall = invoke.mock.calls.find((call) => call[0] === "import_save_mobaxterm_hosts");
     expect((saveCall?.[1] as { entries: unknown[] }).entries).toHaveLength(1);
   });
+  it("flags an unspecified MobaXterm username before falling back to root", async () => {
+    invoke.mockImplementation(async (command: string) => {
+      if (command === "import_parse_mobaxterm") {
+        return [{ ...entry, host_alias: "No user host", user: null }];
+      }
+      if (command === "import_save_mobaxterm_hosts") {
+        return { imported: 1, skipped: 0, errors: [] };
+      }
+      return undefined;
+    });
+    dialogOpen.mockResolvedValue("/tmp/MobaXterm.ini");
+
+    render(<ImportSshConfigModal initialSource="mobaxterm" onClose={() => {}} onImported={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Browse for MobaXterm file" }));
+
+    // The row names the fallback instead of silently showing root.
+    expect(await screen.findByText("check username")).toBeInTheDocument();
+    expect(screen.getByText(/root \(default\)@/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("import-mobaxterm-submit"));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith(
+      "import_save_mobaxterm_hosts",
+      expect.objectContaining({
+        entries: [expect.objectContaining({ user: "root" })],
+      }),
+    ));
+  });
 });
 
 /* Termius tests exercise the metadata-only default and the narrow IPC payload

@@ -26,6 +26,9 @@ interface ImportSshConfigModalProps {
 }
 
 export function toImportEntry(entry: SshConfigEntry): SshConfigImportEntry {
+  /* The save contract requires a concrete username, so an unspecified one
+   * falls back to "root" here. The Rust parser attaches a warning for such
+   * rows, and the preview flags them, so the default never slips in silently. */
   return {
     host_alias: entry.host_alias,
     hostname: entry.hostname || entry.host_alias,
@@ -687,9 +690,14 @@ export function ImportSshConfigModal({
                               exists
                             </span>
                           )}
+                          {!entry.user && !entry.is_pattern && (
+                            <span className="px-1.5 py-px rounded text-[9px] uppercase tracking-wide font-semibold bg-status-connecting/10 text-status-connecting">
+                              check username
+                            </span>
+                          )}
                         </div>
                         <p className="text-[length:var(--text-2xs)] font-mono text-text-muted truncate">
-                          {entry.user ?? "root"}@{entry.hostname ?? entry.host_alias}:{entry.port ?? 22}
+                          {entry.user ?? "root (default)"}@{entry.hostname ?? entry.host_alias}:{entry.port ?? 22}
                           {entry.identity_file && ` key:${entry.identity_file.split("/").pop()}`}
                         </p>
                       </div>
