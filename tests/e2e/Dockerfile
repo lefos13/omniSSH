@@ -42,11 +42,15 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 RUN cargo install tauri-driver --locked
 
 # ── Node + pnpm ────────────────────────────────────────────────────────────────
+# pnpm is pinned to the same major the CI workflow provisions (pnpm/action-setup
+# `version: 9`) and that wrote `pnpm-lock.yaml` (lockfileVersion 9.0). Tracking
+# `pnpm@latest` here silently rebuilt the image against new majors, so a release
+# of pnpm could break E2E without any repository change.
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
  && apt-get install -y --no-install-recommends nodejs \
  && rm -rf /var/lib/apt/lists/* \
  && corepack enable \
- && corepack prepare pnpm@latest --activate \
+ && corepack prepare pnpm@9.15.9 --activate \
  && pnpm --version
 
 WORKDIR /workspace

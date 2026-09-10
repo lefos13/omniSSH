@@ -39,7 +39,10 @@ wait_for "${SSHD_BASTION_HOST:-sshd-bastion}" "${SSHD_BASTION_PORT:-2222}" sshd-
 
 # ── 2. Install JS deps ────────────────────────────────────────────────────────
 echo "[entrypoint] installing app deps"
-pnpm install --frozen-lockfile=false
+# `--no-frozen-lockfile` is the portable spelling of this flag. The
+# `--frozen-lockfile=false` form is rejected outright by pnpm 10+, whose
+# rewritten CLI parses the option as a pure boolean and takes no value.
+pnpm install --no-frozen-lockfile
 
 echo "[entrypoint] linking pre-baked e2e harness deps from /opt/e2e"
 # Deps were installed at image build time in /opt/e2e (see Dockerfile).
