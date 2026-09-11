@@ -401,7 +401,15 @@ pub(crate) fn migrate_host_to_vault(
     let host = db
         .get_host(host_id)?
         .ok_or_else(|| VaultError::NotFound(host_id.to_string()))?;
-    if host.credential_storage == CredentialStorage::LocalVault {
+    /* The marker alone does not mean the secret is in the vault. An import run
+     * with "Encrypted App Vault" selected persists the marker for a host that
+     * has no credential yet, and a password saved afterwards is written to the
+     * keychain first. Keying the early return on the marker alone left that
+     * password stranded in the keychain while the resolver looked for a vault
+     * blob, so the host could never authenticate. Only skip when the ciphertext
+     * is actually present. */
+    let already_in_vault = db.get_local_vault_credential(host_id)?.is_some();
+    if host.credential_storage == CredentialStorage::LocalVault && already_in_vault {
         return Ok(());
     }
     if host.auth_type != "password" {
@@ -410,7 +418,17 @@ pub(crate) fn migrate_host_to_vault(
         ));
     }
 
-    let credential = super::get_credential(host_id)?;
+    /* A marker-only host with no keychain secret has nothing to move; report
+     * success so saving a host before entering a password is not an error. */
+    let credential = match super::get_credential(host_id) {
+        Ok(credential) => credential,
+        Err(VaultError::NotFound(_))
+            if host.credential_storage == CredentialStorage::LocalVault =>
+        {
+            return Ok(())
+        }
+        Err(error) => return Err(error),
+    };
     let password = match &credential {
         StoredCredential::Password { .. } => &credential,
         _ => {
@@ -1224,5 +1242,45 @@ mod tests {
         let err_not_found = reveal_local_vault_password(&db, "missing-host", "master-password-12")
             .expect_err("missing host");
         assert!(matches!(err_not_found, VaultError::NotFound(_)));
+    }
+
+    /* Reproduces the MobaXterm import path: the import run persists the
+     * "Encrypted App Vault" marker for a host that has no credential yet, and
+     * the password the user types afterwards reaches the keychain first. The
+     * migration must still move it into the vault, otherwise the resolver finds
+     * no ciphertext and the host can never authenticate. */
+    #[test]
+    fn marker_only_host_migrates_a_password_saved_after_import() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let db = HostDb::new(directory.path()).expect("database");
+        let state = LocalVault::new();
+        setup_local_vault(&db, &state, "master-password-12").expect("setup");
+        let host_id = "imported-vault-marker-host";
+
+        let mut host = password_host(host_id);
+        host.credential_storage = CredentialStorage::LocalVault;
+        db.save_host(&host).expect("save host");
+
+        let key = state.session_key().expect("session key");
+
+        // Saving the host before any password exists must not fail.
+        migrate_host_to_vault(&db, &key, host_id).expect("marker-only migration is a no-op");
+
+        // The host editor writes the typed password to the keychain, then migrates.
+        crate::vault::save_credential(
+            host_id,
+            &StoredCredential::Password {
+                password: "the-real-password".to_string(),
+            },
+        )
+        .expect("keychain save");
+        migrate_host_to_vault(&db, &key, host_id).expect("migrate typed password");
+
+        assert!(db.get_local_vault_credential(host_id).unwrap().is_some());
+        assert!(crate::vault::get_credential(host_id).is_err());
+        assert!(matches!(
+            resolve_host_credential(&db, &state, host_id, CredentialStorage::LocalVault),
+            Ok(StoredCredential::Password { ref password }) if password == "the-real-password"
+        ));
     }
 }
