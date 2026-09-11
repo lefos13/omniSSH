@@ -191,6 +191,22 @@ describe("ImportSshConfigModal — MobaXterm source", () => {
       }),
     ));
   });
+
+  it("states that the file carries no passwords and reminds after import", async () => {
+    dialogOpen.mockResolvedValue("/tmp/MobaXterm.ini");
+    render(<ImportSshConfigModal initialSource="mobaxterm" onClose={() => {}} onImported={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Browse for MobaXterm file" }));
+
+    const notice = await screen.findByTestId("import-file-no-credentials-notice");
+    expect(notice).toHaveTextContent(/No passwords are included in this import/i);
+    expect(notice).toHaveTextContent(/MobaXterm session files/i);
+
+    fireEvent.click(screen.getByTestId("import-mobaxterm-submit"));
+
+    expect(await screen.findByTestId("import-add-credentials-reminder")).toHaveTextContent(
+      /add its password before connecting/i
+    );
+  });
 });
 
 /* Termius tests exercise the metadata-only default and the narrow IPC payload

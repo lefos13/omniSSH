@@ -746,6 +746,21 @@ pub async fn local_vault_status(
     .map_err(blocking_task_error)?
 }
 
+/* Report whether a host has ciphertext in the vault. This reads only the
+ * presence of the stored blob, so it needs neither the session key nor an
+ * unlocked vault and never touches the OS keychain — the editor can therefore
+ * show credential state for a locked vault without prompting. */
+#[tauri::command(rename_all = "camelCase")]
+pub async fn local_vault_has_credential(
+    host_id: String,
+    db: tauri::State<'_, Arc<HostDb>>,
+) -> Result<bool, VaultError> {
+    let db = Arc::clone(&db);
+    tokio::task::spawn_blocking(move || Ok(db.get_local_vault_credential(&host_id)?.is_some()))
+        .await
+        .map_err(blocking_task_error)?
+}
+
 #[tauri::command(rename_all = "camelCase")]
 pub async fn local_vault_migrate_host_password(
     host_id: String,

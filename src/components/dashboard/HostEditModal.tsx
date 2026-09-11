@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { Monitor, Eye, EyeOff } from "lucide-react";
+import { Monitor, Eye, EyeOff, AlertTriangle } from "lucide-react";
 import { ModalShell, BTN_GHOST, BTN_SECONDARY, BTN_PRIMARY } from "../shared/ModalShell";
 import { useUiStore } from "../../stores/ui-store";
 import { useHostsStore } from "../../stores/hosts-store";
@@ -222,9 +222,14 @@ export function HostEditModal() {
         const { invoke } = await import("@tauri-apps/api/core");
         const host = await invoke<SavedHost>("get_host", { id: editingHostId });
         /* A local-vault host must never probe Keychain just to draw its editor;
-         * that would reintroduce the authentication prompt this option avoids. */
+         * that would reintroduce the authentication prompt this option avoids.
+         * Its ciphertext presence is read straight from the database instead,
+         * so a host carrying only the storage marker (an import selects one
+         * before any password exists) is reported as having no credential
+         * rather than being assumed to hold one. */
         const hasCred = host.credential_storage === "localVault"
-          ? true
+          ? await invoke<boolean>("local_vault_has_credential", { hostId: editingHostId })
+            .catch(() => false)
           : await invoke<boolean>("vault_has_credential", { hostId: editingHostId })
             .catch(() => false);
         setOriginalHost(host);
@@ -692,6 +697,9 @@ export function HostEditModal() {
                     storage={credentialStorage}
                     onClear={() => setCredCleared(true)}
                     onReveal={() => setRevealDialogOpen(true)}
+                  />
+                  <MissingCredentialNotice
+                    visible={!loadingHost && !isNewHost && (!hasSavedCred || credCleared) && !form.password}
                   />
                   <div className="mt-3">
                     <label htmlFor="hem-password-storage" className={labelClass}>
@@ -1296,6 +1304,32 @@ function CredentialStatus({ visible, busy, storage = "keychain", onClear, onReve
           Clear
         </button>
       </div>
+    </div>
+  );
+}
+
+// ─── MissingCredentialNotice ──────────────────────────────────────────────────
+
+/**
+ * Shown below the password field when no secret is stored for this host.
+ * Connecting then sends an empty password, which most servers reject — the
+ * previous silence made that indistinguishable from a wrong password. This
+ * stays advisory rather than blocking: a host may legitimately need no
+ * password (for example when the server accepts an SSH agent or public key).
+ */
+function MissingCredentialNotice({ visible }: { visible: boolean }) {
+  if (!visible) return null;
+  return (
+    <div
+      data-testid="host-modal-missing-credential"
+      role="status"
+      className="flex items-start gap-1.5 mt-1.5 px-2.5 py-1.5 rounded-md bg-status-connecting/10 border border-status-connecting/30"
+    >
+      <AlertTriangle size={12} className="text-status-connecting shrink-0 mt-0.5" aria-hidden="true" />
+      <span className="text-[length:var(--text-xs)] text-text-secondary">
+        No credential stored for this host. Enter a password above to connect, or leave it empty if
+        this host does not need one.
+      </span>
     </div>
   );
 }

@@ -450,6 +450,19 @@ export function ImportSshConfigModal({
                     ].filter(Boolean).join(' / ')}
                   </p>
                 ) : null}
+                {/* Tell the user what is still missing before they try to
+                    connect: file sources never carry secrets, and a Termius
+                    run only carries them when credential import was opted in. */}
+                {(source === "termius"
+                  ? (termiusResult?.imported_hosts ?? 0) > 0 && (termiusResult?.credentials_stored ?? 0) === 0
+                  : (result?.imported ?? 0) > 0) ? (
+                  <p
+                    data-testid="import-add-credentials-reminder"
+                    className="text-[length:var(--text-xs)] text-text-muted mt-2 max-w-xs"
+                  >
+                    No passwords were imported. Open each host and add its password before connecting.
+                  </p>
+                ) : null}
                 {(source === "termius" ? (termiusResult?.warnings.length ?? 0) > 0 : (result?.errors.length ?? 0) > 0) ? (
                   <div className="mt-3 text-left">
                     {(source === "termius" ? termiusResult?.warnings ?? [] : result?.errors ?? []).map((err, i) => (
@@ -642,6 +655,25 @@ export function ImportSshConfigModal({
                   ))}
                 </div>
               )}
+
+              {/* OpenSSH config and MobaXterm bookmark files carry connection
+                  metadata only — MobaXterm keeps passwords in its own password
+                  manager, not in the exported file. Saying so up front prevents
+                  the imported hosts from looking broken on the first connect. */}
+              <div
+                data-testid="import-file-no-credentials-notice"
+                role="status"
+                className="mb-4 rounded-lg border border-border/60 bg-bg-base px-3 py-2"
+              >
+                <p className="text-[length:var(--text-xs)] font-medium text-text-primary">
+                  No passwords are included in this import
+                </p>
+                <p className="mt-1 text-[length:var(--text-2xs)] text-text-muted">
+                  {source === "ssh" ? "SSH config files" : "MobaXterm session files"} store connection
+                  settings only. Add a password for each imported host before connecting, or leave it
+                  empty for hosts that authenticate with a key.
+                </p>
+              </div>
 
               {/* Select all / none */}
               <div className="flex items-center gap-3 mb-3">
