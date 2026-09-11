@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+
+## [1.2.1] - 2026-09-11
+
+### 🐛 Fixes
+
+#### 1. Imported Hosts Could Never Authenticate via the App Vault
+* **Password Stranded in the Keychain**: Importing with "Encrypted App Vault" selected stores the storage marker before any password exists. A password entered afterwards was written to the System Keychain, but the migration into the vault saw the marker and exited early, so no encrypted credential was ever written. Connecting then sent an empty password and failed no matter how correct the password was.
+* **Migration Now Checks the Ciphertext**: The migration skips only when the encrypted credential is actually present, so a marker-only host still migrates. Opening an affected host and saving it moves the existing keychain password into the vault — no need to re-import or retype it.
+
+### 🚀 Improvements
+
+#### 1. Credential Visibility Warnings
+* **Missing Credential Notice**: The host editor now warns when no credential is stored for a host, instead of silently attempting an empty password. It stays advisory, since a host may legitimately need no password.
+* **Accurate Vault Credential State**: App Vault hosts report credential presence from the database rather than assuming the marker implies a stored secret, still without any Keychain prompt.
+* **Import Expectations**: OpenSSH and MobaXterm imports now state up front that the file carries no passwords, and the result screen reminds you to add a password to each imported host before connecting.
+
+---
+
 ## [1.2.0] - 2026-09-10
 
 ### 🚀 Highlights & New Features
