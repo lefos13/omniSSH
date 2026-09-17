@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.0] - 2026-09-17
+
+### 🚀 Highlights & New Features
+
+#### 1. Host Plugins & Trackers Dock
+* **Live Monitoring Beside The Terminal**: A new plugins side panel docks next to the active terminal (alongside the linked explorer) and renders one collapsible card per enabled tracker for that host: Server Health (CPU/memory/disk/uptime), Docker, PM2, systemd services, Log Viewer, HTTP health probe, Kubernetes, SSL & Ports, Database Ping, and Cron & Timers.
+* **Per-Host Assignment**: Trackers are enabled per host in a new tab of the host editor, each with its own small config form (ports, paths, contexts). Config values are opaque JSON and never carry secrets.
+* **Polling Over The Existing Session**: Cards poll read-only commands on their own interval through hidden execs on the already-open SSH session — no extra connection, with an in-flight guard and cleanup on disconnect or unmount. The panel follows pane focus in split tabs.
+* **Every Action Is Verified First**: State-changing actions (restart/stop/start, kill, rollout restart, delete pod) open a verification modal showing the exact fully-interpolated command. Confirm runs precisely that string; Cancel invokes nothing.
+* **Tail A Log From The Explorer**: The explorer's file context menu gained "Tail log in Plugins", which opens the panel on the owning tab with the log viewer primed for that path.
+* **Global Switch**: Plugins have their own Settings section and can be turned off entirely.
+
+#### 2. Terminal Keyword Highlighting
+* **Rules For Words Or Regex**: Define highlight rules in Settings — plain keyword or regular expression, case-sensitivity, whole-word matching, and either colored text or a background fill.
+* **Global Or Per-Host Scope**: A rule applies everywhere or only to selected saved hosts.
+* **Live On Output And Scroll**: Matches are decorated in the visible viewport as output arrives and while scrolling, with correct Unicode and wide-character cell offsets and per-line deduplication so decorations are not registered twice.
+
+#### 3. Grouped Hosts View
+* **Collapsible Group Sections**: The Hosts dashboard gained a third view mode that renders one collapsible section per group — hosts and S3 connections together — plus a trailing Ungrouped section. Host rows keep full action parity with the list view.
+* **Sidebar Navigates Instead Of Filtering**: In grouped mode the groups sidebar scroll-navigates to a section rather than filtering the page.
+* **Resizable Groups Sidebar**: The sidebar is drag-resizable with its width persisted locally, matching the linked-panel handles.
+
+### 🐛 Fixes
+
+#### 1. Updated Vault Passwords Were Not Re-Encrypted
+* **New Password Now Overwrites The Ciphertext**: Typing a new password for a host already migrated to the App Vault staged it to the keychain, but migration skipped hosts that already had vault ciphertext — so the old encrypted password kept being used. Migration no longer short-circuits on an existing blob, so the updated password replaces it and the keychain copy is cleared.
+
+---
+
 ## [1.3.0] - 2026-09-17
 
 ### 🚀 Highlights & New Features

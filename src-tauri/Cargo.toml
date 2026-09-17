@@ -1,6 +1,6 @@
 [package]
 name = "anyscp"
-version = "1.3.0"
+version = "1.4.0"
 description = "OmniSSH - A modern desktop client for SSH, SFTP, and S3"
 authors = ["Nevil Macwan <macnev2013@gmail.com>"]
 license = "MIT"
