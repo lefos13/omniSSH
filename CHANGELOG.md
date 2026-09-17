@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.0] - 2026-09-17
+
+### 🚀 Highlights & New Features
+
+#### 1. Split Terminals Across Different Hosts
+* **Split With Any Saved Host**: A terminal pane can now be split horizontally or vertically against a *different* saved host. The new split picker offers instant search, recent-host ordering, direction toggling, and full keyboard navigation, and is reachable from the pane header, the host card/list context menus, and `⌘⌥D`.
+* **Parallel Input Synchronization**: Split panes can be linked so typed input is broadcast to every pane in the tab — one command, many servers. The link state is per tab and survives pane focus changes.
+* **Split Global Header**: Tab-level actions (linked explorer, pane sync) moved into a single header for split sessions instead of being repeated on every pane, and `⌘⌥[` / `⌘⌥]` cycle pane focus.
+
+#### 2. Server-to-Server Transfers
+* **Direct Remote → Remote Copies**: The explorer can copy files and directories straight from one server to another, streaming bytes between the two SFTP sessions without staging anything on the local disk.
+* **Same Queue, Same Progress**: Relay copies reuse the existing transfer queue, concurrency limits, cancellation, retry, and bounded history, and report progress on the shared transfers popover alongside SFTP/SCP/S3 transfers.
+* **Honest Transport Limits**: A relay is rejected with an actionable error when either side fell back to SCP, which has no random-access file stream, rather than half-working.
+
+#### 3. Dual-Host Explorer Panes
+* **Pick The Left Pane Source**: The host explorer's left pane can show the local machine (default) or another saved server, so two remote hosts can be browsed and copied between side by side.
+* **Automatic Transport Selection**: Opening a host for the explorer connects a no-PTY session and prefers SFTP, transparently falling back to SCP when the subsystem is disabled. Rust owns that connection's lifetime and releases it with the final channel.
+
+#### 4. Per-Host Recent Paths
+* **Shared MRU History**: The five most-recently-visited directories are remembered per host and shared by the explorer toolbar (navigate the pane) and the terminal pane header (`cd` in the shell).
+* **Fills In By Itself**: The OSC 7 working-directory hook is now installed automatically once per session, so plain terminal sessions populate the history without discovering the manual "Sync CWD" control. Paths are persisted in SQLite and deliberately excluded from all logs and telemetry.
+
+#### 5. Per-Host Terminal Color Schemes
+* **Bundled Palettes**: A saved host can pin a terminal color scheme in the host editor. Only the scheme id is persisted, so the database and Rust layer stay theme-agnostic, and a pinned palette stays fixed in both app themes. Hosts without a scheme keep the app-derived look.
+
+### 🚀 Improvements
+
+#### 1. Hosts Dashboard Group Sidebar
+* **Persistent Group Rail**: The group cards grid was replaced by a persistent sidebar listing every group, so switching groups no longer requires scrolling the host grid back to the top. Drag-to-reorder and right-click group actions are preserved.
+
+#### 2. Explorer & Terminal Polish
+* **Reworked Select Control**: The shared select control was rebuilt for keyboard and screen-reader use and is now portal-rendered so menus are never clipped by their container.
+* **Linked Explorer Cleanup**: The linked explorer panel follows the focused pane correctly in split sessions and prunes its state when tabs or panes go away.
+
+---
+
 ## [1.2.1] - 2026-09-11
 
 ### 🐛 Fixes
