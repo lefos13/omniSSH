@@ -213,8 +213,11 @@ services:
       start_period: 5s
 
   # ─── S3-compatible storage (MinIO) ──────────────────────────────────────────
+  # Pulled from quay.io: MinIO's Docker Hub repositories (`minio/minio`,
+  # `minio/mc`) stopped serving anonymous pulls, so Hub pulls now fail with
+  # "pull access denied". quay.io is MinIO's other official registry.
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:latest
     container_name: anyscp-e2e-minio
     command: server /data --console-address ":9001"
     environment:
@@ -225,7 +228,7 @@ services:
   # One-shot bucket seed — creates the test bucket and uploads two objects
   # so the S3 explorer specs have something to render.
   minio-seed:
-    image: minio/mc:latest
+    image: quay.io/minio/mc:latest
     container_name: anyscp-e2e-minio-seed
     depends_on:
       minio:

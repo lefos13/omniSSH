@@ -194,7 +194,7 @@ the next run back to a full build.
 
 S3 specs are intentionally deferred — driving them needs:
 
-1. A MinIO sidecar in `docker-compose.yml` (image: `minio/minio:latest`,
+1. A MinIO sidecar in `docker-compose.yml` (image: `quay.io/minio/minio:latest`,
    command: `server /data --console-address ":9001"`, fixed root creds).
 2. A `keygen`-style one-shot service that creates a bucket and seeds it
    with a couple of test objects.

@@ -278,15 +278,21 @@ describe("ImportSshConfigModal — Termius source", () => {
     
     fireEvent.click(screen.getByRole("button", { name: "Unlock Vault" }));
     
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith(
-      "import_commit_termius",
-      expect.objectContaining({
-        request: expect.objectContaining({
-          credential_storage: "localVault"
-        })
-      })
-    ));
-  });
+    /* The resumed commit chains loadStatus → dynamic `@tauri-apps/api/core`
+     * import → IPC, which exceeds waitFor's 1s default on loaded CI runners. */
+    await waitFor(
+      () =>
+        expect(invoke).toHaveBeenCalledWith(
+          "import_commit_termius",
+          expect.objectContaining({
+            request: expect.objectContaining({
+              credential_storage: "localVault"
+            })
+          })
+        ),
+      { timeout: 10000 }
+    );
+  }, 20000);
 
   const termiusPreview = {
     preview_token: "opaque-preview-token",
