@@ -2,6 +2,9 @@ import { Columns2, Rows2, Maximize2, Minimize2, X, FolderOpen } from "lucide-rea
 import { useSessionStore } from "../../stores/session-store";
 import { useTabStore } from "../../stores/tab-store";
 import { useLinkedExplorerStore } from "../../stores/linked-explorer-store";
+import { RecentPathsMenu } from "../explorer/RecentPathsMenu";
+import { hostKeyFor } from "../../lib/host-key";
+import { sendCdToTerminal } from "../../lib/shell-sync";
 
 interface PaneHeaderProps {
   sessionId: string;
@@ -106,6 +109,21 @@ export function PaneHeader({ sessionId, tabId }: PaneHeaderProps) {
           isActive ? "opacity-60 group-hover/pane:opacity-100" : "opacity-0 group-hover/pane:opacity-100",
         ].join(" ")}
       >
+        {/* Recent paths — one-click `cd` to a previously visited directory */}
+        <RecentPathsMenu
+          hostKey={hostKeyFor({
+            savedHostId: session.hostConfig.savedHostId,
+            username: session.hostConfig.username,
+            host: session.hostConfig.host,
+            port: session.hostConfig.port,
+          })}
+          onSelect={(path) => void sendCdToTerminal(sessionId, path)}
+          buttonClassName={btnClass}
+          iconSize={13}
+          label="Recent paths"
+          testId="pane-recent-paths"
+        />
+
         {/* Linked Explorer toggle */}
         <button
           type="button"

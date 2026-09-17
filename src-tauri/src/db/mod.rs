@@ -643,6 +643,27 @@ impl HostDb {
             tracing::info!("migration 16→17 applied: added local vault storage");
         }
 
+        if version < 18 {
+            /* Per-host MRU list of visited server paths, surfaced as a
+             * click-to-navigate menu in explorer and terminal sessions. Rows
+             * are keyed by host identity, not a foreign key, because quick
+             * (unsaved) connections fall back to their connection address. */
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS recent_paths (
+                    host_key     TEXT NOT NULL,
+                    scope        TEXT NOT NULL,
+                    path         TEXT NOT NULL,
+                    last_used_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    seq          INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (host_key, scope, path)
+                );
+                CREATE INDEX IF NOT EXISTS idx_recent_paths_lookup
+                    ON recent_paths (host_key, scope, seq DESC);
+                INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', '18');",
+            )?;
+            tracing::info!("migration 17→18 applied: added recent paths");
+        }
+
         Ok(())
     }
 
@@ -1246,6 +1267,12 @@ impl HostDb {
         if affected == 0 {
             return Err(DbError::NotFound(id.to_string()));
         }
+        // Recent paths are keyed by identity rather than a foreign key, so
+        // remove the host's history explicitly alongside the host row.
+        conn.execute(
+            "DELETE FROM recent_paths WHERE host_key = ?1",
+            params![format!("host:{id}")],
+        )?;
         Ok(())
     }
 
@@ -1430,7 +1457,98 @@ impl HostDb {
         rows.collect::<Result<Vec<_>, _>>().map_err(DbError::from)
     }
 
-    /// Return all connection history entries (not deduplicated), with pagination.
+    // -----------------------------------------------------------------------
+    // Recent paths (per-host MRU of visited server directories)
+    // -----------------------------------------------------------------------
+
+    /// Record that `path` was visited for `host_key`/`scope`, moving it to the
+    /// top of the MRU list and pruning the list to the newest 5 entries.
+    ///
+    /// Paths are deliberately excluded from tracing fields: host filesystem
+    /// paths must never reach logs or telemetry.
+    #[instrument(skip(self))]
+    pub fn record_recent_path(
+        &self,
+        host_key: &str,
+        scope: &str,
+        path: &str,
+    ) -> Result<(), DbError> {
+        if host_key.is_empty() || scope.is_empty() || path.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let tx = conn.transaction()?;
+        // `seq` is a per-(host, scope) monotonic counter so recency ordering is
+        // deterministic even when several paths are recorded within the same
+        // second-resolution timestamp.
+        tx.execute(
+            "INSERT INTO recent_paths (host_key, scope, path, last_used_at, seq)
+             VALUES (
+                 ?1, ?2, ?3, datetime('now'),
+                 (SELECT COALESCE(MAX(seq), 0) + 1 FROM recent_paths WHERE host_key = ?1 AND scope = ?2)
+             )
+             ON CONFLICT(host_key, scope, path)
+             DO UPDATE SET
+                 last_used_at = datetime('now'),
+                 seq = (SELECT COALESCE(MAX(seq), 0) + 1 FROM recent_paths WHERE host_key = ?1 AND scope = ?2)",
+            params![host_key, scope, path],
+        )?;
+        // Keep only the 5 newest paths for this host/scope.
+        tx.execute(
+            "DELETE FROM recent_paths
+             WHERE host_key = ?1 AND scope = ?2
+               AND seq NOT IN (
+                   SELECT seq FROM recent_paths
+                   WHERE host_key = ?1 AND scope = ?2
+                   ORDER BY seq DESC
+                   LIMIT 5
+               )",
+            params![host_key, scope],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Return the most-recently-used paths for `host_key`/`scope`, newest-first.
+    #[instrument(skip(self))]
+    pub fn list_recent_paths(
+        &self,
+        host_key: &str,
+        scope: &str,
+        limit: u32,
+    ) -> Result<Vec<String>, DbError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let mut stmt = conn.prepare(
+            "SELECT path FROM recent_paths
+             WHERE host_key = ?1 AND scope = ?2
+             ORDER BY seq DESC
+             LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![host_key, scope, limit], |row| {
+            row.get::<_, String>(0)
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(DbError::from)
+    }
+
+    /// Drop the entire recent-paths history for `host_key`/`scope`.
+    #[instrument(skip(self))]
+    pub fn clear_recent_paths(&self, host_key: &str, scope: &str) -> Result<(), DbError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        conn.execute(
+            "DELETE FROM recent_paths WHERE host_key = ?1 AND scope = ?2",
+            params![host_key, scope],
+        )?;
+        Ok(())
+    }
     pub fn list_connection_history(
         &self,
         host_id: Option<&str>,
@@ -2271,6 +2389,7 @@ impl HostDb {
         tx.execute_batch(
             "PRAGMA defer_foreign_keys = TRUE;
              DELETE FROM connection_history;
+             DELETE FROM recent_paths;
              DELETE FROM port_forwarding_rules;
              DELETE FROM s3_connections;
              DELETE FROM snippets;
@@ -2448,6 +2567,7 @@ const COPYABLE_TABLES: &[&str] = &[
     "host_groups",
     "saved_hosts",
     "connection_history",
+    "recent_paths",
     "snippet_folders",
     "snippets",
     "port_forwarding_rules",
@@ -2637,8 +2757,12 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(version, "17");
-        for table in ["local_vault_metadata", "local_vault_credentials"] {
+        assert_eq!(version, "18");
+        for table in [
+            "local_vault_metadata",
+            "local_vault_credentials",
+            "recent_paths",
+        ] {
             assert!(conn
                 .query_row(
                     "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -2657,6 +2781,53 @@ mod tests {
             )
             .unwrap();
         assert!(foreign_key.contains("ON DELETE CASCADE"));
+    }
+
+    #[test]
+    fn recent_paths_are_pruned_reordered_and_cleared() {
+        let (db, _dir) = test_db();
+        let key = "host:host-1";
+
+        // Six distinct paths: the oldest must be evicted, newest-first order.
+        for i in 1..=6 {
+            db.record_recent_path(key, "remote", &format!("/dir/{i}"))
+                .expect("record recent path");
+        }
+        let listed = db.list_recent_paths(key, "remote", 10).expect("list");
+        assert_eq!(listed.len(), 5, "history caps at five entries");
+        assert_eq!(listed[0], "/dir/6");
+        assert!(!listed.contains(&"/dir/1".to_string()), "oldest is evicted");
+
+        // Re-visiting an existing path moves it to the top without duplicating.
+        db.record_recent_path(key, "remote", "/dir/3")
+            .expect("re-record");
+        let listed = db.list_recent_paths(key, "remote", 10).expect("list");
+        assert_eq!(listed[0], "/dir/3");
+        assert_eq!(listed.iter().filter(|p| *p == "/dir/3").count(), 1);
+
+        // Scopes are independent, and blank input is ignored.
+        db.record_recent_path(key, "other", "/elsewhere")
+            .expect("record");
+        db.record_recent_path("", "remote", "/ignored")
+            .expect("ignored");
+        assert_eq!(db.list_recent_paths(key, "remote", 10).unwrap().len(), 5);
+        assert_eq!(
+            db.list_recent_paths(key, "other", 10).unwrap(),
+            vec!["/elsewhere".to_string()]
+        );
+
+        db.clear_recent_paths(key, "remote").expect("clear");
+        assert!(db.list_recent_paths(key, "remote", 10).unwrap().is_empty());
+
+        // Deleting a host also drops its recent-path history.
+        db.save_host(&sample_host("host-1")).expect("save host");
+        db.record_recent_path("host:host-1", "remote", "/gone")
+            .expect("record");
+        db.delete_host("host-1").expect("delete host");
+        assert!(db
+            .list_recent_paths("host:host-1", "remote", 10)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

@@ -41,6 +41,12 @@ export function useSftpTransfers() {
           const s3Items = await invoke<TransferEvent[]>("s3_list_transfers");
           hydrate(s3Items);
         } catch { /* Backend may not have this command yet */ }
+
+        // Hydrate server-to-server (relay) transfers
+        try {
+          const relayItems = await invoke<TransferEvent[]>("relay_list_transfers");
+          hydrate(relayItems);
+        } catch { /* Backend may not have this command yet */ }
       } catch { /* Not in Tauri context */ }
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -175,9 +181,49 @@ export function useSftpTransfers() {
     return () => { aborted = true; unlisten?.(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [updateTransfer, setPopoverOpen, setHostLabel]);
+
+  // Listen for live server-to-server (relay) transfer events. The source
+  // session lives in the sftp store, so its host label can be cached too.
+  useEffect(() => {
+    let aborted = false;
+    let unlisten: (() => void) | undefined;
+
+    (async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        if (aborted) return;
+
+        const unsub = await listen<TransferEvent>("relay:transfer", (event) => {
+          const transfer = event.payload;
+
+          const isNew = !useTransferStore.getState().transfers.has(transfer.transfer_id);
+
+          updateTransfer(transfer);
+
+          if (transfer.src_session_id) {
+            const srcSession = useSftpStore.getState().sessions.get(transfer.src_session_id);
+            if (srcSession) {
+              setHostLabel(transfer.src_session_id, srcSession.label);
+            }
+          }
+
+          if (isNew && (transfer.status === "InProgress" || transfer.status === "Queued")) {
+            if (!useTransferStore.getState().popoverOpen) {
+              setPopoverOpen(true);
+            }
+          }
+        });
+
+        if (aborted) { unsub(); } else { unlisten = unsub; }
+      } catch { /* Tauri API not available */ }
+    })();
+
+    return () => { aborted = true; unlisten?.(); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [updateTransfer, setPopoverOpen, setHostLabel]);
 }
 
-// E2E test hook — emit a synthetic transfer event so specs can drive the
+  // E2E test hook — emit a synthetic transfer event so specs can drive the
 // auto-open behaviour deterministically (the backend's progress events are
 // otherwise too fast/short to script). Mirrors the `__e2e*` invoke wrappers in
 // the stores; the import is bundled so it resolves inside the app context.

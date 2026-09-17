@@ -108,10 +108,11 @@ describe("useTransfers", () => {
 
     expect(useTransferStore.getState().transfers.has("done")).toBe(false);
     expect(useTransferStore.getState().transfers.has("active")).toBe(true);
-    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(4));
     expect(invoke).toHaveBeenCalledWith("sftp_clear_finished_transfers");
     expect(invoke).toHaveBeenCalledWith("scp_clear_finished_transfers");
     expect(invoke).toHaveBeenCalledWith("s3_clear_finished_transfers");
+    expect(invoke).toHaveBeenCalledWith("relay_clear_finished_transfers");
   });
 
   it("keeps row-callback identities stable across progress ticks", () => {

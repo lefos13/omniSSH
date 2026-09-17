@@ -27,8 +27,12 @@ export interface TransferEvent {
   scp_session_id?: string;
   /** Present for S3 transfers */
   s3_session_id?: string;
+  /** Present for server-to-server (relay) copies: the source session. */
+  src_session_id?: string;
+  /** Present for server-to-server (relay) copies: the destination session. */
+  dst_session_id?: string;
   name: string;
-  direction: "Upload" | "Download";
+  direction: "Upload" | "Download" | "Relay";
   status: TransferStatusValue;
   error: string | null;
   bytes_transferred: number;

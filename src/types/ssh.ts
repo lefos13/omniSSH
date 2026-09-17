@@ -15,6 +15,9 @@ export interface HostConfig {
   keep_alive_interval?: number;
   default_shell?: string;
   startup_command?: string;
+  /** Frontend-only: id of the saved host this session came from, used to group
+   *  per-host state (recent paths). Ignored by the Rust `ssh_connect` payload. */
+  savedHostId?: string;
 }
 
 export type ConnectionStatus =

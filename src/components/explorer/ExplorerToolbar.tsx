@@ -14,6 +14,7 @@ import {
   X,
 } from "lucide-react";
 import type { FileSystemProvider } from "../../types/explorer";
+import { RecentPathsMenu } from "./RecentPathsMenu";
 
 interface BreadcrumbSegment {
   label: string;
@@ -41,6 +42,10 @@ interface ExplorerToolbarProps {
   onCdToTerminal?: () => void;
   searchQuery?: string;
   onSearchChange?: (query: string) => void;
+  /** Host identity key; when set, a recent-paths menu is shown. */
+  recentPathsHostKey?: string;
+  /** Navigate to a recent path (shown only alongside `recentPathsHostKey`). */
+  onNavigateRecent?: (path: string) => void;
 }
 
 // cache icons so they render once
@@ -115,6 +120,8 @@ export const ExplorerToolbar = memo(function ExplorerToolbar({
   onCdToTerminal,
   searchQuery,
   onSearchChange,
+  recentPathsHostKey,
+  onNavigateRecent,
 }: ExplorerToolbarProps) {
   const caps = provider.capabilities;
 
@@ -262,6 +269,17 @@ export const ExplorerToolbar = memo(function ExplorerToolbar({
           {/* Fills remaining empty space so clicking past the last segment still opens edit mode */}
           <span className="flex-1 min-w-2 h-full" />
         </div>
+      )}
+
+      {/* Recent paths (per-host MRU) */}
+      {recentPathsHostKey && onNavigateRecent && (
+        <RecentPathsMenu
+          hostKey={recentPathsHostKey}
+          onSelect={onNavigateRecent}
+          buttonClassName={ICON_BTN_CLASS}
+          testId="explorer-recent-paths"
+          label="Recent paths"
+        />
       )}
 
       {/* Busy spinner */}

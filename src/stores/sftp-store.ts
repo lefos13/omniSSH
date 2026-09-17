@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { SftpEntry, SftpClipboard } from "../types";
-import type { Transport } from "../lib/explorer-transport";
+import { closeExplorerSession, type Transport } from "../lib/explorer-transport";
 // ─── Session shape ────────────────────────────────────────────────────────────
 
 export interface SftpSession {
@@ -19,7 +19,26 @@ export interface SftpSession {
   sortBy: "name" | "size" | "modified";
   sortAsc: boolean;
   transport?: Transport;
+  /** Saved host this explorer session belongs to, used to group per-host state
+   *  (recent paths). Absent for ad-hoc connections. */
+  savedHostId?: string;
 }
+
+// ─── Left pane source ─────────────────────────────────────────────────────────
+
+/**
+ * What an explorer tab shows in its left pane. Defaults to the local machine;
+ * a remote source binds the pane to an SFTP/SCP session of another saved host.
+ */
+export type LeftPaneSource =
+  | { kind: "local" }
+  | {
+      kind: "remote";
+      sftpSessionId: string;
+      transport: Transport;
+      label: string;
+      hostId: string;
+    };
 
 // ─── Store shape ──────────────────────────────────────────────────────────────
 
@@ -27,8 +46,11 @@ interface SftpState {
   sessions: Map<string, SftpSession>;
   activeSftpSessionId: string | null;
   clipboard: SftpClipboard | null;
+  /** Left-pane source per explorer tab, keyed by the tab's right-pane session
+   *  id. A missing entry means the local machine. */
+  leftPane: Map<string, LeftPaneSource>;
 
-  openSession: (sftpSessionId: string, sshSessionId: string, label: string, username?: string, sudoMode?: boolean, startDirectory?: string, transport?: Transport) => void;
+  openSession: (sftpSessionId: string, sshSessionId: string, label: string, username?: string, sudoMode?: boolean, startDirectory?: string, transport?: Transport, savedHostId?: string) => void;
   closeSession: (sftpSessionId: string) => void;
   /** Replace an existing session's ID in-place (used by sudo toggle). */
   swapSession: (oldId: string, newId: string, sudoMode: boolean) => void;
@@ -42,16 +64,21 @@ interface SftpState {
     sortAsc: boolean,
   ) => void;
   setClipboard: (clipboard: SftpClipboard | null) => void;
+  /** Point an explorer tab's left pane at a source (local or another host). */
+  setLeftPane: (tabId: string, source: LeftPaneSource) => void;
+  /** Close the left pane's remote session (if any) and fall back to local. */
+  closeLeftPane: (tabId: string) => Promise<void>;
 }
 
 // ─── Store ────────────────────────────────────────────────────────────────────
 
-export const useSftpStore = create<SftpState>((set) => ({
+export const useSftpStore = create<SftpState>((set, get) => ({
   sessions: new Map(),
   activeSftpSessionId: null,
   clipboard: null,
+  leftPane: new Map(),
 
-  openSession: (sftpSessionId, sshSessionId, label, username, sudoMode, startDirectory, transport) =>
+  openSession: (sftpSessionId, sshSessionId, label, username, sudoMode, startDirectory, transport, savedHostId) =>
     set((state) => {
       const next = new Map(state.sessions);
       next.set(sftpSessionId, {
@@ -68,11 +95,18 @@ export const useSftpStore = create<SftpState>((set) => ({
         sortBy: "name",
         sortAsc: true,
         transport: transport ?? "sftp",
+        savedHostId,
       });
       return { sessions: next, activeSftpSessionId: sftpSessionId };
     }),
 
-  closeSession: (sftpSessionId) =>
+  closeSession: (sftpSessionId) => {
+    // An explorer tab may have pointed its left pane at another host; release
+    // that remote session too, otherwise its channel and bare SSH connection
+    // leak. (Both tab-close paths funnel through here.)
+    if (get().leftPane.has(sftpSessionId)) {
+      void get().closeLeftPane(sftpSessionId);
+    }
     set((state) => {
       const next = new Map(state.sessions);
       next.delete(sftpSessionId);
@@ -81,7 +115,8 @@ export const useSftpStore = create<SftpState>((set) => ({
           ? (next.keys().next().value ?? null)
           : state.activeSftpSessionId;
       return { sessions: next, activeSftpSessionId: newActive };
-    }),
+    });
+  },
 
   swapSession: (oldId, newId, sudoMode) =>
     set((state) => {
@@ -99,7 +134,16 @@ export const useSftpStore = create<SftpState>((set) => ({
         state.clipboard?.sourceSessionId === oldId
           ? { ...state.clipboard, sourceSessionId: newId }
           : state.clipboard;
-      return { sessions: next, activeSftpSessionId: newActive, clipboard };
+      // The sudo toggle also re-keys the tab id, so move any left-pane binding
+      // with it — otherwise the remote left pane would be orphaned.
+      let leftPane = state.leftPane;
+      const boundLeft = state.leftPane.get(oldId);
+      if (boundLeft) {
+        leftPane = new Map(state.leftPane);
+        leftPane.delete(oldId);
+        leftPane.set(newId, boundLeft);
+      }
+      return { sessions: next, activeSftpSessionId: newActive, clipboard, leftPane };
     }),
 
   setActiveSftpSession: (id) =>
@@ -143,6 +187,43 @@ export const useSftpStore = create<SftpState>((set) => ({
 
   setClipboard: (clipboard) =>
     set({ clipboard }),
+
+  setLeftPane: (tabId, source) =>
+    set((state) => {
+      const leftPane = new Map(state.leftPane);
+      leftPane.set(tabId, source);
+      return { leftPane };
+    }),
+
+  closeLeftPane: async (tabId) => {
+    const source = get().leftPane.get(tabId);
+    // Drop the binding first so the pane immediately falls back to the local
+    // machine while the remote channel is being torn down.
+    set((state) => {
+      const leftPane = new Map(state.leftPane);
+      leftPane.delete(tabId);
+      return { leftPane };
+    });
+    if (!source || source.kind !== "remote") return;
+
+    try {
+      await closeExplorerSession(source.transport, source.sftpSessionId);
+    } catch {
+      /* Best-effort — the channel may already be gone. */
+    }
+
+    // Remove the left pane's own explorer session (not the owning tab).
+    set((state) => {
+      if (!state.sessions.has(source.sftpSessionId)) return state;
+      const sessions = new Map(state.sessions);
+      sessions.delete(source.sftpSessionId);
+      const activeSftpSessionId =
+        state.activeSftpSessionId === source.sftpSessionId
+          ? (sessions.keys().next().value ?? null)
+          : state.activeSftpSessionId;
+      return { sessions, activeSftpSessionId };
+    });
+  },
 }));
 
 // E2E test hooks — wrap the backend transfer commands so specs can drive

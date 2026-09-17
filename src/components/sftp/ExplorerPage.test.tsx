@@ -335,8 +335,8 @@ describe("ExplorerPage — dual-pane host explorer", () => {
 
     const copyBtn = screen.getByTestId("explorer-copy-to-remote");
     expect(copyBtn).toBeDisabled();
-    expect(copyBtn).toHaveAttribute("aria-label", "Copy selected to remote (0 items)");
-    expect(copyBtn).toHaveAttribute("title", "Copy selected to remote (0 items)");
+    expect(copyBtn).toHaveAttribute("aria-label", "Copy selected left → right (0 items)");
+    expect(copyBtn).toHaveAttribute("title", "Copy selected left → right (0 items)");
   });
 
   it("enqueues upload once with exact { localPaths, remoteDir } for a mixed file+folder selection", async () => {
@@ -357,7 +357,7 @@ describe("ExplorerPage — dual-pane host explorer", () => {
 
     const copyBtn = screen.getByTestId("explorer-copy-to-remote");
     expect(copyBtn).not.toBeDisabled();
-    expect(copyBtn).toHaveAttribute("aria-label", "Copy selected to remote (2 items)");
+    expect(copyBtn).toHaveAttribute("aria-label", "Copy selected left → right (2 items)");
 
     fireEvent.click(copyBtn);
 
@@ -577,8 +577,8 @@ describe("ExplorerPage — dual-pane host explorer", () => {
     const copyToLocalBtn = screen.getByTestId("explorer-copy-to-local");
     // 1. Disabled with no remote selection
     expect(copyToLocalBtn).toBeDisabled();
-    expect(copyToLocalBtn).toHaveAttribute("aria-label", "Copy selected to local (0 items)");
-    expect(copyToLocalBtn).toHaveAttribute("title", "Copy selected to local (0 items)");
+    expect(copyToLocalBtn).toHaveAttribute("aria-label", "Copy selected right → left (0 items)");
+    expect(copyToLocalBtn).toHaveAttribute("title", "Copy selected right → left (0 items)");
 
     // Select remote file
     const remoteSection = container.querySelector('[data-explorer-pane="remote"]') as HTMLElement;
@@ -587,7 +587,7 @@ describe("ExplorerPage — dual-pane host explorer", () => {
 
     // Enabled with remote selection
     expect(copyToLocalBtn).not.toBeDisabled();
-    expect(copyToLocalBtn).toHaveAttribute("aria-label", "Copy selected to local (1 item)");
+    expect(copyToLocalBtn).toHaveAttribute("aria-label", "Copy selected right → left (1 item)");
 
     // 2. Disabled while busy
     let resolveEnqueue!: () => void;
@@ -661,7 +661,7 @@ describe("ExplorerPage — dual-pane host explorer", () => {
 
     const copyBtn = screen.getByTestId("explorer-copy-to-local");
     expect(copyBtn).not.toBeDisabled();
-    expect(copyBtn).toHaveAttribute("aria-label", "Copy selected to local (2 items)");
+    expect(copyBtn).toHaveAttribute("aria-label", "Copy selected right → left (2 items)");
 
     fireEvent.click(copyBtn);
 
@@ -1059,8 +1059,8 @@ describe("ExplorerPage — dual-pane host explorer", () => {
       const copyToLocalBtn = screen.getByTestId("explorer-copy-to-local");
 
       // Initially 0 items selected on both sides
-      expect(copyToRemoteBtn).toHaveAttribute("aria-label", "Copy selected to remote (0 items)");
-      expect(copyToLocalBtn).toHaveAttribute("aria-label", "Copy selected to local (0 items)");
+      expect(copyToRemoteBtn).toHaveAttribute("aria-label", "Copy selected left → right (0 items)");
+      expect(copyToLocalBtn).toHaveAttribute("aria-label", "Copy selected right → left (0 items)");
       expect(copyToRemoteBtn).toBeDisabled();
       expect(copyToLocalBtn).toBeDisabled();
 
@@ -1075,7 +1075,7 @@ describe("ExplorerPage — dual-pane host explorer", () => {
       w.__e2eExplorerSetSelectionLocal?.(["notes.txt"]);
 
       await waitFor(() => {
-        expect(copyToRemoteBtn).toHaveAttribute("aria-label", "Copy selected to remote (1 item)");
+        expect(copyToRemoteBtn).toHaveAttribute("aria-label", "Copy selected left → right (1 item)");
         expect(copyToRemoteBtn).toBeEnabled();
       });
     });

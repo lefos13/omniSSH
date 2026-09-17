@@ -280,6 +280,7 @@ export const useLinkedExplorerStore = create<LinkedExplorerState>((set, get) => 
             false,
             undefined,
             transport,
+            sshSession.hostConfig.savedHostId,
           );
 
         const connectedBinding: LinkedExplorerBinding = {

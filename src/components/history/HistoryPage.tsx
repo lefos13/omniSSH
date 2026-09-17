@@ -119,6 +119,7 @@ export function HistoryPage() {
         username: entry.username,
         label: entry.host_label || undefined,
         auth_method: { type: "password", password: "" },
+        savedHostId: entry.host_id,
       });
       useTabStore.getState().addTab({ type: "terminal", id: sessionId, label });
     } catch {
@@ -156,7 +157,7 @@ export function HistoryPage() {
         }
       }
 
-      useSftpStore.getState().openSession(explorerSessionId, sessionId, label, entry.username, false, undefined, transport);
+      useSftpStore.getState().openSession(explorerSessionId, sessionId, label, entry.username, false, undefined, transport, entry.host_id);
       useTabStore.getState().addTab({ type: "sftp", id: explorerSessionId, label, transport });
     } catch {
       // Errors surface via SFTP page

@@ -9,10 +9,31 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invoke(...args),
 }));
 
+/*
+ * `node:child_process` is a Node builtin with no types in the app's TS config.
+ * Import it through a non-literal specifier so type resolution is skipped while
+ * the test runtime (vitest under Node) still resolves and runs it.
+ */
+async function execFile(file: string, args: string[], input?: string): Promise<void> {
+  const specifier = "node:child_process";
+  const mod = (await import(/* @vite-ignore */ specifier)) as {
+    execFileSync: (
+      file: string,
+      args: string[],
+      options: { input?: string; stdio: string[] },
+    ) => unknown;
+  };
+  mod.execFileSync(file, args, {
+    input,
+    stdio: input === undefined ? ["ignore", "ignore", "pipe"] : ["pipe", "ignore", "pipe"],
+  });
+}
+
 import {
   escapePosixPath,
   buildCdCommand,
   buildShellSyncCommand,
+  buildAutoCwdSyncCommand,
   sendCdToTerminal,
   enableShellSync,
   SHELL_SYNC_SNIPPETS,
@@ -68,6 +89,45 @@ describe("shell-sync helpers", () => {
       expect(SHELL_SYNC_SNIPPETS.bash).toContain("case \"$PROMPT_COMMAND\" in *__anyscp_osc7*)");
       expect(SHELL_SYNC_SNIPPETS.zsh).toContain("add-zsh-hook -d chpwd __anyscp_osc7");
       expect(SHELL_SYNC_SNIPPETS.fish).toContain("functions -e __anyscp_osc7 2>/dev/null;");
+    });
+  });
+
+  describe("buildAutoCwdSyncCommand", () => {
+    it("defaults to the POSIX/bash/zsh installer", () => {
+      const cmd = buildAutoCwdSyncCommand();
+      expect(cmd.endsWith("\n")).toBe(true);
+      expect(cmd).toContain("__anyscp_osc7");
+      expect(cmd).toContain("PROMPT_COMMAND");
+      expect(cmd).toContain("add-zsh-hook");
+    });
+
+    it("selects the fish installer for a fish login shell", () => {
+      expect(buildAutoCwdSyncCommand("/usr/bin/fish")).toBe(`${SHELL_SYNC_SNIPPETS.fish}\n`);
+      expect(buildAutoCwdSyncCommand("fish")).toBe(`${SHELL_SYNC_SNIPPETS.fish}\n`);
+    });
+
+    // The installer is typed into a live shell, so a syntax error would break
+    // the user's prompt. Parse it for real with every shell we target.
+    it("parses as valid syntax in sh, bash and zsh", async () => {
+      const script = buildAutoCwdSyncCommand();
+      const candidates = ["sh", "bash", "zsh"];
+      const available: string[] = [];
+      for (const shell of candidates) {
+        try {
+          await execFile("which", [shell]);
+          available.push(shell);
+        } catch {
+          // Shell not installed on this machine — skip it.
+        }
+      }
+      expect(available.length).toBeGreaterThan(0);
+
+      for (const shell of available) {
+        await expect(
+          execFile(shell, ["-n"], script),
+          `${shell} should parse the installer`,
+        ).resolves.toBeUndefined();
+      }
     });
   });
 

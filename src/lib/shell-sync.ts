@@ -20,6 +20,33 @@ export const SHELL_SYNC_SNIPPETS: Record<SupportedShell, string> = {
   oneshot: `printf '\\e]7;file://%s%s\\e\\\\' "\${HOSTNAME:-\${HOST:-localhost}}" "$PWD"`,
 };
 
+/*
+ * Auto-installed CWD reporter used when a terminal session connects, so recent
+ * paths populate without the user having to find the manual "Sync CWD" control.
+ *
+ * Deliberately POSIX-parseable: the bash/zsh branches are selected at runtime
+ * and no shell-specific syntax (arrays, `${x:#y}`) appears outside them, so a
+ * plain `sh` connection runs it harmlessly. Fish needs different syntax and is
+ * selected by the caller from the host's configured default shell.
+ */
+export const SHELL_SYNC_AUTO_POSIX =
+  "__anyscp_osc7() { printf '\\e]7;file://%s%s\\e\\\\' \"${HOSTNAME:-localhost}\" \"$PWD\"; };" +
+  " if [ -n \"${ZSH_VERSION:-}\" ]; then" +
+  " autoload -Uz add-zsh-hook 2>/dev/null; add-zsh-hook chpwd __anyscp_osc7 2>/dev/null;" +
+  " elif [ -n \"${BASH_VERSION:-}\" ]; then" +
+  " case \"$PROMPT_COMMAND\" in *__anyscp_osc7*) ;; *) PROMPT_COMMAND=\"__anyscp_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}\";; esac;" +
+  " fi; __anyscp_osc7";
+
+/**
+ * The OSC 7 installer to run on connect for the given remote shell. Anything
+ * unrecognised falls back to the POSIX/bash/zsh form.
+ */
+export function buildAutoCwdSyncCommand(defaultShell?: string | null): string {
+  const shell = (defaultShell ?? "").toLowerCase();
+  if (shell.includes("fish")) return buildShellSyncCommand("fish");
+  return `${SHELL_SYNC_AUTO_POSIX}\n`;
+}
+
 /**
  * Safely escape a file path for POSIX shells (wrapping in single quotes and
  * escaping existing single quotes as '\\'').
@@ -27,7 +54,6 @@ export const SHELL_SYNC_SNIPPETS: Record<SupportedShell, string> = {
 export function escapePosixPath(path: string): string {
   return `'${path.replace(/'/g, "'\\''")}'`;
 }
-
 /**
  * Build a "cd <path>" command string terminated by a newline for execution in a shell.
  */

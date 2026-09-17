@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo, useId } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, Check } from "lucide-react";
+import { ChevronDown, Check, Search } from "lucide-react";
 
 export interface SelectOption {
   value: string;
@@ -22,6 +22,10 @@ interface CustomSelectProps {
    *  list). Only the list items preview; the trigger keeps the UI font. Set
    *  this only when every option's `value` is a valid font-family stack. */
   previewOptionFont?: boolean;
+  /** Renders a filter box at the top of the dropdown. Use for long option
+   *  lists (e.g. the explorer's host picker). */
+  searchable?: boolean;
+  searchPlaceholder?: string;
 }
 
 export function CustomSelect({
@@ -35,34 +39,45 @@ export function CustomSelect({
   "aria-label": ariaLabel,
   "data-testid": testid,
   previewOptionFont,
+  searchable = false,
+  searchPlaceholder = "Search...",
 }: CustomSelectProps) {
   const [open, setOpen] = useState(false);
   const [highlightIndex, setHighlightIndex] = useState(-1);
+  const [query, setQuery] = useState("");
   const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number; width: number; maxWidth: number } | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const listboxId = useId();
 
   const selectedOption = options.find((o) => o.value === value);
   const displayLabel = selectedOption?.label ?? placeholder;
+
+  // Options narrowed by the search box. Keyboard navigation and rendering must
+  // both walk this list, not the raw one.
+  const visibleOptions = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!searchable || !q) return options;
+    return options.filter((o) => o.label.toLowerCase().includes(q));
+  }, [options, searchable, query]);
 
   // Close on outside click
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
       const target = e.target as Node;
-      if (
-        containerRef.current && !containerRef.current.contains(target) &&
-        listRef.current && !listRef.current.contains(target)
-      ) {
-        setOpen(false);
-      }
+      // The panel is portaled out of the root, so both are valid "inside".
+      if (panelRef.current?.contains(target) || rootRef.current?.contains(target)) return;
+      setOpen(false);
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [open]);
 
-  // Close on Escape
+  // Close on Escape (capture so nested modals don't consume it first)
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
@@ -73,6 +88,16 @@ export function CustomSelect({
     };
     document.addEventListener("keydown", handler, true);
     return () => document.removeEventListener("keydown", handler, true);
+  }, [open]);
+
+  // Focus the filter box as soon as a searchable dropdown opens.
+  useEffect(() => {
+    if (open && searchable) searchRef.current?.focus();
+  }, [open, searchable]);
+
+  // Reset the filter each time the dropdown opens.
+  useEffect(() => {
+    if (!open) setQuery("");
   }, [open]);
 
   // Scroll highlighted item into view
@@ -94,6 +119,21 @@ export function CustomSelect({
     }
   };
 
+  const select = (option: SelectOption | undefined) => {
+    if (!option) return;
+    onChange(option.value);
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+
+  const moveHighlight = (delta: number) => {
+    setHighlightIndex((prev) => {
+      if (visibleOptions.length === 0) return -1;
+      if (prev < 0) return delta > 0 ? 0 : visibleOptions.length - 1;
+      return Math.min(Math.max(prev + delta, 0), visibleOptions.length - 1);
+    });
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (disabled) return;
 
@@ -109,21 +149,52 @@ export function CustomSelect({
 
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setHighlightIndex((prev) => Math.min(prev + 1, options.length - 1));
+      moveHighlight(1);
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      setHighlightIndex((prev) => Math.max(prev - 1, 0));
+      moveHighlight(-1);
     } else if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
-      if (highlightIndex >= 0 && highlightIndex < options.length) {
-        onChange(options[highlightIndex].value);
+      // With a filter narrowed to one match, Enter should pick it without
+      // requiring an explicit highlight first.
+      if (highlightIndex >= 0 && highlightIndex < visibleOptions.length) {
+        select(visibleOptions[highlightIndex]);
+      } else if (visibleOptions.length === 1) {
+        select(visibleOptions[0]);
+      }
+    }
+  };
+
+  // Same navigation, driven from the filter input.
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      moveHighlight(1);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      moveHighlight(-1);
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (highlightIndex >= 0 && highlightIndex < visibleOptions.length) {
+        select(visibleOptions[highlightIndex]);
+      } else if (visibleOptions.length === 1) {
+        select(visibleOptions[0]);
+      }
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      // Escape clears the filter first, then closes on a second press.
+      if (query) {
+        setQuery("");
+        setHighlightIndex(-1);
+      } else {
         setOpen(false);
+        triggerRef.current?.focus();
       }
     }
   };
 
   return (
-    <div ref={containerRef} className={`relative ${className ?? ""}`}>
+    <div ref={rootRef} className={`relative ${className ?? ""}`}>
       {/* Trigger */}
       <button
         ref={triggerRef}
@@ -132,6 +203,7 @@ export function CustomSelect({
         role="combobox"
         aria-expanded={open}
         aria-haspopup="listbox"
+        aria-controls={open ? listboxId : undefined}
         aria-label={ariaLabel}
         data-testid={testid}
         data-value={value}
@@ -168,57 +240,100 @@ export function CustomSelect({
         />
       </button>
 
-      {/* Dropdown — portaled to body to escape transform/overflow ancestors */}
+      {/* Dropdown — portaled to body to escape transform/overflow ancestors.
+          The panel (not just the list) is the outside-click boundary so the
+          search box counts as inside. */}
       {open && dropdownPos && createPortal(
         <div
-          ref={listRef}
-          role="listbox"
-          aria-label={ariaLabel}
+          ref={panelRef}
           style={{ top: dropdownPos.top, left: dropdownPos.left, minWidth: dropdownPos.width, maxWidth: dropdownPos.maxWidth }}
           className={[
-            "fixed z-[100] w-max",
-            "max-h-[200px] overflow-y-auto",
+            "fixed z-[100] w-max flex flex-col",
             "bg-bg-overlay border border-border rounded-lg",
             "shadow-[var(--shadow-lg)]",
             "py-1",
             "animate-[fadeIn_80ms_var(--ease-expo-out)_both]",
           ].join(" ")}
         >
-          {options.map((option, index) => {
-            const isSelected = option.value === value;
-            const isHighlighted = index === highlightIndex;
-
-            return (
-              <button
-                key={option.value}
-                type="button"
-                role="option"
-                aria-selected={isSelected}
-                data-testid={testid ? `${testid}-option-${option.value}` : undefined}
-                onClick={() => {
-                  onChange(option.value);
-                  setOpen(false);
+          {searchable && (
+            <div className="relative shrink-0 px-2 pb-1.5 mb-1 border-b border-border/50">
+              <Search
+                size={13}
+                strokeWidth={2}
+                className="absolute left-4 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"
+                aria-hidden="true"
+              />
+              <input
+                ref={searchRef}
+                type="text"
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setHighlightIndex(-1);
                 }}
-                onMouseEnter={() => setHighlightIndex(index)}
+                onKeyDown={handleSearchKeyDown}
+                placeholder={searchPlaceholder}
+                aria-label={searchPlaceholder}
+                aria-controls={listboxId}
+                autoComplete="off"
+                spellCheck={false}
+                data-testid={testid ? `${testid}-search` : undefined}
                 className={[
-                  "w-full flex items-center gap-2 px-3 py-1.5 text-left",
-                  "text-[length:var(--text-sm)] transition-colors duration-[var(--duration-fast)]",
-                  isHighlighted ? "bg-bg-subtle" : "",
-                  isSelected ? "text-accent font-medium" : "text-text-primary",
+                  "w-full pl-6 pr-2 py-1 rounded",
+                  "bg-bg-base border border-border text-text-primary placeholder:text-text-muted",
+                  "text-[length:var(--text-sm)] outline-none",
+                  "focus:border-border-focus focus:ring-1 focus:ring-ring",
                 ].join(" ")}
-              >
-                <span className="w-4 shrink-0">
-                  {isSelected && <Check size={14} strokeWidth={2.5} className="text-accent" />}
-                </span>
-                <span
-                  className="truncate"
-                  style={previewOptionFont ? { fontFamily: option.value } : undefined}
+              />
+            </div>
+          )}
+
+          <div
+            ref={listRef}
+            id={listboxId}
+            role="listbox"
+            aria-label={ariaLabel}
+            className="max-h-[200px] overflow-y-auto"
+          >
+            {visibleOptions.map((option, index) => {
+              const isSelected = option.value === value;
+              const isHighlighted = index === highlightIndex;
+
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="option"
+                  aria-selected={isSelected}
+                  data-testid={testid ? `${testid}-option-${option.value}` : undefined}
+                  onClick={() => select(option)}
+                  onMouseEnter={() => setHighlightIndex(index)}
+                  className={[
+                    "w-full flex items-center gap-2 px-3 py-1.5 text-left",
+                    "text-[length:var(--text-sm)] transition-colors duration-[var(--duration-fast)]",
+                    isHighlighted ? "bg-bg-subtle" : "",
+                    isSelected ? "text-accent font-medium" : "text-text-primary",
+                  ].join(" ")}
                 >
-                  {option.label}
-                </span>
-              </button>
-            );
-          })}
+                  <span className="w-4 shrink-0">
+                    {isSelected && <Check size={14} strokeWidth={2.5} className="text-accent" />}
+                  </span>
+                  <span
+                    className="truncate"
+                    style={previewOptionFont ? { fontFamily: option.value } : undefined}
+                  >
+                    {option.label}
+                  </span>
+                </button>
+              );
+            })}
+
+            {visibleOptions.length === 0 && (
+              <p className="px-3 py-2 text-[length:var(--text-sm)] text-text-muted">
+                No matches
+              </p>
+            )}
+          </div>
         </div>,
         document.body,
       )}

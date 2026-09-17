@@ -29,8 +29,8 @@ describe("ExplorerTransferActions", () => {
     const btn = screen.getByTestId("explorer-copy-to-remote");
     expect(btn).toBeInTheDocument();
     expect(btn).not.toBeDisabled();
-    expect(btn).toHaveAttribute("aria-label", "Copy selected to remote (3 items)");
-    expect(btn).toHaveAttribute("title", "Copy selected to remote (3 items)");
+    expect(btn).toHaveAttribute("aria-label", "Copy selected left → right (3 items)");
+    expect(btn).toHaveAttribute("title", "Copy selected left → right (3 items)");
     expect(btn).toHaveAttribute("aria-busy", "false");
 
     fireEvent.click(btn);
@@ -48,8 +48,8 @@ describe("ExplorerTransferActions", () => {
     );
 
     const btn = screen.getByTestId("explorer-copy-to-remote");
-    expect(btn).toHaveAttribute("aria-label", "Copy selected to remote (1 item)");
-    expect(btn).toHaveAttribute("title", "Copy selected to remote (1 item)");
+    expect(btn).toHaveAttribute("aria-label", "Copy selected left → right (1 item)");
+    expect(btn).toHaveAttribute("title", "Copy selected left → right (1 item)");
   });
 
   it("is disabled when selection count is 0", () => {
@@ -64,7 +64,7 @@ describe("ExplorerTransferActions", () => {
 
     const btn = screen.getByTestId("explorer-copy-to-remote");
     expect(btn).toBeDisabled();
-    expect(btn).toHaveAttribute("aria-label", "Copy selected to remote (0 items)");
+    expect(btn).toHaveAttribute("aria-label", "Copy selected left → right (0 items)");
   });
 
   it("is disabled when remote directory is not known", () => {
@@ -113,7 +113,7 @@ describe("ExplorerTransferActions", () => {
     const localBtn = screen.getByTestId("explorer-copy-to-local");
     expect(localBtn).toBeInTheDocument();
     expect(localBtn).not.toBeDisabled();
-    expect(localBtn).toHaveAttribute("aria-label", "Copy selected to local (4 items)");
+    expect(localBtn).toHaveAttribute("aria-label", "Copy selected right → left (4 items)");
 
     fireEvent.click(localBtn);
     expect(onCopyToLocal).toHaveBeenCalledTimes(1);

@@ -5,7 +5,7 @@ import {
   useCallback,
   useMemo,
 } from "react";
-import { Search, Plus, ArrowLeft, FolderPlus, Import, Cloud, LayoutGrid, List } from "lucide-react";
+import { Search, Plus, Import, Cloud, LayoutGrid, List } from "lucide-react";
 import {
   DndContext,
   closestCenter,
@@ -36,15 +36,15 @@ import { useSettingsStore } from "../../stores/settings-store";
 import type { SavedHost, HostGroup, RecentConnection, S3Connection } from "../../types";
 import { HostCard } from "./HostCard";
 import { HostListRow } from "./HostListRow";
-import { GroupCard } from "./GroupCard";
 import { S3Card } from "./S3Card";
 import { SortableCard } from "./SortableCard";
+import { GroupsSidebar, UNGROUPED_ID } from "./GroupsSidebar";
 import { GroupDeleteDialog } from "./GroupDeleteDialog";
 import { GroupModal } from "./GroupModal";
 import { ConnectionDialog } from "./ConnectionDialog";
 import { RecentConnections } from "./RecentConnections";
 import { toast } from "../../stores/toast-store";
-import { closeExplorerSession } from "../../lib/explorer-transport";
+import { openExplorerSessionForHost } from "../../lib/open-explorer-session";
 
 // Abort an in-flight SSH connection attempt on the Rust side. Best-effort:
 // the attempt may already have settled, in which case the backend reports it
@@ -176,13 +176,29 @@ export function HostsDashboard() {
     return counts;
   }, [hosts, s3Connections]);
 
+  const ungroupedCount = useMemo(
+    () =>
+      hosts.filter((h) => !h.group_id).length +
+      s3Connections.filter((c) => !c.group_id).length,
+    [hosts, s3Connections],
+  );
+
+  // Group membership test shared by hosts and S3 connections. `UNGROUPED_ID`
+  // is the sidebar's sentinel for "belongs to no group".
+  const matchesSelectedGroup = useCallback(
+    (groupId: string | null) => {
+      if (selectedGroupId === null) return true;
+      if (selectedGroupId === UNGROUPED_ID) return groupId === null;
+      return groupId === selectedGroupId;
+    },
+    [selectedGroupId],
+  );
+
   const filteredHosts = useMemo<SavedHost[]>(() => {
     let result = hosts;
 
     // Group filter
-    if (selectedGroupId !== null) {
-      result = result.filter((h) => h.group_id === selectedGroupId);
-    }
+    result = result.filter((h) => matchesSelectedGroup(h.group_id));
 
     // Search filter
     const q = query.trim().toLowerCase();
@@ -196,15 +212,13 @@ export function HostsDashboard() {
     }
 
     return result;
-  }, [hosts, selectedGroupId, query]);
+  }, [hosts, matchesSelectedGroup, query]);
 
   const filteredS3 = useMemo<S3Connection[]>(() => {
     let result = s3Connections;
 
     // Group filter
-    if (selectedGroupId !== null) {
-      result = result.filter((c) => c.group_id === selectedGroupId);
-    }
+    result = result.filter((c) => matchesSelectedGroup(c.group_id));
 
     // Search filter
     const q = query.trim().toLowerCase();
@@ -218,7 +232,7 @@ export function HostsDashboard() {
     }
 
     return result;
-  }, [s3Connections, selectedGroupId, query]);
+  }, [s3Connections, matchesSelectedGroup, query]);
 
   // ─── Connect handlers ──────────────────────────────────────────────────────
 
@@ -250,6 +264,7 @@ export function HostsDashboard() {
           username: host.username,
           label: host.label || undefined,
           auth_method: { type: "password", password: "" },
+          savedHostId: host.id,
         });
         void useHostsStore.getState().recordConnection(host.id);
         setConnectingHost(null);
@@ -291,6 +306,7 @@ export function HostsDashboard() {
           username: conn.username,
           label: conn.host_label || undefined,
           auth_method: { type: "password", password: "" },
+          savedHostId: conn.host_id,
         });
         void useHostsStore.getState().recordConnection(conn.host_id);
         setConnectingHost(null);
@@ -307,8 +323,6 @@ export function HostsDashboard() {
   );
 
   // Explore: connect SSH + open a file browser + switch to Files page.
-  // Prefers SFTP; transparently falls back to SCP on the same SSH connection
-  // when the server has the SFTP subsystem disabled — the user never picks.
   // NOTE: We don't call addSession — the SSH connection lives in Rust's SshManager
   // but we don't need a terminal pane for file-only connections.
   const exploreHost = useCallback(
@@ -323,47 +337,27 @@ export function HostsDashboard() {
       };
       setConnectingHost({ label, error: null, retry: () => void exploreHost(host), cancel });
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
+        const opened = await openExplorerSessionForHost(host.id, {
+          attemptId,
+          isCancelled: () => cancelled,
+        });
+        if (!opened) return;
 
-        const sessionId = await invoke<string>("connect_saved_host_no_pty", { hostId: host.id, attemptId });
-        if (cancelled) {
-          // The handshake settled before the cancel landed — tear the bare
-          // connection down, otherwise nothing ever references it again.
-          void invoke("ssh_disconnect", { sessionId });
-          return;
-        }
-
-        let explorerSessionId: string;
-        let transport: "sftp" | "scp" = "sftp";
-        /*
-         * This no-PTY connection exists only for the standalone explorer, so
-         * Rust owns its lifetime and can release it with the final channel.
-         */
-        try {
-          explorerSessionId = await invoke<string>("sftp_open", { sessionId, ownsSsh: true });
-        } catch (sftpErr) {
-          // SFTP subsystem unavailable — retry over SCP on the same connection.
-          try {
-            explorerSessionId = await invoke<string>("scp_open", { sessionId, ownsSsh: true });
-            transport = "scp";
-          } catch {
-            // Surface the original SFTP error if SCP also fails.
-            throw sftpErr;
-          }
-        }
-
-        if (cancelled) {
-          // Cancel landed while the explorer channel was opening — drop the
-          // explorer session and the connection beneath it; no tab was added.
-          void closeExplorerSession(transport, explorerSessionId);
-          void invoke("ssh_disconnect", { sessionId });
-          return;
-        }
-
-        useSftpStore.getState().openSession(explorerSessionId, sessionId, label, host.username, false, host.start_directory ?? undefined, transport);
+        useSftpStore.getState().openSession(
+          opened.sftpSessionId,
+          opened.sshSessionId,
+          label,
+          host.username,
+          false,
+          host.start_directory ?? undefined,
+          opened.transport,
+          host.id,
+        );
 
         setConnectingHost(null);
-        useTabStore.getState().addTab({ type: "sftp", id: explorerSessionId, label, transport });
+        useTabStore
+          .getState()
+          .addTab({ type: "sftp", id: opened.sftpSessionId, label, transport: opened.transport });
       } catch (err) {
         if (cancelled) return;
         const msg = err && typeof err === "object" && "message" in err
@@ -373,6 +367,21 @@ export function HostsDashboard() {
       }
     },
     [],
+  );
+
+  // Open a file-explorer session for a recent connection. Resolves the saved
+  // host first — the recent row carries only display fields, and the explorer
+  // path needs the host's stored start directory and credentials.
+  const handleRecentExplore = useCallback(
+    (conn: RecentConnection) => {
+      const host = hosts.find((h) => h.id === conn.host_id);
+      if (!host) {
+        toast.error("This host no longer exists.");
+        return;
+      }
+      void exploreHost(host);
+    },
+    [hosts, exploreHost],
   );
 
   // ─── Host action handlers ──────────────────────────────────────────────────
@@ -443,24 +452,15 @@ export function HostsDashboard() {
     [filteredHosts, hosts, reorderHosts],
   );
 
-  // Reorder the group cards themselves. This is a separate DnD layer from the
-  // host reordering above (its own DndContext over the Groups grid), so the two
-  // never interfere. `groups` is never filtered, so a plain arrayMove suffices.
-  const handleGroupDragEnd = useCallback(
-    (event: DragEndEvent) => {
-      const { active, over } = event;
-      if (!over || active.id === over.id) return;
-
-      const oldIndex = groups.findIndex((g) => g.id === active.id);
-      const newIndex = groups.findIndex((g) => g.id === over.id);
-      if (oldIndex === -1 || newIndex === -1) return;
-
-      const newOrder = arrayMove(groups, oldIndex, newIndex);
+  // The sidebar computes the new order and hands it back; persist it with the
+  // store's optimistic update + rollback.
+  const handleGroupReorder = useCallback(
+    (newOrder: HostGroup[]) => {
       void reorderGroups(newOrder).catch(() => {
         toast.error("Couldn't save the new group order — reverted.");
       });
     },
-    [groups, reorderGroups],
+    [reorderGroups],
   );
 
   // Reorder the S3 connection cards. Its own DndContext over the Cloud Storage
@@ -491,10 +491,6 @@ export function HostsDashboard() {
   );
 
   // ─── Group handlers ────────────────────────────────────────────────────────
-
-  const handleGroupSelect = (groupId: string) => {
-    setSelectedGroupId((prev) => (prev === groupId ? null : groupId));
-  };
 
   const handleGroupDeleteRequest = useCallback(
     (groupId: string) => {
@@ -558,8 +554,20 @@ export function HostsDashboard() {
 
   return (
     <>
-      <div className="flex flex-col h-full overflow-y-scroll bg-bg-base">
-        <div className="max-w-4xl w-full mx-auto px-8 py-8 flex flex-col gap-8">
+      <div className="flex h-full bg-bg-base">
+        <GroupsSidebar
+          groups={groups}
+          hostCountByGroup={hostCountByGroup}
+          ungroupedCount={ungroupedCount}
+          selectedGroupId={selectedGroupId}
+          onSelect={setSelectedGroupId}
+          onDelete={handleGroupDeleteRequest}
+          onReorder={handleGroupReorder}
+          onNewGroup={() => setGroupModalOpen(true)}
+        />
+
+        <div className="flex-1 min-w-0 overflow-y-scroll">
+          <div className="max-w-4xl w-full mx-auto px-8 py-8 flex flex-col gap-8">
 
           {/* ── Page title ── */}
           <div>
@@ -600,6 +608,7 @@ export function HostsDashboard() {
             <RecentConnections
               connections={recentConnections}
               onConnect={(conn) => void handleRecentConnect(conn)}
+              onOpenExplorer={handleRecentExplore}
             />
           )}
 
@@ -638,22 +647,6 @@ export function HostsDashboard() {
             </button>
 
             <button
-              data-testid="new-group-button"
-              onClick={() => setGroupModalOpen(true)}
-              className={[
-                "flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium uppercase tracking-wide",
-                "bg-bg-surface border border-border text-text-secondary",
-                "hover:border-border-focus hover:text-text-primary hover:bg-bg-overlay",
-                "transition-all duration-[var(--duration-fast)]",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              ].join(" ")}
-              title="New Group"
-            >
-              <FolderPlus size={14} strokeWidth={2} aria-hidden="true" />
-              New Group
-            </button>
-
-            <button
               data-testid="import-ssh-config-button"
               onClick={() => {
                 setImportSource("ssh");
@@ -673,69 +666,19 @@ export function HostsDashboard() {
             </button>
           </div>
 
-          {/* ── Groups section ── */}
-          {groups.length > 0 && (
-            <section aria-labelledby="groups-heading">
-              <h2
-                id="groups-heading"
-                className="text-[length:var(--text-xs)] font-semibold uppercase tracking-widest text-text-muted mb-3"
-              >
-                Groups
-              </h2>
-              <DndContext
-                sensors={sensors}
-                collisionDetection={closestCenter}
-                onDragEnd={handleGroupDragEnd}
-              >
-                <SortableContext
-                  items={groups.map((g) => g.id)}
-                  strategy={rectSortingStrategy}
-                >
-                  <div className="grid grid-cols-3 gap-2.5">
-                    {groups.map((group) => (
-                      <SortableCard key={group.id} id={group.id}>
-                        <GroupCard
-                          group={group}
-                          hostCount={hostCountByGroup[group.id] ?? 0}
-                          isSelected={selectedGroupId === group.id}
-                          onSelect={handleGroupSelect}
-                          onDelete={handleGroupDeleteRequest}
-                        />
-                      </SortableCard>
-                    ))}
-                  </div>
-                </SortableContext>
-              </DndContext>
-            </section>
-          )}
-
           {/* ── Hosts section ── */}
           <section aria-labelledby="hosts-heading">
             <div className="flex items-center justify-between gap-3 mb-3">
-              <div className="flex items-center gap-3">
-                {/* Breadcrumb back button when a group is selected */}
-                {activeGroup && (
-                  <button
-                    onClick={() => setSelectedGroupId(null)}
-                    className={[
-                      "flex items-center gap-1.5 text-[length:var(--text-xs)] text-text-muted",
-                      "hover:text-text-secondary transition-colors duration-[var(--duration-fast)]",
-                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded",
-                    ].join(" ")}
-                    aria-label="Back to all hosts"
-                  >
-                    <ArrowLeft size={13} strokeWidth={2.2} aria-hidden="true" />
-                    All Hosts
-                  </button>
-                )}
-
-                <h2
-                  id="hosts-heading"
-                  className="text-[length:var(--text-xs)] font-semibold uppercase tracking-widest text-text-muted"
-                >
-                  {activeGroup ? activeGroup.name : "Hosts"}
-                </h2>
-              </div>
+              <h2
+                id="hosts-heading"
+                className="text-[length:var(--text-xs)] font-semibold uppercase tracking-widest text-text-muted"
+              >
+                {selectedGroupId === UNGROUPED_ID
+                  ? "Ungrouped"
+                  : activeGroup
+                    ? activeGroup.name
+                    : "Hosts"}
+              </h2>
 
               {/* View mode toggle (Cards vs List) */}
               {filteredHosts.length > 0 && (
@@ -870,6 +813,7 @@ export function HostsDashboard() {
               </DndContext>
             </section>
           )}
+          </div>
         </div>
       </div>
 

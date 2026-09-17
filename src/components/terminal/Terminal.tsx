@@ -7,6 +7,8 @@ import {
   getTerminalTheme,
 } from "../../stores/terminal-instances";
 import { useSettingsStore } from "../../stores/settings-store";
+import { useSessionStore } from "../../stores/session-store";
+import { ensureAutoCwdSync } from "../../lib/cwd-sync";
 import type { SessionId } from "../../types";
 
 interface TerminalProps {
@@ -31,6 +33,17 @@ export function Terminal({ sessionId }: TerminalProps) {
   const scrollback = useSettingsStore((s) => s.terminalScrollback);
   const copyOnSelect = useSettingsStore((s) => s.terminalCopyOnSelect);
   const pasteButton = useSettingsStore((s) => s.terminalPasteButton);
+
+  // Install the shell-side OSC 7 reporter once the connection is up so the
+  // recent-paths menu is populated from the shell's own `cd`s.
+  const sessionStatus = useSessionStore((s) => s.sessions.get(sessionId)?.status);
+  const hostConfig = useSessionStore((s) => s.sessions.get(sessionId)?.hostConfig);
+  useEffect(() => {
+    if (sessionStatus !== "Connected" || !hostConfig) return;
+    ensureAutoCwdSync(sessionId, hostConfig);
+    // hostConfig is re-read on reconnect; the installer dedupes per session id.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, sessionStatus]);
 
   // Read the live clipboard-behaviour settings through refs so the listeners
   // registered once below pick up toggles without being torn down and

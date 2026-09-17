@@ -47,14 +47,14 @@ export function ExplorerTransferActions({
   const remoteCountText =
     localSelectedCount === 1 ? "1 item" : `${localSelectedCount} items`;
   const copyToRemoteLabel = busy
-    ? `Copy selected to remote (${remoteCountText}) — transfer in progress`
-    : `Copy selected to remote (${remoteCountText})`;
+    ? `Copy selected left → right (${remoteCountText}) — transfer in progress`
+    : `Copy selected left → right (${remoteCountText})`;
 
   const localCountText =
     remoteSelectedCount === 1 ? "1 item" : `${remoteSelectedCount} items`;
   const copyToLocalLabel = busy
-    ? `Copy selected to local (${localCountText}) — transfer in progress`
-    : `Copy selected to local (${localCountText})`;
+    ? `Copy selected right → left (${localCountText}) — transfer in progress`
+    : `Copy selected right → left (${localCountText})`;
 
   const buttonBaseClass = [
     "flex items-center justify-center w-7 h-7 rounded-md",

@@ -7,6 +7,8 @@ import type {
   LayoutNode,
   SplitDirection,
 } from "../types";
+import { hostKeyFor } from "../lib/host-key";
+import { useRecentPathsStore } from "./recent-paths-store";
 
 // ─── Layout tree helpers ─────────────────────────────────────────────────────
 
@@ -124,7 +126,7 @@ interface SessionState {
 
 // ─── Store ───────────────────────────────────────────────────────────────────
 
-export const useSessionStore = create<SessionState>((set) => ({
+export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: new Map(),
   activeSessionId: null,
   tabs: new Map(),
@@ -249,19 +251,37 @@ export const useSessionStore = create<SessionState>((set) => ({
    * Update the remote working directory for a session received via OSC 7.
    * Passing a non-null directory marks cwdSyncActive as true; passing null
    * clears the directory and resets cwdSyncActive to false.
+   *
+   * A changed directory is also recorded in the host's recent-path history so
+   * the terminal pane header can offer one-click `cd` back to it.
    */
-  setRemoteCwd: (id, cwd) =>
+  setRemoteCwd: (id, cwd) => {
+    const session = get().sessions.get(id);
+    if (!session) return;
+    if (cwd !== null && cwd !== session.remoteCwd) {
+      useRecentPathsStore.getState().record(
+        hostKeyFor({
+          savedHostId: session.hostConfig.savedHostId,
+          username: session.hostConfig.username,
+          host: session.hostConfig.host,
+          port: session.hostConfig.port,
+        }),
+        "remote",
+        cwd,
+      );
+    }
     set((state) => {
-      const session = state.sessions.get(id);
-      if (!session) return state;
+      const current = state.sessions.get(id);
+      if (!current) return state;
       const sessions = new Map(state.sessions);
       sessions.set(id, {
-        ...session,
+        ...current,
         remoteCwd: cwd,
         cwdSyncActive: cwd !== null,
       });
       return { sessions };
-    }),
+    });
+  },
 
 
   splitPane: (direction, targetSessionId, newSessionId) =>

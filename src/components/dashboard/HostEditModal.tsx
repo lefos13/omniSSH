@@ -451,6 +451,7 @@ export function HostEditModal() {
           form.authType === "privateKey"
             ? { type: "privateKey", key_path: form.keyPath }
             : { type: "password", password: "" },
+        savedHostId: host.id,
       };
       addSession(sessionId, hostConfig);
       const label = hostConfig.label || `${hostConfig.username}@${hostConfig.host}`;

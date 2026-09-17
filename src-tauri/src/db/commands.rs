@@ -168,6 +168,55 @@ pub async fn list_recent_connections(
         .map_err(|e| DbError::InitError(format!("task panicked: {e}")))?
 }
 
+// ─── Recent paths (per-host MRU of visited directories) ───────────────────────
+
+/// Record that `path` was visited for a host, keeping only the newest five.
+///
+/// `path` is deliberately kept out of `#[instrument]`: host filesystem paths
+/// must never reach logs or telemetry.
+#[tauri::command]
+#[instrument(skip(state))]
+pub async fn record_recent_path(
+    host_key: String,
+    scope: String,
+    path: String,
+    state: State<'_, Arc<HostDb>>,
+) -> Result<(), DbError> {
+    let db = Arc::clone(&state);
+    task::spawn_blocking(move || db.record_recent_path(&host_key, &scope, &path))
+        .await
+        .map_err(|e| DbError::InitError(format!("task panicked: {e}")))?
+}
+
+/// Return the most-recently-used paths for a host, newest-first.
+#[tauri::command]
+#[instrument(skip(state))]
+pub async fn list_recent_paths(
+    host_key: String,
+    scope: String,
+    limit: u32,
+    state: State<'_, Arc<HostDb>>,
+) -> Result<Vec<String>, DbError> {
+    let db = Arc::clone(&state);
+    task::spawn_blocking(move || db.list_recent_paths(&host_key, &scope, limit))
+        .await
+        .map_err(|e| DbError::InitError(format!("task panicked: {e}")))?
+}
+
+/// Drop the entire recent-paths history for a host.
+#[tauri::command]
+#[instrument(skip(state))]
+pub async fn clear_recent_paths(
+    host_key: String,
+    scope: String,
+    state: State<'_, Arc<HostDb>>,
+) -> Result<(), DbError> {
+    let db = Arc::clone(&state);
+    task::spawn_blocking(move || db.clear_recent_paths(&host_key, &scope))
+        .await
+        .map_err(|e| DbError::InitError(format!("task panicked: {e}")))?
+}
+
 // ─── Connection History (full audit log) ──────────────────────────────────────
 
 #[tauri::command]

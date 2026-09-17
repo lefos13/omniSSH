@@ -12,6 +12,8 @@ import { closeExplorerSession, explorerInvoke, transferEventName, type Transport
 import { editorLaunchErrorMessage } from "../../lib/editor-errors";
 import { conflictingNames, backupFilename } from "../../lib/drop-conflicts";
 import { toast } from "../../stores/toast-store";
+import { explorerHostKey } from "../../lib/host-key";
+import { useRecentPathsStore } from "../../stores/recent-paths-store";
 import type { EditorConfig } from "../../stores/settings-store";
 
 interface ExplorerViewProps {
@@ -35,6 +37,9 @@ interface ExplorerViewProps {
   onSelectionChange?: (entries: ExplorerEntry[]) => void;
   /** Optional callback invoked when the current directory path changes. */
   onCurrentPathChange?: (path: string) => void;
+  /** Suppress the sudo toggle (used by the explorer's remote left pane, where
+   *  a session re-key would orphan the pane binding). Defaults to true. */
+  showSudo?: boolean;
 }
 export function ExplorerView({
   sessionId,
@@ -44,6 +49,7 @@ export function ExplorerView({
   externalNavigatePath,
   onSelectionChange,
   onCurrentPathChange,
+  showSudo = true,
 }: ExplorerViewProps) {
   const session = useSftpStore((s) => s.sessions.get(sessionId));
   const setEntries = useSftpStore((s) => s.setEntries);
@@ -59,6 +65,8 @@ export function ExplorerView({
   const isRoot = useSftpStore((s) => s.sessions.get(sessionId)?.username === "root");
 
   const provider = useMemo(() => createSftpProvider(sessionId), [sessionId]);
+  // Shared with the terminal's recent-paths menu for the same saved host.
+  const recentPathsHostKey = session ? explorerHostKey(session) : "";
   const [searchQuery, setSearchQuery] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -379,12 +387,51 @@ export function ExplorerView({
       try {
         const entries = await explorerInvoke<SftpEntry[]>(transport, "list_dir", sessionId, { path });
         setEntries(sessionId, path, entries);
+        // Remember the visited directory so it can be offered for one-click
+        // return from the explorer toolbar and the terminal pane header.
+        if (recentPathsHostKey) {
+          useRecentPathsStore.getState().record(recentPathsHostKey, "remote", path);
+        }
       } catch (err: unknown) {
         setError(sessionId, errorMessage(err, "Failed to list directory"));
       }
     },
-    [sessionId, transport, setLoading, setEntries, setError],
+    [sessionId, transport, setLoading, setEntries, setError, recentPathsHostKey],
   );
+
+  /*
+   * A server-to-server relay into this session's current directory is committed
+   * by a separate backend job, so refresh the listing when one targets us —
+   * otherwise the copied entries exist on disk but appear missing in the pane.
+   */
+  useEffect(() => {
+    let aborted = false;
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        if (aborted) return;
+
+        const unsub = await listen<{ dst_session_id?: string; status: string }>(
+          "relay:transfer",
+          (event) => {
+            if (event.payload.dst_session_id !== sessionId) return;
+            if (event.payload.status !== "Completed") return;
+            setTimeout(() => {
+              const path = currentPathRef.current;
+              if (path) void loadDirectory(path);
+            }, 300);
+          },
+        );
+
+        if (aborted) { unsub(); } else { unlisten = unsub; }
+      } catch {
+        // Not in Tauri context
+      }
+    })();
+    return () => { aborted = true; unlisten?.(); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
   // ─── External path navigation (OSC 7 CWD sync) ───────────────────────────
 
   useEffect(() => {
@@ -457,6 +504,9 @@ export function ExplorerView({
         try {
           const entries = await explorerInvoke<SftpEntry[]>(transport, "list_dir", sessionId, { path });
           setEntries(sessionId, path, entries);
+          if (recentPathsHostKey) {
+            useRecentPathsStore.getState().record(recentPathsHostKey, "remote", path);
+          }
           return true;
         } catch {
           return false;
@@ -918,10 +968,12 @@ export function ExplorerView({
         busy={busy}
         sudoMode={sudoMode}
         sudoBusy={togglingSudo}
-        onToggleSudo={transport === "sftp" && !isRoot ? () => void handleToggleSudo() : undefined}
+        onToggleSudo={showSudo && transport === "sftp" && !isRoot ? () => void handleToggleSudo() : undefined}
         onCdToTerminal={onCdToTerminal && session ? () => onCdToTerminal(session.currentPath) : undefined}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
+        recentPathsHostKey={recentPathsHostKey || undefined}
+        onNavigateRecent={(path) => void loadDirectory(path)}
       />
       {/* Error banner */}
       {session.error && (

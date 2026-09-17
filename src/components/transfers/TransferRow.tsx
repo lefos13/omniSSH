@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { ArrowDown, ArrowUp, X, RotateCw } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowLeftRight, X, RotateCw } from "lucide-react";
 import type { TransferEvent, TransferStatusValue } from "../../types";
 import { useTransferStore } from "../../stores/transfer-store";
 import { formatBytes, formatSpeed, formatEta, getStatusString } from "../../utils/format";
@@ -137,7 +137,7 @@ export const TransferRow = memo(function TransferRow({
     isInProgress ? "text-accent" :
                    "text-text-muted";
 
-  const progressLabel = `${t.name} ${t.direction.toLowerCase()} progress`;
+  const progressLabel = `${t.name} ${t.direction === "Relay" ? "server-to-server" : t.direction.toLowerCase()} progress`;
 
   return (
     <div className={ROW_CLASS} role="listitem">
@@ -149,12 +149,16 @@ export const TransferRow = memo(function TransferRow({
             "shrink-0 flex items-center justify-center w-5 h-5 rounded",
             t.direction === "Upload"
               ? "text-accent bg-accent/8"
-              : "text-status-connected bg-status-connected/8",
+              : t.direction === "Relay"
+                ? "text-status-connecting bg-status-connecting/8"
+                : "text-status-connected bg-status-connected/8",
           ].join(" ")}
           aria-hidden="true"
         >
           {t.direction === "Upload" ? (
             <ArrowUp size={13} strokeWidth={2.5} />
+          ) : t.direction === "Relay" ? (
+            <ArrowLeftRight size={13} strokeWidth={2.5} />
           ) : (
             <ArrowDown size={13} strokeWidth={2.5} />
           )}

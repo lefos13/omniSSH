@@ -5,6 +5,7 @@ mod editors;
 mod import;
 mod local_fs;
 mod portforward;
+mod relay;
 mod s3;
 mod scp;
 mod sftp;
@@ -163,8 +164,15 @@ pub fn run() {
                 sftp_manager.clone(),
                 app.handle().clone(),
             ));
+            /* Server-to-server copies stream between two SFTP sessions, so the
+             * relay manager shares the SftpManager and its own AppHandle. */
+            let relay_manager = Arc::new(relay::RelayManager::new(
+                sftp_manager.clone(),
+                app.handle().clone(),
+            ));
             app.manage(sftp_manager);
             app.manage(transfer_manager);
+            app.manage(relay_manager);
 
             // SCP shares the SSH connection but tracks its own sessions and
             // transfer queue, mirroring the SFTP managers.
@@ -281,6 +289,16 @@ pub fn run() {
             // Connection history (full audit)
             db::commands::list_connection_history,
             db::commands::delete_connection_history_entry,
+            // Recent paths (per-host MRU of visited directories)
+            db::commands::record_recent_path,
+            db::commands::list_recent_paths,
+            db::commands::clear_recent_paths,
+            // Server-to-server (relay) transfers
+            relay::commands::relay_transfer_entries,
+            relay::commands::relay_list_transfers,
+            relay::commands::relay_cancel_transfer,
+            relay::commands::relay_retry_transfer,
+            relay::commands::relay_clear_finished_transfers,
             // App settings
             db::commands::save_setting,
             db::commands::load_all_settings,
