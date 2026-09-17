@@ -23,6 +23,7 @@ import {
 import { useSessionStore } from "../../stores/session-store";
 import type { LayoutNode } from "../../types";
 import { useLinkedExplorerStore } from "../../stores/linked-explorer-store";
+import { useLinkedPluginsStore } from "../../stores/linked-plugins-store";
 import { useSftpStore } from "../../stores/sftp-store";
 import { getTerminal } from "../../stores/terminal-instances";
 import { ExplorerView } from "../sftp/ExplorerView";
@@ -168,6 +169,15 @@ export function LinkedExplorerPanel({ tabId, isActive = true }: LinkedExplorerPa
       void sendCdToTerminal(activePaneSessionId, targetPath);
     },
     [activePaneSessionId],
+  );
+
+  /* "Tail log in Plugins" from the file context menu: open the plugins side
+   * panel on this tab with the log viewer primed for the file's path. */
+  const handleTailLog = useCallback(
+    (filePath: string) => {
+      useLinkedPluginsStore.getState().openLogTail(tabId, filePath);
+    },
+    [tabId],
   );
 
   const handleClose = useCallback(() => {
@@ -416,6 +426,7 @@ export function LinkedExplorerPanel({ tabId, isActive = true }: LinkedExplorerPa
               transport={binding.transport}
               isActive={isActive}
               onCdToTerminal={handleCdToTerminal}
+              onTailLog={handleTailLog}
               externalNavigatePath={debouncedNavPath}
             />
           </div>

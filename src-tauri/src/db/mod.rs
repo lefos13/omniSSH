@@ -192,6 +192,17 @@ pub struct VaultCredentialRekey {
     pub ciphertext: Vec<u8>,
 }
 
+/// One row of per-host plugin state. `config` is opaque JSON owned by the
+/// frontend tracker (ports, paths, kube context…); the backend persists it
+/// verbatim and never stores secrets in it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HostPluginConfig {
+    pub host_id: String,
+    pub plugin_id: String,
+    pub enabled: bool,
+    pub config: String,
+}
+
 /// A named group that hosts can be assigned to.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostGroup {
@@ -682,6 +693,27 @@ impl HostDb {
                 [],
             )?;
             tracing::info!("migration 18→19 applied: added saved_hosts.terminal_theme");
+        }
+
+        if version < 20 {
+            /* Per-host plugin enablement + config. `config` is an opaque JSON
+             * blob owned by the frontend tracker (port, paths, kube context…);
+             * the backend only persists it keyed by (host, plugin). Deleting a
+             * host removes its plugin rows. */
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS host_plugin_config (
+                    host_id    TEXT NOT NULL REFERENCES saved_hosts(id) ON DELETE CASCADE,
+                    plugin_id  TEXT NOT NULL,
+                    enabled    INTEGER NOT NULL DEFAULT 1,
+                    config     TEXT NOT NULL DEFAULT '{}',
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (host_id, plugin_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_host_plugin_config_host
+                    ON host_plugin_config(host_id);
+                INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', '20');",
+            )?;
+            tracing::info!("migration 19→20 applied: added host_plugin_config");
         }
 
         Ok(())
@@ -1573,6 +1605,94 @@ impl HostDb {
         )?;
         Ok(())
     }
+
+    // -----------------------------------------------------------------------
+    // Host plugin config (per-host tracker enablement + opaque JSON config)
+    // -----------------------------------------------------------------------
+
+    /// Upsert one plugin row. Rejects unknown hosts with `NotFound` and
+    /// non-object JSON with `Validation`; never stores secrets — config must
+    /// hold only ports, paths, and display options.
+    #[instrument(skip(self))]
+    pub fn set_plugin_config(
+        &self,
+        host_id: &str,
+        plugin_id: &str,
+        enabled: bool,
+        config: &str,
+    ) -> Result<(), DbError> {
+        if plugin_id.is_empty() || plugin_id.len() > 64 {
+            return Err(DbError::Validation("invalid plugin id".to_string()));
+        }
+        let parsed: serde_json::Value = serde_json::from_str(config)
+            .map_err(|_| DbError::Validation("config must be JSON".to_string()))?;
+        if !parsed.is_object() {
+            return Err(DbError::Validation(
+                "config must be a JSON object".to_string(),
+            ));
+        }
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let affected = conn.execute(
+            "INSERT INTO host_plugin_config (host_id, plugin_id, enabled, config, updated_at)
+             VALUES (?1, ?2, ?3, ?4, datetime('now'))
+             ON CONFLICT(host_id, plugin_id) DO UPDATE SET
+                 enabled = excluded.enabled,
+                 config = excluded.config,
+                 updated_at = datetime('now')",
+            params![host_id, plugin_id, enabled as i32, config],
+        );
+        match affected {
+            Ok(_) => Ok(()),
+            Err(rusqlite::Error::SqliteFailure(error, _))
+                if error.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                Err(DbError::NotFound(host_id.to_string()))
+            }
+            Err(error) => Err(DbError::Sqlite(error)),
+        }
+    }
+
+    /// All plugin rows for one host, ordered by plugin id for stable UI.
+    #[instrument(skip(self))]
+    pub fn list_plugin_configs(&self, host_id: &str) -> Result<Vec<HostPluginConfig>, DbError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let mut stmt = conn.prepare(
+            "SELECT host_id, plugin_id, enabled, config FROM host_plugin_config
+             WHERE host_id = ?1 ORDER BY plugin_id ASC",
+        )?;
+        let rows = stmt.query_map(params![host_id], |row| {
+            Ok(HostPluginConfig {
+                host_id: row.get(0)?,
+                plugin_id: row.get(1)?,
+                enabled: row.get::<_, i32>(2)? != 0,
+                config: row.get(3)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(DbError::from)
+    }
+
+    /// Delete one plugin row. Returns `NotFound` when the row never existed.
+    #[instrument(skip(self))]
+    pub fn delete_plugin_config(&self, host_id: &str, plugin_id: &str) -> Result<(), DbError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let affected = conn.execute(
+            "DELETE FROM host_plugin_config WHERE host_id = ?1 AND plugin_id = ?2",
+            params![host_id, plugin_id],
+        )?;
+        if affected == 0 {
+            return Err(DbError::NotFound(format!("{host_id}:{plugin_id}")));
+        }
+        Ok(())
+    }
     pub fn list_connection_history(
         &self,
         host_id: Option<&str>,
@@ -2414,6 +2534,7 @@ impl HostDb {
             "PRAGMA defer_foreign_keys = TRUE;
              DELETE FROM connection_history;
              DELETE FROM recent_paths;
+             DELETE FROM host_plugin_config;
              DELETE FROM port_forwarding_rules;
              DELETE FROM s3_connections;
              DELETE FROM snippets;
@@ -2592,6 +2713,7 @@ const COPYABLE_TABLES: &[&str] = &[
     "saved_hosts",
     "connection_history",
     "recent_paths",
+    "host_plugin_config",
     "snippet_folders",
     "snippets",
     "port_forwarding_rules",
@@ -2685,6 +2807,80 @@ mod tests {
     }
 
     #[test]
+    fn plugin_config_migrates_and_round_trips() {
+        let (db, _dir) = test_db();
+        {
+            let conn = db.conn.lock().unwrap();
+            let version: String = conn
+                .query_row(
+                    "SELECT value FROM _meta WHERE key = 'schema_version'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(version, "20");
+            assert!(conn
+                .prepare(
+                    "SELECT host_id, plugin_id, enabled, config FROM host_plugin_config LIMIT 0"
+                )
+                .is_ok());
+        }
+
+        db.save_host(&sample_host("plug-host")).expect("save host");
+        db.set_plugin_config(
+            "plug-host",
+            "docker",
+            true,
+            r#"{"socket":"/var/run/docker.sock"}"#,
+        )
+        .expect("set");
+        db.set_plugin_config("plug-host", "health", false, "{}")
+            .expect("set");
+
+        let listed = db.list_plugin_configs("plug-host").expect("list");
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].plugin_id, "docker");
+        assert!(listed[0].enabled);
+        assert_eq!(listed[0].config, r#"{"socket":"/var/run/docker.sock"}"#);
+        assert_eq!(listed[1].plugin_id, "health");
+
+        db.set_plugin_config("plug-host", "docker", false, r#"{"socket":"/other.sock"}"#)
+            .expect("upsert");
+        let updated = db.list_plugin_configs("plug-host").expect("list");
+        assert_eq!(updated.len(), 2);
+        assert!(
+            !updated
+                .iter()
+                .find(|r| r.plugin_id == "docker")
+                .unwrap()
+                .enabled
+        );
+
+        db.delete_plugin_config("plug-host", "health")
+            .expect("delete");
+        assert_eq!(db.list_plugin_configs("plug-host").expect("list").len(), 1);
+        let err = db
+            .delete_plugin_config("plug-host", "health")
+            .expect_err("missing row");
+        assert!(matches!(err, DbError::NotFound(_)));
+
+        let err = db
+            .set_plugin_config("plug-host", "bad", true, "not-json")
+            .expect_err("bad json");
+        assert!(matches!(err, DbError::Validation(_)));
+        let err = db
+            .set_plugin_config("ghost", "docker", true, "{}")
+            .expect_err("unknown host");
+        assert!(matches!(err, DbError::NotFound(_)));
+
+        db.delete_host("plug-host").expect("delete host");
+        assert!(db
+            .list_plugin_configs("plug-host")
+            .expect("list")
+            .is_empty());
+    }
+
+    #[test]
     fn round_trip_save_and_list() {
         let (db, _dir) = test_db();
         let h = sample_host("host-1");
@@ -2702,7 +2898,7 @@ mod tests {
         let (db, _dir) = test_db();
         {
             let conn = db.conn.lock().unwrap();
-            // The migration must have added the column and recorded version 19.
+            // The migration must have added the column and recorded version 20.
             let version: String = conn
                 .query_row(
                     "SELECT value FROM _meta WHERE key = 'schema_version'",
@@ -2710,7 +2906,7 @@ mod tests {
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert_eq!(version, "19");
+            assert_eq!(version, "20");
             assert!(conn
                 .prepare("SELECT terminal_theme FROM saved_hosts LIMIT 0")
                 .is_ok());
@@ -2828,7 +3024,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(version, "19");
+        assert_eq!(version, "20");
         for table in [
             "local_vault_metadata",
             "local_vault_credentials",

@@ -1,7 +1,8 @@
-import { Columns2, Rows2, Maximize2, Minimize2, X, FolderOpen, Plus, Link2 } from "lucide-react";
+import { Columns2, Rows2, Maximize2, Minimize2, X, FolderOpen, Plus, Link2, Puzzle } from "lucide-react";
 import { useSessionStore } from "../../stores/session-store";
 import { useTabStore } from "../../stores/tab-store";
 import { useLinkedExplorerStore } from "../../stores/linked-explorer-store";
+import { useLinkedPluginsStore } from "../../stores/linked-plugins-store";
 import { useUiStore } from "../../stores/ui-store";
 import { RecentPathsMenu } from "../explorer/RecentPathsMenu";
 import { hostKeyFor } from "../../lib/host-key";
@@ -24,6 +25,8 @@ export function PaneHeader({ sessionId, tabId }: PaneHeaderProps) {
   const isSynced = useSessionStore((s) => s.syncedTabIds.has(tabId) && hasSplits);
   const isLinkedOpen = useLinkedExplorerStore((s) => s.openTabIds.has(tabId));
   const toggleLinkedExplorer = useLinkedExplorerStore((s) => s.toggleLinkedExplorer);
+  const isPluginsOpen = useLinkedPluginsStore((s) => s.openTabIds.has(tabId));
+  const toggleLinkedPlugins = useLinkedPluginsStore((s) => s.toggleLinkedPlugins);
 
   if (!session) return null;
 
@@ -160,6 +163,25 @@ export function PaneHeader({ sessionId, tabId }: PaneHeaderProps) {
             title={isLinkedOpen ? "Close file explorer (⇧⌘E)" : "Open file explorer (⇧⌘E)"}
           >
             <FolderOpen size={13} strokeWidth={1.8} aria-hidden="true" />
+          </button>
+        )}
+
+        {/* Linked Plugins toggle — single-pane only; moved to SplitGlobalHeader in split mode */}
+        {!hasSplits && (
+          <button
+            type="button"
+            onClick={() => toggleLinkedPlugins(tabId)}
+            className={[
+              btnClass,
+              isPluginsOpen
+                ? "text-accent hover:text-accent-hover hover:bg-accent/10"
+                : "text-text-muted hover:text-text-primary hover:bg-bg-muted",
+            ].join(" ")}
+            data-testid="pane-linked-plugins-toggle"
+            aria-label={isPluginsOpen ? "Close plugins panel" : "Open plugins panel"}
+            title={isPluginsOpen ? "Close plugins panel" : "Open plugins panel"}
+          >
+            <Puzzle size={13} strokeWidth={1.8} aria-hidden="true" />
           </button>
         )}
 

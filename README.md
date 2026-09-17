@@ -83,6 +83,7 @@
 ### 🧭 2. Linked Terminal Explorer & OSC 7 CWD Sync
 * **Side-by-Side File Dock**: Open a dedicated remote filesystem panel docked directly beside your active terminal.
 * **Live Directory Tracking (OSC 7)**: As you `cd` in your remote shell, the linked file explorer automatically follows your current working directory without manual refresh.
+* **Host Plugins & Trackers Dock**: Dock real-time host monitoring cards (Server Health, PM2, Docker, systemd services, log viewer) directly beside your active terminal and linked file explorer.
 * **Shell Integration Wizard**: Built-in one-click shell hook generator for **Bash**, **Zsh**, and **Fish**.
 * **Independent Channel Ownership**: Operates on an isolated SSH subsystem channel to ensure heavy file transfers never freeze or degrade your terminal session.
 
@@ -126,15 +127,21 @@
 
 ## 📸 Screenshots
 
+| Unified Terminal Workspace (Terminal + Linked Explorer + Host Plugins) |
+| :---: |
+| ![Unified Workspace](screens/terminal-explorer-plugins.jpg) |
+| *Live SSH terminal, OSC 7 linked directory explorer, and host monitoring plugins all active at the same time in one screen* |
+
 | Connection Manager & Dashboard | Multi-Pane SSH Terminal & Search |
 | :---: | :---: |
 | ![Dashboard](screens/hosts.png) | ![Terminal](screens/terminal.png) |
 | *Organize hosts with groups, colors, and health checks* | *Split panes, regex search, and tabbed sessions* |
 
-| Linked & Standalone File Explorer | Command Snippets & Variables |
+| Standalone SFTP & S3 Explorer | Command Snippets & Variables |
 | :---: | :---: |
 | ![Explorer](screens/explorer.png) | ![Snippets](screens/snippets.png) |
 | *SFTP & S3 with drag-and-drop and conflict handling* | *Parameterized templates with quick insertion* |
+
 
 ---
 

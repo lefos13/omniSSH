@@ -408,18 +408,17 @@ pub(crate) fn migrate_host_to_vault(
      * password stranded in the keychain while the resolver looked for a vault
      * blob, so the host could never authenticate. Only skip when the ciphertext
      * is actually present. */
-    let already_in_vault = db.get_local_vault_credential(host_id)?.is_some();
-    if host.credential_storage == CredentialStorage::LocalVault && already_in_vault {
-        return Ok(());
-    }
     if host.auth_type != "password" {
         return Err(VaultError::UnsupportedCredential(
             "only password-authenticated hosts can be migrated".to_string(),
         ));
     }
 
-    /* A marker-only host with no keychain secret has nothing to move; report
-     * success so saving a host before entering a password is not an error. */
+    /*
+    A host with no keychain secret has nothing to move from the keychain.
+    Report success so saving a host before entering a password (or running
+    a migration when already in the vault) is not an error.
+    */
     let credential = match super::get_credential(host_id) {
         Ok(credential) => credential,
         Err(VaultError::NotFound(_))
@@ -1297,6 +1296,24 @@ mod tests {
         assert!(matches!(
             resolve_host_credential(&db, &state, host_id, CredentialStorage::LocalVault),
             Ok(StoredCredential::Password { ref password }) if password == "the-real-password"
+        ));
+
+        // When a new password is typed into the editor for an already-migrated host,
+        // it is staged to the keychain first. Re-migrating must overwrite the existing
+        // vault ciphertext with the new password.
+        crate::vault::save_credential(
+            host_id,
+            &StoredCredential::Password {
+                password: "the-updated-password".to_string(),
+            },
+        )
+        .expect("keychain save updated");
+        migrate_host_to_vault(&db, &key, host_id).expect("migrate updated password");
+
+        assert!(crate::vault::get_credential(host_id).is_err());
+        assert!(matches!(
+            resolve_host_credential(&db, &state, host_id, CredentialStorage::LocalVault),
+            Ok(StoredCredential::Password { ref password }) if password == "the-updated-password"
         ));
     }
 }

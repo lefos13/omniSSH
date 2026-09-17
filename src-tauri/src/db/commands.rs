@@ -4,7 +4,10 @@ use tauri::State;
 use tokio::task;
 use tracing::instrument;
 
-use super::{ConnectionHistoryEntry, DbError, HostDb, HostGroup, RecentConnection, SavedHost};
+use super::{
+    ConnectionHistoryEntry, DbError, HostDb, HostGroup, HostPluginConfig, RecentConnection,
+    SavedHost,
+};
 
 /// Persist (insert or update) a host entry.
 ///
@@ -213,6 +216,56 @@ pub async fn clear_recent_paths(
 ) -> Result<(), DbError> {
     let db = Arc::clone(&state);
     task::spawn_blocking(move || db.clear_recent_paths(&host_key, &scope))
+        .await
+        .map_err(|e| DbError::InitError(format!("task panicked: {e}")))?
+}
+
+// ─── Host plugin config (per-host tracker enablement + JSON config) ──────────
+
+/*
+ * Persist one plugin row for a host. Config is opaque frontend-owned JSON
+ * (ports, paths, kube context) — must never contain secrets. The row is
+ * upserted; unknown hosts surface as `NotFound` via the FK, malformed JSON
+ * as `Validation`.
+ */
+#[tauri::command]
+#[instrument(skip(state))]
+pub async fn set_plugin_config(
+    host_id: String,
+    plugin_id: String,
+    enabled: bool,
+    config: String,
+    state: State<'_, Arc<HostDb>>,
+) -> Result<(), DbError> {
+    let db = Arc::clone(&state);
+    task::spawn_blocking(move || db.set_plugin_config(&host_id, &plugin_id, enabled, &config))
+        .await
+        .map_err(|e| DbError::InitError(format!("task panicked: {e}")))?
+}
+
+/// All plugin rows for one host, ordered by plugin id.
+#[tauri::command]
+#[instrument(skip(state))]
+pub async fn list_plugin_configs(
+    host_id: String,
+    state: State<'_, Arc<HostDb>>,
+) -> Result<Vec<HostPluginConfig>, DbError> {
+    let db = Arc::clone(&state);
+    task::spawn_blocking(move || db.list_plugin_configs(&host_id))
+        .await
+        .map_err(|e| DbError::InitError(format!("task panicked: {e}")))?
+}
+
+/// Delete one plugin row for a host.
+#[tauri::command]
+#[instrument(skip(state))]
+pub async fn delete_plugin_config(
+    host_id: String,
+    plugin_id: String,
+    state: State<'_, Arc<HostDb>>,
+) -> Result<(), DbError> {
+    let db = Arc::clone(&state);
+    task::spawn_blocking(move || db.delete_plugin_config(&host_id, &plugin_id))
         .await
         .map_err(|e| DbError::InitError(format!("task panicked: {e}")))?
 }

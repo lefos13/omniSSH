@@ -26,6 +26,7 @@ import {
   Link2,
   AlertTriangle,
   Terminal as TerminalIcon,
+  ScrollText,
   Search,
 } from "lucide-react";
 import { ModalShell, BTN_GHOST, BTN_DANGER } from "../shared/ModalShell";
@@ -99,6 +100,9 @@ interface ExplorerFileTableProps {
   loading?: boolean;
   busy?: boolean;
   onCdToTerminal?: (path: string) => void;
+  /** Open a file's log tail in the terminal's plugins panel. Files only;
+   *  absent outside terminal-linked contexts (e.g. standalone explorer tabs). */
+  onTailLog?: (entry: ExplorerEntry) => void;
   searchQuery?: string;
   onClearSearch?: () => void;
   /** Optional callback invoked when the internal selection set changes. */
@@ -375,6 +379,7 @@ export function ExplorerFileTable({
   currentPath,
   loading,
   onCdToTerminal,
+  onTailLog,
   searchQuery,
   onClearSearch,
   onSelectionChange,
@@ -1009,6 +1014,15 @@ export function ExplorerFileTable({
         label: "cd in Terminal",
         icon: TerminalIcon,
         onClick: () => onCdToTerminal(entry.id),
+      });
+    }
+    /* Log tail: files only, terminal-linked contexts only. Opens the plugins
+     * side panel on the owning tab with the log viewer primed for this path. */
+    if (onTailLog && entry.entryType !== "Directory") {
+      items.push({
+        label: "Tail log in Plugins",
+        icon: ScrollText,
+        onClick: () => onTailLog(entry),
       });
     }
 

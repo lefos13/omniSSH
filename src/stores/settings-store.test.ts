@@ -253,3 +253,156 @@ describe("settings-store — default credential storage", () => {
     expect(useSettingsStore.getState().defaultCredentialStorage).toBe("localVault");
   });
 });
+
+describe("settings-store — terminal keyword highlight rules", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockResolvedValue(undefined);
+    useSettingsStore.setState({ terminalHighlightRules: [] });
+  });
+
+  it("defaults to empty list of highlight rules", () => {
+    expect(useSettingsStore.getState().terminalHighlightRules).toEqual([]);
+  });
+
+  it("adds a highlight rule and persists it as JSON", async () => {
+    useSettingsStore.getState().addTerminalHighlightRule({
+      pattern: "ERROR",
+      color: "#ef4444",
+      style: "text",
+      scope: "global",
+      matchCase: false,
+      matchWholeWord: true,
+      isRegex: false,
+      enabled: true,
+    });
+
+    const rules = useSettingsStore.getState().terminalHighlightRules;
+    expect(rules).toHaveLength(1);
+    expect(rules[0].pattern).toBe("ERROR");
+    expect(rules[0].id).toBeDefined();
+
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("save_setting", {
+        key: "terminal_highlight_rules",
+        value: JSON.stringify(rules),
+      }),
+    );
+  });
+
+  it("updates an existing highlight rule", async () => {
+    useSettingsStore.setState({
+      terminalHighlightRules: [
+        {
+          id: "rule-1",
+          pattern: "WARN",
+          color: "#f59e0b",
+          style: "text",
+          scope: "global",
+          enabled: true,
+        },
+      ],
+    });
+
+    useSettingsStore.getState().updateTerminalHighlightRule("rule-1", {
+      color: "#22c55e",
+      pattern: "SUCCESS",
+    });
+
+    const rules = useSettingsStore.getState().terminalHighlightRules;
+    expect(rules[0].pattern).toBe("SUCCESS");
+    expect(rules[0].color).toBe("#22c55e");
+
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("save_setting", {
+        key: "terminal_highlight_rules",
+        value: JSON.stringify(rules),
+      }),
+    );
+  });
+
+  it("toggles enabled state on a highlight rule", async () => {
+    useSettingsStore.setState({
+      terminalHighlightRules: [
+        {
+          id: "rule-1",
+          pattern: "DEBUG",
+          color: "#3b82f6",
+          style: "text",
+          scope: "global",
+          enabled: true,
+        },
+      ],
+    });
+
+    useSettingsStore.getState().toggleTerminalHighlightRule("rule-1");
+    expect(useSettingsStore.getState().terminalHighlightRules[0].enabled).toBe(false);
+
+    useSettingsStore.getState().toggleTerminalHighlightRule("rule-1");
+    expect(useSettingsStore.getState().terminalHighlightRules[0].enabled).toBe(true);
+  });
+
+  it("removes a highlight rule", async () => {
+    useSettingsStore.setState({
+      terminalHighlightRules: [
+        {
+          id: "rule-1",
+          pattern: "FOO",
+          color: "#ef4444",
+          style: "text",
+          scope: "global",
+        },
+        {
+          id: "rule-2",
+          pattern: "BAR",
+          color: "#22c55e",
+          style: "background",
+          scope: "hosts",
+          hostIds: ["host-1"],
+        },
+      ],
+    });
+
+    useSettingsStore.getState().removeTerminalHighlightRule("rule-1");
+    const rules = useSettingsStore.getState().terminalHighlightRules;
+    expect(rules).toHaveLength(1);
+    expect(rules[0].id).toBe("rule-2");
+
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("save_setting", {
+        key: "terminal_highlight_rules",
+        value: JSON.stringify(rules),
+      }),
+    );
+  });
+
+
+
+  it("deserializes highlight rules on loadSettings", async () => {
+    const savedRules = [
+      {
+        id: "rule-persisted",
+        pattern: "FATAL",
+        color: "#ef4444",
+        style: "background",
+        scope: "hosts",
+        hostIds: ["host-123"],
+        enabled: true,
+      },
+    ];
+
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "load_all_settings") {
+        return [
+          ["terminal_highlight_rules", JSON.stringify(savedRules)],
+          ["editors_seeded", "true"],
+        ];
+      }
+      return undefined;
+    });
+
+    await useSettingsStore.getState().loadSettings();
+    expect(useSettingsStore.getState().terminalHighlightRules).toEqual(savedRules);
+  });
+});
+

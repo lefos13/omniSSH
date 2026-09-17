@@ -5,7 +5,7 @@ import {
   useCallback,
   useMemo,
 } from "react";
-import { Search, Plus, Import, Cloud, LayoutGrid, List } from "lucide-react";
+import { Search, Plus, Import, Cloud, LayoutGrid, List, ListTree } from "lucide-react";
 import {
   DndContext,
   closestCenter,
@@ -33,9 +33,11 @@ import { useTabStore } from "../../stores/tab-store";
 import { useSftpStore } from "../../stores/sftp-store";
 import { useS3Store } from "../../stores/s3-store";
 import { useSettingsStore } from "../../stores/settings-store";
+import { useResizeHandle } from "../../hooks/use-resize-handle";
 import type { SavedHost, HostGroup, RecentConnection, S3Connection, HostConfig, SplitDirection } from "../../types";
 import { HostCard } from "./HostCard";
 import { HostListRow } from "./HostListRow";
+import { HostGroupedView } from "./HostGroupedView";
 import { S3Card } from "./S3Card";
 import { SortableCard } from "./SortableCard";
 import { GroupsSidebar, UNGROUPED_ID } from "./GroupsSidebar";
@@ -58,6 +60,14 @@ async function cancelConnectAttempt(attemptId: string) {
   }
 }
 
+/* Groups sidebar resize bounds, mirroring the linked-panel handle pattern
+ * (TerminalTabContainer) with a narrower range suited to a nav rail. */
+const GROUPS_SIDEBAR_STORAGE_KEY = "anyscp_groups_sidebar_width";
+const GROUPS_SIDEBAR_DEFAULT = 224;
+const GROUPS_SIDEBAR_MIN = 160;
+const GROUPS_SIDEBAR_MAX = 400;
+const GROUPS_SIDEBAR_STEP = 20;
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export function HostsDashboard() {
@@ -70,6 +80,67 @@ export function HostsDashboard() {
 
   const [query, setQuery] = useState("");
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  /* Grouped view: the sidebar scroll-navigates instead of filtering, and the
+   * scroll-spy keeps its highlight in sync with the visible section. */
+  const [visibleGroupId, setVisibleGroupId] = useState<string | null>(null);
+  const mainScrollRef = useRef<HTMLDivElement>(null);
+  const sidebarWidthRef = useRef(GROUPS_SIDEBAR_DEFAULT);
+
+  /* Resizable groups sidebar (persisted in localStorage, like the linked
+   * panel widths). Left-docked, so dragging right (+delta) widens it. */
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    if (typeof window === "undefined" || !window.localStorage) return GROUPS_SIDEBAR_DEFAULT;
+    const stored = window.localStorage.getItem(GROUPS_SIDEBAR_STORAGE_KEY);
+    const parsed = stored ? parseInt(stored, 10) : NaN;
+    const initial = Number.isNaN(parsed)
+      ? GROUPS_SIDEBAR_DEFAULT
+      : Math.max(GROUPS_SIDEBAR_MIN, Math.min(GROUPS_SIDEBAR_MAX, parsed));
+    sidebarWidthRef.current = initial;
+    return initial;
+  });
+  const handleSidebarResize = useCallback((delta: number) => {
+    setSidebarWidth((w) => {
+      const next = Math.max(GROUPS_SIDEBAR_MIN, Math.min(GROUPS_SIDEBAR_MAX, w + delta));
+      sidebarWidthRef.current = next;
+      return next;
+    });
+  }, []);
+  const handleSidebarResizeEnd = useCallback(() => {
+    try {
+      window.localStorage.setItem(GROUPS_SIDEBAR_STORAGE_KEY, String(sidebarWidthRef.current));
+    } catch { /* storage unavailable — width still applies for the session */ }
+  }, []);
+  const sidebarResizeHandle = useResizeHandle({
+    direction: "horizontal",
+    onResize: handleSidebarResize,
+    onResizeEnd: handleSidebarResizeEnd,
+  });
+  const handleSidebarKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      const apply = (next: number) => {
+        const clamped = Math.max(GROUPS_SIDEBAR_MIN, Math.min(GROUPS_SIDEBAR_MAX, next));
+        sidebarWidthRef.current = clamped;
+        setSidebarWidth(clamped);
+        try {
+          window.localStorage.setItem(GROUPS_SIDEBAR_STORAGE_KEY, String(clamped));
+        } catch { /* storage unavailable — width still applies for the session */ }
+      };
+      if (e.key === "ArrowRight") {
+        e.preventDefault();
+        apply(sidebarWidthRef.current + GROUPS_SIDEBAR_STEP);
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        apply(sidebarWidthRef.current - GROUPS_SIDEBAR_STEP);
+      } else if (e.key === "Home") {
+        e.preventDefault();
+        apply(GROUPS_SIDEBAR_MIN);
+      } else if (e.key === "End") {
+        e.preventDefault();
+        apply(GROUPS_SIDEBAR_MAX);
+      }
+    },
+    [],
+  );
 
   // Group modal state
   const [groupModalOpen, setGroupModalOpen] = useState(false);
@@ -197,8 +268,10 @@ export function HostsDashboard() {
   const filteredHosts = useMemo<SavedHost[]>(() => {
     let result = hosts;
 
-    // Group filter
-    result = result.filter((h) => matchesSelectedGroup(h.group_id));
+    // Group filter (grouped view shows every group; the sidebar navigates)
+    if (hostsViewMode !== "grouped") {
+      result = result.filter((h) => matchesSelectedGroup(h.group_id));
+    }
 
     // Search filter
     const q = query.trim().toLowerCase();
@@ -212,13 +285,15 @@ export function HostsDashboard() {
     }
 
     return result;
-  }, [hosts, matchesSelectedGroup, query]);
+  }, [hosts, matchesSelectedGroup, query, hostsViewMode]);
 
   const filteredS3 = useMemo<S3Connection[]>(() => {
     let result = s3Connections;
 
-    // Group filter
-    result = result.filter((c) => matchesSelectedGroup(c.group_id));
+    // Group filter (grouped view shows every group; the sidebar navigates)
+    if (hostsViewMode !== "grouped") {
+      result = result.filter((c) => matchesSelectedGroup(c.group_id));
+    }
 
     // Search filter
     const q = query.trim().toLowerCase();
@@ -232,7 +307,74 @@ export function HostsDashboard() {
     }
 
     return result;
-  }, [s3Connections, matchesSelectedGroup, query]);
+  }, [s3Connections, matchesSelectedGroup, query, hostsViewMode]);
+
+  /* Grouped view buckets: every group in sort order, ungrouped last. Search
+   * still applies (via filteredHosts/filteredS3); empty sections render
+   * nothing so a query hides non-matching groups. */
+  const hostsByGroup = useMemo(() => {
+    const map = new Map<string | null, SavedHost[]>();
+    for (const h of filteredHosts) {
+      const key = h.group_id;
+      const list = map.get(key);
+      if (list) list.push(h);
+      else map.set(key, [h]);
+    }
+    return map;
+  }, [filteredHosts]);
+
+  const s3ByGroup = useMemo(() => {
+    const map = new Map<string | null, S3Connection[]>();
+    for (const c of filteredS3) {
+      const key = c.group_id;
+      const list = map.get(key);
+      if (list) list.push(c);
+      else map.set(key, [c]);
+    }
+    return map;
+  }, [filteredS3]);
+
+  /* Scroll the main column to a group section (grouped view). "All Hosts"
+   * returns to the top. */
+  const scrollToGroup = useCallback((groupId: string | null) => {
+    const root = mainScrollRef.current;
+    if (!root) return;
+    if (groupId === null) {
+      root.scrollTo({ top: 0, behavior: "smooth" });
+      setVisibleGroupId(null);
+      return;
+    }
+    const key = groupId === UNGROUPED_ID ? UNGROUPED_ID : groupId;
+    const el = root.querySelector(`#group-section-${CSS.escape(key)}`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+      setVisibleGroupId(key);
+    }
+  }, []);
+
+  /* Scroll-spy: highlight the sidebar row for the section nearest the top of
+   * the main column while in grouped view. */
+  useEffect(() => {
+    if (hostsViewMode !== "grouped") return;
+    const root = mainScrollRef.current;
+    if (!root || typeof IntersectionObserver === "undefined") return;
+    const sections = Array.from(root.querySelectorAll<HTMLElement>("[id^='group-section-']"));
+    if (sections.length === 0) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (visible.length > 0) {
+          const id = visible[0].target.id.replace(/^group-section-/, "");
+          setVisibleGroupId(id === UNGROUPED_ID ? UNGROUPED_ID : id);
+        }
+      },
+      { root, rootMargin: "-20% 0px -70% 0px", threshold: 0 },
+    );
+    for (const s of sections) observer.observe(s);
+    return () => observer.disconnect();
+  }, [hostsViewMode, filteredHosts, filteredS3, groups]);
 
   // ─── Connect handlers ──────────────────────────────────────────────────────
 
@@ -587,6 +729,8 @@ export function HostsDashboard() {
     ? groups.find((g) => g.id === selectedGroupId)
     : null;
 
+  const isGroupedView = hostsViewMode === "grouped";
+
   // ─── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -596,14 +740,29 @@ export function HostsDashboard() {
           groups={groups}
           hostCountByGroup={hostCountByGroup}
           ungroupedCount={ungroupedCount}
-          selectedGroupId={selectedGroupId}
+          selectedGroupId={isGroupedView ? visibleGroupId : selectedGroupId}
           onSelect={setSelectedGroupId}
           onDelete={handleGroupDeleteRequest}
           onReorder={handleGroupReorder}
           onNewGroup={() => setGroupModalOpen(true)}
+          width={sidebarWidth}
+          {...(isGroupedView ? { onNavigate: scrollToGroup } : {})}
+        />
+        <div
+          role="separator"
+          tabIndex={0}
+          aria-orientation="vertical"
+          aria-label="Resize groups sidebar"
+          aria-valuenow={sidebarWidth}
+          aria-valuemin={GROUPS_SIDEBAR_MIN}
+          aria-valuemax={GROUPS_SIDEBAR_MAX}
+          data-testid="groups-sidebar-resize-handle"
+          className="relative z-10 flex-shrink-0 w-1.5 cursor-col-resize hover:bg-accent/30 active:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded transition-colors"
+          onKeyDown={handleSidebarKeyDown}
+          {...sidebarResizeHandle}
         />
 
-        <div className="flex-1 min-w-0 overflow-y-scroll">
+        <div ref={mainScrollRef} className="flex-1 min-w-0 overflow-y-scroll">
           <div className="max-w-4xl w-full mx-auto px-8 py-8 flex flex-col gap-8">
 
           {/* ── Page title ── */}
@@ -717,8 +876,8 @@ export function HostsDashboard() {
                     : "Hosts"}
               </h2>
 
-              {/* View mode toggle (Cards vs List) */}
-              {filteredHosts.length > 0 && (
+              {/* View mode toggle (Cards vs List vs Grouped) */}
+              {(filteredHosts.length > 0 || isGroupedView) && (
                 <div
                   className="flex items-center gap-0.5 p-0.5 rounded-lg bg-bg-surface border border-border"
                   role="group"
@@ -758,12 +917,53 @@ export function HostsDashboard() {
                   >
                     <List size={14} strokeWidth={2} aria-hidden="true" />
                   </button>
+                  <button
+                    type="button"
+                    data-testid="hosts-view-grouped-button"
+                    onClick={() => setHostsViewMode("grouped")}
+                    aria-pressed={hostsViewMode === "grouped"}
+                    aria-label="Grouped view"
+                    title="Grouped view"
+                    className={[
+                      "p-1.5 rounded-md transition-colors",
+                      hostsViewMode === "grouped"
+                        ? "bg-bg-overlay text-text-primary shadow-xs"
+                        : "text-text-muted hover:text-text-primary",
+                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    ].join(" ")}
+                  >
+                    <ListTree size={14} strokeWidth={2} aria-hidden="true" />
+                  </button>
                 </div>
               )}
             </div>
 
-            {/* Host grid or list or empty state */}
-            {filteredHosts.length > 0 ? (
+            {/* Host grid, list, grouped tree, or empty state */}
+            {isGroupedView ? (
+              filteredHosts.length > 0 || filteredS3.length > 0 ? (
+                <HostGroupedView
+                  groups={groups}
+                  hostsByGroup={hostsByGroup}
+                  s3ByGroup={s3ByGroup}
+                  onConnect={(h) => void connectToHost(h)}
+                  onExplore={(h) => void exploreHost(h)}
+                  onEdit={setEditingHostId}
+                  onDelete={(id) => void handleDeleteHost(id)}
+                  onDuplicate={(h) => void handleDuplicateHost(h)}
+                  onSplit={splitHostIntoTerminal}
+                  onS3Connect={(c) => void handleS3Connect(c)}
+                  onS3Edit={(c) => setEditingS3Connection(c)}
+                  onS3Duplicate={(c) => void handleS3Duplicate(c)}
+                  onS3Delete={(c) => void handleS3Delete(c)}
+                />
+              ) : (
+                <EmptyHostsState
+                  query={query}
+                  hasHosts={hosts.length > 0}
+                  groupFiltered={false}
+                />
+              )
+            ) : filteredHosts.length > 0 ? (
               <DndContext
                 sensors={sensors}
                 collisionDetection={closestCenter}
@@ -817,8 +1017,8 @@ export function HostsDashboard() {
             )}
           </section>
 
-          {/* ── S3 connections section ── */}
-          {filteredS3.length > 0 && (
+          {/* ── S3 connections section (folded into grouped sections in grouped view) ── */}
+          {!isGroupedView && filteredS3.length > 0 && (
             <section aria-labelledby="s3-heading">
               <h2
                 id="s3-heading"

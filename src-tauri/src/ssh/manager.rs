@@ -404,6 +404,70 @@ impl SshManager {
         }
     }
 
+    /*
+    Constructs the preferred cryptographic algorithm suites for SSH connections.
+
+    Prioritizes modern, secure primitives (Curve25519, NIST curves, Ed25519,
+    RSA-SHA2, ChaCha20-Poly1305, AES-GCM/CTR) while appending legacy fallback
+    algorithms (Diffie-Hellman Group 14/1 SHA-1, ssh-rsa, AES-CBC) at the end of
+    the preference list. This ensures modern servers negotiate secure protocols
+    while enabling compatibility with legacy hosts and network appliances.
+    */
+    pub(crate) fn default_preferred_algorithms() -> russh::Preferred {
+        use std::borrow::Cow;
+        russh::Preferred {
+            kex: Cow::Borrowed(&[
+                russh::kex::CURVE25519,
+                russh::kex::CURVE25519_PRE_RFC_8731,
+                russh::kex::ECDH_SHA2_NISTP256,
+                russh::kex::ECDH_SHA2_NISTP384,
+                russh::kex::ECDH_SHA2_NISTP521,
+                russh::kex::DH_G16_SHA512,
+                russh::kex::DH_G14_SHA256,
+                // Legacy fallback KEX
+                russh::kex::DH_G14_SHA1,
+                russh::kex::DH_G1_SHA1,
+                russh::kex::EXTENSION_SUPPORT_AS_CLIENT,
+                russh::kex::EXTENSION_OPENSSH_STRICT_KEX_AS_CLIENT,
+            ]),
+            key: Cow::Borrowed(&[
+                russh_keys::key::ED25519,
+                russh_keys::key::ECDSA_SHA2_NISTP256,
+                russh_keys::key::ECDSA_SHA2_NISTP384,
+                russh_keys::key::ECDSA_SHA2_NISTP521,
+                russh_keys::key::RSA_SHA2_512,
+                russh_keys::key::RSA_SHA2_256,
+                // Legacy fallback host key
+                russh_keys::key::SSH_RSA,
+            ]),
+            cipher: Cow::Borrowed(&[
+                russh::cipher::CHACHA20_POLY1305,
+                russh::cipher::AES_256_GCM,
+                russh::cipher::AES_256_CTR,
+                russh::cipher::AES_192_CTR,
+                russh::cipher::AES_128_CTR,
+                // Legacy fallback ciphers
+                russh::cipher::AES_256_CBC,
+                russh::cipher::AES_192_CBC,
+                russh::cipher::AES_128_CBC,
+                russh::cipher::TRIPLE_DES_CBC,
+            ]),
+            mac: russh::Preferred::DEFAULT.mac,
+            compression: russh::Preferred::DEFAULT.compression,
+        }
+    }
+
+    /*
+    Creates a russh client configuration populated with OmniSSH's default
+    cryptographic preference list including legacy fallbacks.
+    */
+    pub(crate) fn default_client_config() -> client::Config {
+        client::Config {
+            preferred: Self::default_preferred_algorithms(),
+            ..Default::default()
+        }
+    }
+
     /// Establish a new SSH connection and return its SessionId.
     pub async fn connect(
         &self,
@@ -429,21 +493,20 @@ impl SshManager {
         );
 
         let keepalive_secs = config.keep_alive_interval.unwrap_or(0) as u64;
-        let russh_config = Arc::new(client::Config {
-            // Send SSH keepalive probes rather than arming an inactivity GC timer.
-            // `inactivity_timeout` only tears the session down after a quiet
-            // window (and sends nothing to prevent it), which would also collapse
-            // any ProxyJump tunnel beneath an idle session. `keepalive_interval`
-            // proactively keeps the connection — and the tunnel — alive, while
-            // `keepalive_max` unanswered probes still detect a genuinely dead peer.
-            keepalive_interval: if keepalive_secs > 0 {
-                Some(std::time::Duration::from_secs(keepalive_secs))
-            } else {
-                None // No keepalive — connection stays alive until explicitly closed
-            },
-            keepalive_max: 3,
-            ..Default::default()
-        });
+        let mut russh_config = Self::default_client_config();
+        // Send SSH keepalive probes rather than arming an inactivity GC timer.
+        // `inactivity_timeout` only tears the session down after a quiet
+        // window (and sends nothing to prevent it), which would also collapse
+        // any ProxyJump tunnel beneath an idle session. `keepalive_interval`
+        // proactively keeps the connection — and the tunnel — alive, while
+        // `keepalive_max` unanswered probes still detect a genuinely dead peer.
+        russh_config.keepalive_interval = if keepalive_secs > 0 {
+            Some(std::time::Duration::from_secs(keepalive_secs))
+        } else {
+            None // No keepalive — connection stays alive until explicitly closed
+        };
+        russh_config.keepalive_max = 3;
+        let russh_config = Arc::new(russh_config);
 
         // Establish the connection — directly or tunnelled through a ProxyJump
         // chain. The jump handles must outlive the target session, so they are
@@ -507,10 +570,9 @@ impl SshManager {
             .as_ref()
             .map(|id| self.register_pending(id.clone()));
 
-        let russh_config = Arc::new(client::Config {
-            inactivity_timeout: None, // SFTP connections stay alive indefinitely
-            ..Default::default()
-        });
+        let mut russh_config = Self::default_client_config();
+        russh_config.inactivity_timeout = None; // SFTP connections stay alive indefinitely
+        let russh_config = Arc::new(russh_config);
 
         // Establish the connection — directly or tunnelled through a ProxyJump —
         // racing against the cancellation token so the user can abort mid-handshake.
@@ -1415,5 +1477,40 @@ mod ownership_tests {
             .unwrap()
             .disconnecting
             .contains_key("ssh-1"));
+    }
+
+    #[test]
+    fn default_client_config_includes_modern_and_fallback_algorithms() {
+        let config = SshManager::default_client_config();
+
+        // KEX: Curve25519 first, legacy DH SHA-1 fallbacks included at tail
+        assert_eq!(config.preferred.kex.first(), Some(&russh::kex::CURVE25519));
+        assert!(config.preferred.kex.contains(&russh::kex::DH_G14_SHA1));
+        assert!(config.preferred.kex.contains(&russh::kex::DH_G1_SHA1));
+
+        // Host keys: Ed25519 first, ssh-rsa fallback included
+        assert_eq!(
+            config.preferred.key.first(),
+            Some(&russh_keys::key::ED25519)
+        );
+        assert!(config.preferred.key.contains(&russh_keys::key::SSH_RSA));
+
+        // Ciphers: ChaCha20 first, CBC fallbacks included
+        assert_eq!(
+            config.preferred.cipher.first(),
+            Some(&russh::cipher::CHACHA20_POLY1305)
+        );
+        assert!(config
+            .preferred
+            .cipher
+            .contains(&russh::cipher::AES_256_CBC));
+        assert!(config
+            .preferred
+            .cipher
+            .contains(&russh::cipher::AES_128_CBC));
+        assert!(config
+            .preferred
+            .cipher
+            .contains(&russh::cipher::TRIPLE_DES_CBC));
     }
 }

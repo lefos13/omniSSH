@@ -134,6 +134,91 @@ pub async fn ssh_split_session(
     result
 }
 
+/// Output of a single hidden exec on an existing SSH session.
+/// Mirrors the frontend `SshExecResult` contract: stdout/stderr are
+/// lossy-UTF-8 strings, exit_code is the remote status (0 = success).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshExecResult {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: i32,
+}
+
+/*
+ * Run a shell command on a fresh channel of an existing SSH session and
+ * capture its output. Polling trackers (health, docker, pm2, …) use this
+ * instead of PTY injection so output is machine-parseable and the visible
+ * terminal is undisturbed. Works over ProxyJump transparently because the
+ * channel opens on the already-established target handle.
+ */
+#[tauri::command]
+pub async fn ssh_exec_command(
+    session_id: String,
+    command: String,
+    state: State<'_, SshManager>,
+) -> Result<SshExecResult, SshError> {
+    const MAX_COMMAND_BYTES: usize = 64 * 1024;
+    const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+    if command.is_empty() || command.len() > MAX_COMMAND_BYTES {
+        return Err(SshError::ChannelError(
+            "command must be 1..65536 bytes".to_string(),
+        ));
+    }
+    let handle = state.get_handle(&session_id)?;
+    let mut channel = {
+        let h = handle.lock().await;
+        h.channel_open_session()
+            .await
+            .map_err(|e| SshError::ChannelError(e.to_string()))?
+    };
+    channel
+        .exec(true, command.as_bytes())
+        .await
+        .map_err(|e| SshError::ChannelError(format!("exec failed: {e}")))?;
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut exit_code: Option<i32> = None;
+    while let Some(msg) = channel.wait().await {
+        if fold_exec_msg(msg, &mut stdout, &mut stderr, &mut exit_code) {
+            break;
+        }
+        if stdout.len() + stderr.len() > MAX_OUTPUT_BYTES {
+            return Err(SshError::ChannelError(
+                "remote output exceeded 1 MiB".to_string(),
+            ));
+        }
+    }
+
+    Ok(SshExecResult {
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        exit_code: exit_code.unwrap_or(0),
+    })
+}
+
+/*
+ * Fold one channel message into the running stdout / stderr / exit-code.
+ * `Eof` must NOT stop the loop: RFC 4254 §5.3 sends Eof before exit-status,
+ * so stopping there would discard the exit code (mirrors scp::exec).
+ */
+fn fold_exec_msg(
+    msg: russh::ChannelMsg,
+    stdout: &mut Vec<u8>,
+    stderr: &mut Vec<u8>,
+    exit_code: &mut Option<i32>,
+) -> bool {
+    match msg {
+        russh::ChannelMsg::Data { data } => stdout.extend_from_slice(&data),
+        russh::ChannelMsg::ExtendedData { data, ext: 1 } => stderr.extend_from_slice(&data),
+        russh::ChannelMsg::ExitStatus { exit_status } => *exit_code = Some(exit_status as i32),
+        russh::ChannelMsg::Close => return true,
+        _ => {}
+    }
+    false
+}
+
 /// Scan `~/.ssh/` for private key files and return metadata for each one.
 #[tauri::command]
 pub async fn list_ssh_keys() -> Result<Vec<SshKeyInfo>, SshError> {
@@ -211,7 +296,7 @@ async fn probe_direct(host: &str, port: u16) -> HostHealthCheckResult {
     // Reuse the already-connected TCP stream via `connect_stream` so we don't
     // open a second connection to the host. The handshake bound is the outer
     // `timeout`, so no `inactivity_timeout` is needed on the throwaway config.
-    let russh_config = Arc::new(client::Config::default());
+    let russh_config = Arc::new(SshManager::default_client_config());
     let handler = super::handler::SshClientHandler;
     match timeout(
         HEALTH_CHECK_TIMEOUT,
@@ -261,7 +346,7 @@ async fn probe_via_jump(target: &HostConfig, jump: &HostConfig) -> HostHealthChe
     let started = Instant::now();
     let elapsed_ms = || started.elapsed().as_millis() as u64;
     // Throwaway config: no keepalive/inactivity timeout needed for a one-shot probe.
-    let russh_config = Arc::new(client::Config::default());
+    let russh_config = Arc::new(SshManager::default_client_config());
 
     // ── 1. Bring up the full jump chain (connect + auth every hop) ─────────
     // Bounded so a tarpit/stalled auth on any hop can't hang the probe. The
@@ -435,6 +520,71 @@ async fn resolve_and_connect_tcp(
             .unwrap_or_else(|| "TCP port is not reachable".to_string()),
         latency_ms: Some(elapsed_ms()),
     })
+}
+
+#[cfg(test)]
+mod exec_tests {
+    use super::*;
+    use russh::CryptoVec;
+
+    fn data_msg(bytes: &[u8]) -> russh::ChannelMsg {
+        russh::ChannelMsg::Data {
+            data: CryptoVec::from(bytes.to_vec()),
+        }
+    }
+
+    /*
+     * Same regression guard as scp::exec: Eof arrives before exit-status
+     * (RFC 4254 §5.3), so the fold must keep reading past it or the exit
+     * code is lost and failures report as success.
+     */
+    #[test]
+    fn ssh_exec_fold_keeps_reading_past_eof() {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut exit: Option<i32> = None;
+
+        assert!(!fold_exec_msg(
+            data_msg(b"ok"),
+            &mut out,
+            &mut err,
+            &mut exit
+        ));
+        assert!(!fold_exec_msg(
+            russh::ChannelMsg::Eof,
+            &mut out,
+            &mut err,
+            &mut exit
+        ));
+        assert!(!fold_exec_msg(
+            russh::ChannelMsg::ExitStatus { exit_status: 2 },
+            &mut out,
+            &mut err,
+            &mut exit
+        ));
+        assert!(fold_exec_msg(
+            russh::ChannelMsg::Close,
+            &mut out,
+            &mut err,
+            &mut exit
+        ));
+
+        assert_eq!(out, b"ok");
+        assert_eq!(exit, Some(2));
+    }
+
+    #[test]
+    fn ssh_exec_result_serializes_camel_case_contract() {
+        let json = serde_json::to_value(SshExecResult {
+            stdout: "o".into(),
+            stderr: "e".into(),
+            exit_code: 1,
+        })
+        .expect("serialize");
+        assert_eq!(json["stdout"], "o");
+        assert_eq!(json["stderr"], "e");
+        assert_eq!(json["exitCode"], 1);
+    }
 }
 
 #[cfg(test)]
@@ -637,9 +787,28 @@ fn resolve_auth_method(
             host_id,
             CredentialStorage::LocalVault,
         ) {
-            Ok(vault::StoredCredential::Password { ref password }) => {
+            Ok(vault::StoredCredential::Password { ref password }) if !password.is_empty() => {
                 return Ok(AuthMethod::Password {
                     password: password.clone(),
+                });
+            }
+            Ok(vault::StoredCredential::Password { .. }) => {
+                /*
+                If the local vault holds an empty placeholder (e.g. from an import)
+                but the system keychain holds a populated credential, use the keychain
+                password.
+                */
+                if let Ok(vault::StoredCredential::Password { ref password }) =
+                    vault::get_credential(host_id)
+                {
+                    if !password.is_empty() {
+                        return Ok(AuthMethod::Password {
+                            password: password.clone(),
+                        });
+                    }
+                }
+                return Ok(AuthMethod::Password {
+                    password: String::new(),
                 });
             }
             Ok(_) => {
@@ -648,9 +817,19 @@ fn resolve_auth_method(
                 ));
             }
             Err(crate::vault::VaultError::NotFound(_)) => {
-                /* Fall back to an empty password string for interactive prompt, matching
-                 * the Keychain behavior for freshly imported hosts with no secret attached.
-                 * We preserve the failure on Locked and Decrypt to avoid silent fallback. */
+                /*
+                Fall back to the keychain if available; otherwise yield an empty password
+                for interactive prompting.
+                */
+                if let Ok(vault::StoredCredential::Password { ref password }) =
+                    vault::get_credential(host_id)
+                {
+                    if !password.is_empty() {
+                        return Ok(AuthMethod::Password {
+                            password: password.clone(),
+                        });
+                    }
+                }
                 return Ok(AuthMethod::Password {
                     password: String::new(),
                 });

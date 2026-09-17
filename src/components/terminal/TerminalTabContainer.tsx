@@ -9,8 +9,10 @@ import { useCallback } from "react";
 import type { LayoutNode } from "../../types";
 import { TerminalArea } from "./TerminalArea";
 import { LinkedExplorerPanel } from "./LinkedExplorerPanel";
+import { LinkedPluginsPanel } from "../plugins";
 import { SplitGlobalHeader } from "./SplitGlobalHeader";
 import { useLinkedExplorerStore } from "../../stores/linked-explorer-store";
+import { useLinkedPluginsStore } from "../../stores/linked-plugins-store";
 import { useSessionStore } from "../../stores/session-store";
 import { useResizeHandle } from "../../hooks/use-resize-handle";
 
@@ -28,6 +30,9 @@ export function TerminalTabContainer({ tabId, layout, isActive }: TerminalTabCon
   const isLinkedOpen = useLinkedExplorerStore((s) => s.openTabIds.has(tabId));
   const panelWidth = useLinkedExplorerStore((s) => s.panelWidth);
   const setPanelWidth = useLinkedExplorerStore((s) => s.setPanelWidth);
+  const isPluginsOpen = useLinkedPluginsStore((s) => s.openTabIds.has(tabId));
+  const pluginsWidth = useLinkedPluginsStore((s) => s.panelWidth);
+  const setPluginsWidth = useLinkedPluginsStore((s) => s.setPanelWidth);
   const isZoomed = useSessionStore((s) => s.zoomedPaneId !== null);
   const isSplit = layout.type === "split";
 
@@ -44,6 +49,19 @@ export function TerminalTabContainer({ tabId, layout, isActive }: TerminalTabCon
   const resizeHandle = useResizeHandle({
     direction: "horizontal",
     onResize: handleResize,
+  });
+
+  const handlePluginsResize = useCallback(
+    (delta: number) => {
+      const currentWidth = useLinkedPluginsStore.getState().panelWidth;
+      setPluginsWidth(currentWidth - delta);
+    },
+    [setPluginsWidth],
+  );
+
+  const pluginsResizeHandle = useResizeHandle({
+    direction: "horizontal",
+    onResize: handlePluginsResize,
   });
 
   const handleKeyDown = useCallback(
@@ -63,6 +81,25 @@ export function TerminalTabContainer({ tabId, layout, isActive }: TerminalTabCon
       }
     },
     [panelWidth, setPanelWidth],
+  );
+
+  const handlePluginsKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        setPluginsWidth(pluginsWidth + KEYBOARD_STEP);
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        setPluginsWidth(pluginsWidth - KEYBOARD_STEP);
+      } else if (e.key === "Home") {
+        e.preventDefault();
+        setPluginsWidth(MIN_WIDTH);
+      } else if (e.key === "End") {
+        e.preventDefault();
+        setPluginsWidth(MAX_WIDTH);
+      }
+    },
+    [pluginsWidth, setPluginsWidth],
   );
 
   return (
@@ -94,6 +131,30 @@ export function TerminalTabContainer({ tabId, layout, isActive }: TerminalTabCon
             className="flex-shrink-0 h-full min-w-[220px] max-w-[80vw] overflow-hidden"
           >
             <LinkedExplorerPanel tabId={tabId} isActive={isActive} />
+          </div>
+        </>
+      )}
+
+      {isPluginsOpen && (
+        <>
+          <div
+            role="separator"
+            tabIndex={0}
+            aria-orientation="vertical"
+            aria-label="Resize linked plugins panel"
+            aria-valuenow={pluginsWidth}
+            aria-valuemin={MIN_WIDTH}
+            aria-valuemax={MAX_WIDTH}
+            data-testid="linked-plugins-resize-handle"
+            className="relative z-10 flex-shrink-0 w-1.5 cursor-col-resize hover:bg-accent/30 active:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded transition-colors"
+            onKeyDown={handlePluginsKeyDown}
+            {...pluginsResizeHandle}
+          />
+          <div
+            style={{ width: `${pluginsWidth}px` }}
+            className="flex-shrink-0 h-full min-w-[220px] max-w-[80vw] overflow-hidden"
+          >
+            <LinkedPluginsPanel tabId={tabId} isActive={isActive} />
           </div>
         </>
       )}

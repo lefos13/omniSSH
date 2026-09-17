@@ -25,6 +25,8 @@ export type {
   SshKeyInfo,
   HostHealthStatus,
   HostHealthCheckResult,
+  SshExecResult,
+  HostPluginConfig,
   StoredCredential,
 } from "./ssh";
 
@@ -88,3 +90,10 @@ export type {
   LocalVaultStatus,
   MigrationPreflightSummary,
 } from "./vault";
+
+export type {
+  HighlightStyle,
+  HighlightScope,
+  TerminalHighlightRule,
+} from "./terminal";
+

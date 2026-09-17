@@ -130,6 +130,24 @@ export interface HostHealthCheckResult {
   latencyMs: number | null;
 }
 
+// ─── Hidden exec + host plugins ─────────────────────────────────────────────
+
+/** Result of `ssh_exec_command`. Mirrors the Rust `SshExecResult` (camelCase). */
+export interface SshExecResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
+
+/** One row of per-host plugin state. Mirrors the Rust `HostPluginConfig`. */
+export interface HostPluginConfig {
+  host_id: string;
+  plugin_id: string;
+  enabled: boolean;
+  /** Opaque JSON object string owned by the frontend tracker; never secrets. */
+  config: string;
+}
+
 /* OpenSSH and MobaXterm previews share one additive contract so the React
  * importer can preserve metadata while Rust remains the only file parser. */
 // ─── SSH Config Import ────────────────────────────────────────────────────────

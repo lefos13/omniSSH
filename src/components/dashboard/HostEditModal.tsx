@@ -13,6 +13,7 @@ import { TERMINAL_SCHEMES } from "../../lib/terminal-themes";
 import { useVaultGuard } from "../vault";
 import { RevealPasswordDialog } from "../vault";
 import { useSettingsStore } from "../../stores/settings-store";
+import { HostPluginsPanel } from "../plugins";
 
 // ─── Field types ─────────────────────────────────────────────────────────────
 
@@ -1142,6 +1143,11 @@ export function HostEditModal() {
                   className={`${inputClass} resize-none`}
                 />
               </div>
+
+              {/* ════════════════ PLUGINS ════════════════ */}
+              <SectionHeader>Plugins</SectionHeader>
+
+              <HostPluginsPanel hostId={originalHost?.id ?? null} />
 
               {/* Error banner */}
               {error && (

@@ -31,6 +31,8 @@ interface ExplorerViewProps {
   isActive?: boolean;
   /** Optional callback to change directory in the linked terminal session. */
   onCdToTerminal?: (path: string) => void;
+  /** Optional callback to tail a file in the terminal's plugins panel. */
+  onTailLog?: (path: string) => void;
   /** External path navigation request (e.g. from OSC 7 CWD synchronization). */
   externalNavigatePath?: string | null;
   /** Optional callback invoked when the internal selection set changes. */
@@ -46,6 +48,7 @@ export function ExplorerView({
   transport = "sftp",
   isActive = true,
   onCdToTerminal,
+  onTailLog,
   externalNavigatePath,
   onSelectionChange,
   onCurrentPathChange,
@@ -1017,6 +1020,7 @@ export function ExplorerView({
         loading={session.loading}
         busy={busy}
         onCdToTerminal={onCdToTerminal}
+        onTailLog={onTailLog ? (entry) => onTailLog(entry.id) : undefined}
         searchQuery={searchQuery}
         onClearSearch={() => setSearchQuery("")}
         onSelectionChange={onSelectionChange}

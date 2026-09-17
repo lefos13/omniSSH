@@ -5,9 +5,10 @@
  * redundant per-pane controls across split sessions.
  */
 
-import { Columns2, FolderOpen, Link2, Unlink2 } from "lucide-react";
+import { Columns2, FolderOpen, Link2, Puzzle, Unlink2 } from "lucide-react";
 import { useSessionStore, countPanes, computeTabLabel } from "../../stores/session-store";
 import { useLinkedExplorerStore } from "../../stores/linked-explorer-store";
+import { useLinkedPluginsStore } from "../../stores/linked-plugins-store";
 import type { LayoutNode } from "../../types";
 
 interface SplitGlobalHeaderProps {
@@ -21,6 +22,8 @@ export function SplitGlobalHeader({ tabId, layout }: SplitGlobalHeaderProps) {
   const toggleSyncPanes = useSessionStore((s) => s.toggleSyncPanes);
   const isLinkedOpen = useLinkedExplorerStore((s) => s.openTabIds.has(tabId));
   const toggleLinkedExplorer = useLinkedExplorerStore((s) => s.toggleLinkedExplorer);
+  const isPluginsOpen = useLinkedPluginsStore((s) => s.openTabIds.has(tabId));
+  const toggleLinkedPlugins = useLinkedPluginsStore((s) => s.toggleLinkedPlugins);
 
   const paneCount = countPanes(layout);
   const tabLabel = computeTabLabel(layout, sessions);
@@ -102,6 +105,24 @@ export function SplitGlobalHeader({ tabId, layout }: SplitGlobalHeaderProps) {
         >
           <FolderOpen size={13} strokeWidth={1.8} aria-hidden="true" />
           <span>Explorer</span>
+        </button>
+
+        {/* Linked Plugins toggle */}
+        <button
+          type="button"
+          onClick={() => toggleLinkedPlugins(tabId)}
+          className={[
+            btnClass,
+            isPluginsOpen
+              ? "text-accent hover:text-accent-hover bg-accent/15 border border-accent/30"
+              : "text-text-muted hover:text-text-primary hover:bg-bg-muted border border-transparent",
+          ].join(" ")}
+          data-testid="pane-linked-plugins-toggle"
+          aria-label={isPluginsOpen ? "Close plugins panel" : "Open plugins panel"}
+          title={isPluginsOpen ? "Close plugins panel" : "Open plugins panel"}
+        >
+          <Puzzle size={13} strokeWidth={1.8} aria-hidden="true" />
+          <span>Plugins</span>
         </button>
       </div>
     </div>

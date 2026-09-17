@@ -10,6 +10,7 @@ import {
 import { useHostsStore } from "./hosts-store";
 import { parseOsc7Cwd } from "../lib/osc7";
 import { getTerminalScheme } from "../lib/terminal-themes";
+import { TerminalKeywordHighlighter } from "../lib/terminal-highlighter";
 
 /**
  * Module-level registry of live xterm.js instances, keyed by sessionId.
@@ -32,6 +33,8 @@ export interface TerminalEntry {
   fitAddon: FitAddon;
   /** Pending debounced PTY-resize timer, cleared on dispose. */
   resizeTimer: ReturnType<typeof setTimeout> | null;
+  /** Real-time keyword highlighter for matching patterns and colors. */
+  highlighter?: TerminalKeywordHighlighter;
 }
 
 const instances = new Map<string, TerminalEntry>();
@@ -201,7 +204,8 @@ function createEntry(sessionId: string): TerminalEntry {
     }
   });
 
-  const entry: TerminalEntry = { term, element, fitAddon, resizeTimer: null };
+  const highlighter = new TerminalKeywordHighlighter(sessionId, term);
+  const entry: TerminalEntry = { term, element, fitAddon, resizeTimer: null, highlighter };
 
   // Load search addon asynchronously.
   import("@xterm/addon-search")
@@ -336,6 +340,7 @@ export function disposeTerminal(sessionId: string): void {
   if (typeof window !== "undefined") {
     (window as unknown as { __e2eTerminals?: Map<string, XTerm> }).__e2eTerminals?.delete(sessionId);
   }
+  entry.highlighter?.dispose();
   if (entry.resizeTimer) clearTimeout(entry.resizeTimer);
   entry.element.parentElement?.removeChild(entry.element);
   entry.term.dispose();

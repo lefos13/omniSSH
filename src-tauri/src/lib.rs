@@ -265,6 +265,7 @@ pub fn run() {
             ssh::commands::ssh_disconnect,
             ssh::commands::ssh_send_input,
             ssh::commands::ssh_resize_pty,
+            ssh::commands::ssh_exec_command,
             ssh::commands::list_ssh_keys,
             ssh::commands::inspect_ssh_key,
             ssh::commands::ssh_health_check_saved_host,
@@ -293,6 +294,10 @@ pub fn run() {
             db::commands::record_recent_path,
             db::commands::list_recent_paths,
             db::commands::clear_recent_paths,
+            // Host plugin config (per-host tracker enablement + JSON config)
+            db::commands::set_plugin_config,
+            db::commands::list_plugin_configs,
+            db::commands::delete_plugin_config,
             // Server-to-server (relay) transfers
             relay::commands::relay_transfer_entries,
             relay::commands::relay_list_transfers,

@@ -198,5 +198,36 @@ describe("Host UI enhancements", () => {
       expect(cardsBtn).toHaveAttribute("aria-pressed", "false");
       expect(listBtn).toHaveAttribute("aria-pressed", "true");
     });
+
+    it("switches to the grouped tree view", () => {
+      render(<HostsDashboard />);
+
+      const groupedBtn = screen.getByTestId("hosts-view-grouped-button");
+      expect(groupedBtn).toHaveAttribute("aria-pressed", "false");
+
+      fireEvent.click(groupedBtn);
+      expect(useSettingsStore.getState().hostsViewMode).toBe("grouped");
+      expect(groupedBtn).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByTestId("hosts-grouped-view")).toBeInTheDocument();
+    });
+
+    it("renders a resizable groups sidebar with persisted width", () => {
+      window.localStorage.clear();
+      render(<HostsDashboard />);
+
+      const sidebar = screen.getByTestId("groups-sidebar");
+      const handle = screen.getByTestId("groups-sidebar-resize-handle");
+      expect(sidebar).toHaveStyle({ width: "224px" });
+      expect(handle).toHaveAttribute("role", "separator");
+      expect(handle).toHaveAttribute("aria-label", "Resize groups sidebar");
+      expect(handle).toHaveAttribute("aria-valuenow", "224");
+
+      fireEvent.keyDown(handle, { key: "ArrowRight" });
+      expect(sidebar).toHaveStyle({ width: "244px" });
+      expect(window.localStorage.getItem("anyscp_groups_sidebar_width")).toBe("244");
+
+      fireEvent.keyDown(handle, { key: "Home" });
+      expect(sidebar).toHaveStyle({ width: "160px" });
+    });
   });
 });

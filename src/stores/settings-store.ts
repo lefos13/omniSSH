@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { CredentialStorage } from "../types/vault";
+import type { TerminalHighlightRule } from "../types";
 
 export type CursorStyle = "block" | "bar" | "underline";
 export type ThemeMode = "dark" | "light";
@@ -8,7 +9,7 @@ export type PasteButton = "none" | "right" | "middle";
 /** What double-clicking a file in the Explorer does. */
 export type DoubleClickAction = "download" | "open";
 
-export type HostsViewMode = "cards" | "list";
+export type HostsViewMode = "cards" | "list" | "grouped";
 /** Full custom accent colour in oklch components (lightness, chroma, hue). */
 export interface AccentCustom { l: number; c: number; h: number }
 
@@ -60,9 +61,15 @@ interface SettingsState {
   // Credentials
   defaultCredentialStorage: CredentialStorage;
 
+  // Plugins (built-in per-host trackers)
+  pluginsEnabled: boolean;
+
   // External editors
   editors: EditorConfig[];
   defaultEditorId: string | null;
+
+  // Terminal keyword highlights
+  terminalHighlightRules: TerminalHighlightRule[];
 
   // State
   loaded: boolean;
@@ -84,9 +91,15 @@ interface SettingsState {
   setTerminalScrollback: (lines: number) => void;
   setTerminalCopyOnSelect: (enabled: boolean) => void;
   setTerminalPasteButton: (button: PasteButton) => void;
+  setTerminalHighlightRules: (rules: TerminalHighlightRule[]) => void;
+  addTerminalHighlightRule: (rule: Omit<TerminalHighlightRule, "id">) => void;
+  updateTerminalHighlightRule: (id: string, patch: Partial<Omit<TerminalHighlightRule, "id">>) => void;
+  removeTerminalHighlightRule: (id: string) => void;
+  toggleTerminalHighlightRule: (id: string) => void;
   setExplorerDoubleClickAction: (action: DoubleClickAction) => void;
   setTransferConcurrency: (n: number) => void;
   setDefaultCredentialStorage: (storage: CredentialStorage) => void;
+  setPluginsEnabled: (enabled: boolean) => void;
   addEditor: (editor: Omit<EditorConfig, "id">) => void;
   updateEditor: (id: string, patch: Partial<Omit<EditorConfig, "id">>) => void;
   removeEditor: (id: string) => void;
@@ -115,8 +128,10 @@ const DEFAULTS = {
   explorerDoubleClickAction: "download" as DoubleClickAction,
   transferConcurrency: 3,
   defaultCredentialStorage: "keychain" as CredentialStorage,
+  pluginsEnabled: true,
   editors: [] as EditorConfig[],
   defaultEditorId: null as string | null,
+  terminalHighlightRules: [] as TerminalHighlightRule[],
 };
 
 /**
@@ -199,6 +214,14 @@ function persist(key: string, value: string) {
 function persistEditors(editors: EditorConfig[], defaultEditorId: string | null) {
   persist("editors_config", JSON.stringify({ editors, defaultEditorId }));
 }
+
+/*
+ * Persist terminal keyword highlight rules as a single JSON blob.
+ */
+function persistHighlightRules(rules: TerminalHighlightRule[]) {
+  persist("terminal_highlight_rules", JSON.stringify(rules));
+}
+
 
 /** Editors that make the best out-of-the-box default, most-preferred first.
  *  Names must match the backend registry display names (see editors/mod.rs). */
@@ -322,6 +345,43 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     persist("terminal_paste_button", button);
   },
 
+  /*
+   * Manage terminal keyword highlight rules.
+   * Modifying rules updates store state and writes the serialized JSON blob
+   * back to persistent storage via the settings backend command.
+   */
+  setTerminalHighlightRules: (rules) => {
+    set({ terminalHighlightRules: rules });
+    persistHighlightRules(rules);
+  },
+
+  addTerminalHighlightRule: (rule) => set((s) => {
+    const next = [...s.terminalHighlightRules, { ...rule, id: crypto.randomUUID() }];
+    persistHighlightRules(next);
+    return { terminalHighlightRules: next };
+  }),
+
+  updateTerminalHighlightRule: (id, patch) => set((s) => {
+    const next = s.terminalHighlightRules.map((r) => (r.id === id ? { ...r, ...patch } : r));
+    persistHighlightRules(next);
+    return { terminalHighlightRules: next };
+  }),
+
+  removeTerminalHighlightRule: (id) => set((s) => {
+    const next = s.terminalHighlightRules.filter((r) => r.id !== id);
+    persistHighlightRules(next);
+    return { terminalHighlightRules: next };
+  }),
+
+  toggleTerminalHighlightRule: (id) => set((s) => {
+    const next = s.terminalHighlightRules.map((r) =>
+      r.id === id ? { ...r, enabled: r.enabled === false ? true : false } : r
+    );
+    persistHighlightRules(next);
+    return { terminalHighlightRules: next };
+  }),
+
+
   setTransferConcurrency: (n) => {
     const clamped = Math.max(1, Math.min(10, n));
     set({ transferConcurrency: clamped });
@@ -338,6 +398,11 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   setDefaultCredentialStorage: (storage) => {
     set({ defaultCredentialStorage: storage });
     persist("default_credential_storage", storage);
+  },
+
+  setPluginsEnabled: (enabled) => {
+    set({ pluginsEnabled: enabled });
+    persist("plugins_enabled", String(enabled));
   },
 
   addEditor: (editor) => set((s) => {
@@ -399,8 +464,9 @@ export const useSettingsStore = create<SettingsState>((set) => ({
           case "app_interface_mono_font": updates.interfaceMonoFont = value || DEFAULTS.interfaceMonoFont; break;
           case "app_auto_update": updates.autoUpdate = value !== "false"; break;
           case "app_skipped_update": updates.skippedUpdateVersion = value || null; break;
-          case "hosts_view_mode": updates.hostsViewMode = value === "list" ? "list" : "cards"; break;
+          case "hosts_view_mode": updates.hostsViewMode = value === "list" ? "list" : value === "grouped" ? "grouped" : "cards"; break;
           case "default_credential_storage": updates.defaultCredentialStorage = value === "localVault" ? "localVault" : "keychain"; break;
+          case "plugins_enabled": updates.pluginsEnabled = value !== "false"; break;
           case "editors_config": {
             try {
               const parsed = JSON.parse(value) as { editors?: EditorConfig[]; defaultEditorId?: string | null };
@@ -420,7 +486,17 @@ export const useSettingsStore = create<SettingsState>((set) => ({
             break;
           }
           case "editors_seeded": editorsSeeded = value === "true"; break;
+          case "terminal_highlight_rules": {
+            try {
+              const parsed = JSON.parse(value) as TerminalHighlightRule[];
+              if (Array.isArray(parsed)) {
+                updates.terminalHighlightRules = parsed;
+              }
+            } catch { /* ignore malformed */ }
+            break;
+          }
         }
+
       }
 
       // First run: auto-detect installed editors and add them so "Edit" / "Open

@@ -46,6 +46,10 @@ interface GroupsSidebarProps {
   onDelete: (groupId: string) => void;
   onReorder: (newOrder: HostGroup[]) => void;
   onNewGroup: () => void;
+  /** Fixed width in pixels (resizable sidebar); falls back to w-56. */
+  width?: number;
+  /** When set, rows scroll-navigate instead of filtering. */
+  onNavigate?: (groupId: string | null) => void;
 }
 
 const ROW_BASE = [
@@ -66,6 +70,8 @@ export function GroupsSidebar({
   onDelete,
   onReorder,
   onNewGroup,
+  width,
+  onNavigate,
 }: GroupsSidebarProps) {
   const [contextMenu, setContextMenu] = useState<{ groupId: string; x: number; y: number } | null>(
     null,
@@ -98,7 +104,8 @@ export function GroupsSidebar({
     <aside
       aria-label="Host groups"
       data-testid="groups-sidebar"
-      className="w-56 shrink-0 flex flex-col gap-1 p-3 border-r border-border/60 bg-bg-base overflow-hidden"
+      style={width ? { width } : undefined}
+      className={`${width ? "" : "w-56 "}shrink-0 flex flex-col gap-1 p-3 border-r border-border/60 bg-bg-base overflow-hidden`}
     >
       <div className="flex items-center justify-between px-1.5 mb-1">
         <h2 className="text-[length:var(--text-xs)] font-semibold uppercase tracking-widest text-text-muted">
@@ -121,7 +128,7 @@ export function GroupsSidebar({
         <button
           type="button"
           data-testid="group-sidebar-all"
-          onClick={() => onSelect(null)}
+          onClick={() => (onNavigate ? onNavigate(null) : onSelect(null))}
           aria-pressed={selectedGroupId === null}
           className={`${ROW_BASE} ${selectedGroupId === null ? ROW_SELECTED : ROW_IDLE}`}
         >
@@ -141,7 +148,7 @@ export function GroupsSidebar({
                 group={group}
                 hostCount={hostCountByGroup[group.id] ?? 0}
                 isSelected={selectedGroupId === group.id}
-                onSelect={() => onSelect(group.id)}
+                onSelect={() => (onNavigate ? onNavigate(group.id) : onSelect(group.id))}
                 onContextMenu={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
@@ -157,7 +164,7 @@ export function GroupsSidebar({
           <button
             type="button"
             data-testid="group-sidebar-ungrouped"
-            onClick={() => onSelect(UNGROUPED_ID)}
+            onClick={() => (onNavigate ? onNavigate(UNGROUPED_ID) : onSelect(UNGROUPED_ID))}
             aria-pressed={selectedGroupId === UNGROUPED_ID}
             className={`${ROW_BASE} ${selectedGroupId === UNGROUPED_ID ? ROW_SELECTED : ROW_IDLE}`}
           >

@@ -5,12 +5,17 @@ import { useSettingsStore } from "../../stores/settings-store";
 import { CustomSelect, type SelectOption } from "../shared/CustomSelect";
 import { useUpdaterStore } from "../../stores/updater-store";
 import { toast } from "../../stores/toast-store";
-import { RefreshCw, CheckCircle2, AlertCircle, Palette, SquareTerminal, ArrowUpDown, Info, ExternalLink, Check, FileCode, Plus, Trash2, FolderOpen, Star, Search, Database, Download, Upload, ShieldCheck, KeyRound } from "lucide-react";
+import { RefreshCw, CheckCircle2, AlertCircle, Palette, SquareTerminal, ArrowUpDown, Info, ExternalLink, Check, FileCode, Plus, Trash2, FolderOpen, Star, Search, Database, Download, Upload, ShieldCheck, KeyRound, Puzzle, Pencil, Globe, Server } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { CursorStyle, ThemeMode, EditorConfig, PasteButton, DoubleClickAction } from "../../stores/settings-store";
-import type { BackupPreflightSummary, BulkMigrationResult, CredentialStorage, MigrationPreflightSummary } from "../../types";
+import type { BackupPreflightSummary, BulkMigrationResult, CredentialStorage, MigrationPreflightSummary, TerminalHighlightRule } from "../../types";
 import { useLocalVaultStore } from "../../stores/local-vault-store";
+import { useHostsStore } from "../../stores/hosts-store";
 import { ChangeVaultPasswordDialog, UnlockVaultDialog } from "../vault";
+import { TerminalHighlightModal } from "./TerminalHighlightModal";
+import { isLightColor } from "../../lib/terminal-highlighter";
+
+
 
 // ─── Shared styles ───────────────────────────────────────────────────────────
 
@@ -50,7 +55,7 @@ const REPO_URL = "https://github.com/lefos13/omniSSH";
 // Each settings category is a section here. To add a new category, add an entry
 // to SECTIONS, a description, and render its content in <SectionContent />.
 
-type SectionId = "appearance" | "terminal" | "explorer" | "transfers" | "editors" | "security" | "data" | "about";
+type SectionId = "appearance" | "terminal" | "explorer" | "transfers" | "editors" | "plugins" | "security" | "data" | "about";
 
 const SECTIONS: { id: SectionId; label: string; icon: LucideIcon }[] = [
   { id: "appearance", label: "Appearance", icon: Palette },
@@ -58,6 +63,7 @@ const SECTIONS: { id: SectionId; label: string; icon: LucideIcon }[] = [
   { id: "explorer", label: "Explorer", icon: FolderOpen },
   { id: "transfers", label: "Transfers", icon: ArrowUpDown },
   { id: "editors", label: "Editors", icon: FileCode },
+  { id: "plugins", label: "Plugins", icon: Puzzle },
   { id: "security", label: "Security & Vault", icon: KeyRound },
   { id: "data", label: "Data", icon: Database },
   { id: "about", label: "About & Updates", icon: Info },
@@ -69,6 +75,7 @@ const SECTION_DESCRIPTIONS: Record<SectionId, string> = {
   explorer: "How the file browser behaves.",
   transfers: "Control how files are transferred.",
   editors: "Editors used by “Edit” / “Open With” in the file browser.",
+  plugins: "Enable built-in host trackers and set their defaults.",
   security: "Manage encrypted local host passwords.",
   data: "Back up, restore, and reset your data.",
   about: "App information, links, and updates.",
@@ -161,6 +168,8 @@ function SectionContent({ section }: { section: SectionId }) {
       return <TransferSettings />;
     case "editors":
       return <EditorsSettings />;
+    case "plugins":
+      return <PluginsSettings />;
     case "security":
       return <SecuritySettings />;
     case "data":
@@ -555,6 +564,19 @@ function HueWheel({ hue, onChange, size = 96, l = 0.70, c = 0.15 }: {
   );
 }
 
+/*
+ * Format a human-readable scope label for a highlight rule.
+ */
+function getHighlightScopeLabel(rule: TerminalHighlightRule, hosts: import("../../types").SavedHost[]): string {
+  if (rule.scope === "global") return "Global";
+  const matched = (rule.hostIds || [])
+    .map((id) => hosts.find((h) => h.id === id)?.label || hosts.find((h) => h.id === id)?.host)
+    .filter(Boolean);
+  if (matched.length === 0) return "No hosts";
+  if (matched.length === 1) return matched[0]!;
+  return `${matched.length} hosts`;
+}
+
 function TerminalSettings() {
   const fontSize = useSettingsStore((s) => s.terminalFontSize);
   const cursorStyle = useSettingsStore((s) => s.terminalCursorStyle);
@@ -573,6 +595,24 @@ function TerminalSettings() {
   const setCopyOnSelect = useSettingsStore((s) => s.setTerminalCopyOnSelect);
   const pasteButton = useSettingsStore((s) => s.terminalPasteButton);
   const setPasteButton = useSettingsStore((s) => s.setTerminalPasteButton);
+
+  const highlightRules = useSettingsStore((s) => s.terminalHighlightRules);
+  const addHighlightRule = useSettingsStore((s) => s.addTerminalHighlightRule);
+  const updateHighlightRule = useSettingsStore((s) => s.updateTerminalHighlightRule);
+  const removeHighlightRule = useSettingsStore((s) => s.removeTerminalHighlightRule);
+  const toggleHighlightRule = useSettingsStore((s) => s.toggleTerminalHighlightRule);
+
+  const [highlightModalOpen, setHighlightModalOpen] = useState(false);
+  const [editingRule, setEditingRule] = useState<TerminalHighlightRule | null>(null);
+  const hosts = useHostsStore((s) => s.hosts);
+
+  const handleSaveHighlightRule = (rule: Omit<TerminalHighlightRule, "id"> & { id?: string }) => {
+    if (rule.id) {
+      updateHighlightRule(rule.id, rule);
+    } else {
+      addHighlightRule(rule);
+    }
+  };
 
   const termFontOptions = useInstalledFontOptions(TERMINAL_FONT_CANDIDATES, fontFamily);
 
@@ -666,6 +706,132 @@ function TerminalSettings() {
         </SettingRow>
       </SettingsGroup>
 
+      <SettingsGroup label="Keyword Highlighting">
+        {highlightRules.length === 0 ? (
+          <div className="px-4 py-6 rounded-xl bg-bg-surface border border-border/50 text-center">
+            <p className="text-[length:var(--text-sm)] text-text-muted">
+              No keyword highlights configured. Add keywords to highlight words in terminal output.
+            </p>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {highlightRules.map((rule) => {
+              const scopeLabel = getHighlightScopeLabel(rule, hosts);
+              const isBg = rule.style === "background";
+              return (
+                <div
+                  key={rule.id}
+                  data-testid={`highlight-rule-row-${rule.id}`}
+                  className={[
+                    "flex items-center justify-between gap-3 px-3 py-2.5 rounded-xl",
+                    "bg-bg-surface border border-border/60 transition-colors",
+                    !rule.enabled && "opacity-60",
+                  ].join(" ")}
+                >
+                  <div className="flex items-center gap-3 min-w-0 flex-1">
+                    <Toggle
+                      id={`hl-toggle-${rule.id}`}
+                      checked={rule.enabled !== false}
+                      onChange={() => toggleHighlightRule(rule.id)}
+                    />
+
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span
+                        className="w-3.5 h-3.5 rounded-full shrink-0 border border-white/20"
+                        style={{ backgroundColor: rule.color }}
+                        title={rule.color}
+                      />
+                      <span
+                        className={[
+                          "px-2 py-0.5 rounded font-mono text-[length:var(--text-sm)] font-semibold truncate",
+                          isBg ? "shadow-sm" : undefined,
+                        ].join(" ")}
+                        style={{
+                          color: isBg ? (isLightColor(rule.color) ? "#000000" : "#ffffff") : rule.color,
+                          backgroundColor: isBg ? rule.color : "transparent",
+                        }}
+                      >
+                        {rule.pattern}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="px-1.5 py-0.5 rounded text-[length:var(--text-2xs)] font-medium bg-bg-overlay border border-border/60 text-text-secondary">
+                        {isBg ? "Background" : "Text"}
+                      </span>
+                      {rule.matchCase && (
+                        <span className="px-1.5 py-0.5 rounded text-[length:var(--text-2xs)] font-medium bg-bg-overlay border border-border/60 text-text-secondary" title="Case sensitive">
+                          Aa
+                        </span>
+                      )}
+                      {rule.matchWholeWord && !rule.isRegex && (
+                        <span className="px-1.5 py-0.5 rounded text-[length:var(--text-2xs)] font-medium bg-bg-overlay border border-border/60 text-text-secondary" title="Whole word">
+                          \b
+                        </span>
+                      )}
+                      {rule.isRegex && (
+                        <span className="px-1.5 py-0.5 rounded text-[length:var(--text-2xs)] font-medium bg-bg-overlay border border-border/60 text-text-secondary" title="Regular expression">
+                          .*
+                        </span>
+                      )}
+                      <span
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[length:var(--text-2xs)] font-medium bg-bg-overlay border border-border/60 text-text-secondary truncate max-w-[160px]"
+                        title={scopeLabel}
+                      >
+                        {rule.scope === "global" ? <Globe size={11} className="shrink-0" /> : <Server size={11} className="shrink-0" />}
+                        <span className="truncate">{scopeLabel}</span>
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      type="button"
+                      data-testid={`highlight-rule-edit-${rule.id}`}
+                      onClick={() => {
+                        setEditingRule(rule);
+                        setHighlightModalOpen(true);
+                      }}
+                      title="Edit rule"
+                      className="p-1.5 rounded-lg border border-border text-text-muted hover:text-text-primary hover:border-border-focus transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <Pencil size={13} strokeWidth={2} />
+                    </button>
+                    <button
+                      type="button"
+                      data-testid={`highlight-rule-delete-${rule.id}`}
+                      onClick={() => removeHighlightRule(rule.id)}
+                      title="Delete rule"
+                      className="p-1.5 rounded-lg border border-border text-text-muted hover:text-status-error hover:border-status-error/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <Trash2 size={13} strokeWidth={2} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="mt-3">
+          <button
+            type="button"
+            data-testid="add-highlight-rule-btn"
+            onClick={() => {
+              setEditingRule(null);
+              setHighlightModalOpen(true);
+            }}
+            className={BTN_SECONDARY}
+          >
+            <Plus size={13} strokeWidth={2} /> Add highlight rule
+          </button>
+        </div>
+
+        <p className="px-1 text-[length:var(--text-xs)] text-text-muted">
+          Highlighted words update open terminals immediately. Scoped rules only activate on matching hosts.
+        </p>
+      </SettingsGroup>
+
       <SettingsGroup label="History">
         <SettingRow>
           <div>
@@ -678,9 +844,20 @@ function TerminalSettings() {
           Changes apply to open terminals immediately.
         </p>
       </SettingsGroup>
+
+      <TerminalHighlightModal
+        open={highlightModalOpen}
+        initial={editingRule}
+        onClose={() => {
+          setHighlightModalOpen(false);
+          setEditingRule(null);
+        }}
+        onSave={handleSaveHighlightRule}
+      />
     </>
   );
 }
+
 
 function ExplorerSettings() {
   const doubleClickAction = useSettingsStore((s) => s.explorerDoubleClickAction);
@@ -726,6 +903,60 @@ function TransferSettings() {
     </SettingsGroup>
   );
 }
+
+/* Built-in host trackers (plugins). The master toggle gates every tracker
+ * view; each tracker row documents what it monitors. Per-host assignment
+ * lives in the host editor's Plugins tab — this section only holds global
+ * defaults, mirroring how terminal/explorer sections avoid per-host state. */
+function PluginsSettings() {
+  const pluginsEnabled = useSettingsStore((s) => s.pluginsEnabled);
+  const setPluginsEnabled = useSettingsStore((s) => s.setPluginsEnabled);
+
+  return (
+    <>
+      <SettingsGroup>
+        <SettingRow>
+          <div>
+            <label htmlFor="s-plugins-enabled" className={LABEL_CLASS}>Enable plugins</label>
+            <p className={DESC_CLASS}>Show tracker views for connected hosts with plugins assigned</p>
+          </div>
+          <Toggle id="s-plugins-enabled" checked={pluginsEnabled} onChange={setPluginsEnabled} />
+        </SettingRow>
+      </SettingsGroup>
+
+      <SettingsGroup label="Built-in trackers">
+        {TRACKER_CATALOG.map((t) => (
+          <SettingRow key={t.id}>
+            <div>
+              <p className={LABEL_CLASS}>{t.label}</p>
+              <p className={DESC_CLASS}>{t.description}</p>
+            </div>
+            <span className="text-[length:var(--text-xs)] text-text-muted shrink-0">
+              {t.intervalLabel}
+            </span>
+          </SettingRow>
+        ))}
+        <p className="px-1 text-[length:var(--text-xs)] text-text-muted">
+          Assign trackers to a host from its Plugins tab in the host editor. Destructive
+          actions always show the exact command for review before running.
+        </p>
+      </SettingsGroup>
+    </>
+  );
+}
+
+const TRACKER_CATALOG: { id: string; label: string; description: string; intervalLabel: string }[] = [
+  { id: "health", label: "Server Health", description: "CPU load, memory, disk usage, and uptime.", intervalLabel: "every 10s" },
+  { id: "docker", label: "Docker", description: "Containers, status, and logs. No cleanup commands.", intervalLabel: "every 10s" },
+  { id: "pm2", label: "PM2", description: "Node.js processes managed by PM2.", intervalLabel: "every 10s" },
+  { id: "systemd", label: "systemd Services", description: "Running services and journal logs.", intervalLabel: "every 15s" },
+  { id: "logs", label: "Log Viewer", description: "Tail journald units and log files.", intervalLabel: "on demand" },
+  { id: "http", label: "HTTP Health Probe", description: "App health endpoints (Spring Actuator preset).", intervalLabel: "every 15s" },
+  { id: "k8s", label: "Kubernetes", description: "Pods and logs via remote kubectl.", intervalLabel: "every 15s" },
+  { id: "ssl", label: "SSL & Ports", description: "Certificate expiry and port reachability.", intervalLabel: "on demand" },
+  { id: "dbping", label: "Database Ping", description: "Postgres, Redis, and MySQL presets.", intervalLabel: "on demand" },
+  { id: "cron", label: "Cron & Timers", description: "crontab entries and systemd timers.", intervalLabel: "every 60s" },
+];
 
 // ─── Data ───────────────────────────────────────────────────────────────────────
 
@@ -1859,8 +2090,10 @@ function Toggle({ id, checked, onChange }: { id: string; checked: boolean; onCha
   return (
     <button
       id={id}
+      data-testid={id}
       role="switch"
       aria-checked={checked}
+
       onClick={() => onChange(!checked)}
       className={[
         "relative w-9 h-5 rounded-full shrink-0",
