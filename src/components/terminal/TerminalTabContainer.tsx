@@ -9,7 +9,9 @@ import { useCallback } from "react";
 import type { LayoutNode } from "../../types";
 import { TerminalArea } from "./TerminalArea";
 import { LinkedExplorerPanel } from "./LinkedExplorerPanel";
+import { SplitGlobalHeader } from "./SplitGlobalHeader";
 import { useLinkedExplorerStore } from "../../stores/linked-explorer-store";
+import { useSessionStore } from "../../stores/session-store";
 import { useResizeHandle } from "../../hooks/use-resize-handle";
 
 interface TerminalTabContainerProps {
@@ -26,6 +28,8 @@ export function TerminalTabContainer({ tabId, layout, isActive }: TerminalTabCon
   const isLinkedOpen = useLinkedExplorerStore((s) => s.openTabIds.has(tabId));
   const panelWidth = useLinkedExplorerStore((s) => s.panelWidth);
   const setPanelWidth = useLinkedExplorerStore((s) => s.setPanelWidth);
+  const isZoomed = useSessionStore((s) => s.zoomedPaneId !== null);
+  const isSplit = layout.type === "split";
 
   const handleResize = useCallback(
     (delta: number) => {
@@ -63,8 +67,11 @@ export function TerminalTabContainer({ tabId, layout, isActive }: TerminalTabCon
 
   return (
     <div className="flex h-full w-full overflow-hidden gap-2">
-      <div className="flex-1 min-w-0 h-full overflow-hidden">
-        <TerminalArea node={layout} tabId={tabId} />
+      <div className="flex-1 min-w-0 h-full flex flex-col overflow-hidden">
+        {isSplit && !isZoomed && <SplitGlobalHeader tabId={tabId} layout={layout} />}
+        <div className="flex-1 min-h-0 min-w-0 overflow-hidden">
+          <TerminalArea node={layout} tabId={tabId} />
+        </div>
       </div>
 
       {isLinkedOpen && (

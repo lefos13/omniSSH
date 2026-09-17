@@ -106,4 +106,34 @@ describe("TerminalTabContainer", () => {
     fireEvent.keyDown(handle, { key: "End" });
     expect(useLinkedExplorerStore.getState().panelWidth).toBe(800);
   });
+
+  it("renders SplitGlobalHeader only when layout is a split and not zoomed", () => {
+    const { rerender } = render(
+      <TerminalTabContainer
+        tabId="tab-1"
+        layout={{ type: "pane", sessionId: "ssh-1" }}
+        isActive={true}
+      />,
+    );
+
+    expect(screen.queryByTestId("split-global-header")).not.toBeInTheDocument();
+
+    rerender(
+      <TerminalTabContainer
+        tabId="tab-1"
+        layout={{
+          type: "split",
+          direction: "horizontal",
+          ratio: 0.5,
+          children: [
+            { type: "pane", sessionId: "ssh-1" },
+            { type: "pane", sessionId: "ssh-2" },
+          ],
+        }}
+        isActive={true}
+      />,
+    );
+
+    expect(screen.getByTestId("split-global-header")).toBeInTheDocument();
+  });
 });

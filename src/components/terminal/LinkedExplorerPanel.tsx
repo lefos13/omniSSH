@@ -18,6 +18,7 @@ import {
   ChevronDown,
   RefreshCw,
   Sparkles,
+  Link2,
 } from "lucide-react";
 import { useSessionStore } from "../../stores/session-store";
 import type { LayoutNode } from "../../types";
@@ -85,13 +86,20 @@ export function LinkedExplorerPanel({ tabId, isActive = true }: LinkedExplorerPa
   );
   const currentPath = sftpSession?.currentPath ?? "/";
 
-  // Rebind / connect whenever active pane session changes ONLY if this tab is active
+  const isTabSynced = useSessionStore((s) => s.syncedTabIds.has(tabId));
+  const hasSplits = useSessionStore((s) => {
+    const tab = s.tabs.get(tabId);
+    return tab ? tab.layout.type === "split" : false;
+  });
+  const isSyncedSplitted = isTabSynced && hasSplits;
+
+  // Rebind / connect whenever active pane session changes ONLY if this tab is active and not synced in split mode
   useEffect(() => {
-    if (!isActive) return;
+    if (!isActive || isSyncedSplitted) return;
     if (activePaneSessionId && session?.status === "Connected") {
       void ensureConnected(tabId, activePaneSessionId);
     }
-  }, [isActive, tabId, activePaneSessionId, session?.status, ensureConnected]);
+  }, [isActive, isSyncedSplitted, tabId, activePaneSessionId, session?.status, ensureConnected]);
 
   // ─── Debounced OSC 7 remoteCwd follow ────────────────────────────────────
 
@@ -203,134 +211,138 @@ export function LinkedExplorerPanel({ tabId, isActive = true }: LinkedExplorerPa
           )}
         </span>
 
-        {/* Sync status button / dropdown trigger */}
-        <div className="relative" ref={syncMenuRef}>
-          <button
-            ref={triggerRef}
-            type="button"
-            data-testid="linked-explorer-sync-status"
-            onClick={() => setSyncMenuOpen((v) => !v)}
-            aria-expanded={syncMenuOpen}
-            aria-haspopup="menu"
-            title={
-              isCwdSynced
-                ? `CWD sync active (${remoteCwd ?? ""})`
-                : "CWD sync inactive — click to enable for shell"
-            }
-            className={[
-              "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors",
-              isCwdSynced
-                ? "text-status-connected bg-status-connected/10 hover:bg-status-connected/20"
-                : "text-text-muted bg-bg-muted hover:bg-bg-subtle hover:text-text-secondary",
-            ].join(" ")}
-          >
-            {isCwdSynced ? (
-              <CheckCircle2 size={11} strokeWidth={2.2} className="shrink-0" />
-            ) : (
-              <RefreshCw size={10} strokeWidth={2} className="shrink-0 opacity-70" />
-            )}
-            <span>{isCwdSynced ? "Synced" : "Sync CWD"}</span>
-            <ChevronDown size={10} strokeWidth={2} className="shrink-0 opacity-60" />
-          </button>
+        {!isSyncedSplitted && (
+          <>
+            {/* Sync status button / dropdown trigger */}
+            <div className="relative" ref={syncMenuRef}>
+              <button
+                ref={triggerRef}
+                type="button"
+                data-testid="linked-explorer-sync-status"
+                onClick={() => setSyncMenuOpen((v) => !v)}
+                aria-expanded={syncMenuOpen}
+                aria-haspopup="menu"
+                title={
+                  isCwdSynced
+                    ? `CWD sync active (${remoteCwd ?? ""})`
+                    : "CWD sync inactive — click to enable for shell"
+                }
+                className={[
+                  "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors",
+                  isCwdSynced
+                    ? "text-status-connected bg-status-connected/10 hover:bg-status-connected/20"
+                    : "text-text-muted bg-bg-muted hover:bg-bg-subtle hover:text-text-secondary",
+                ].join(" ")}
+              >
+                {isCwdSynced ? (
+                  <CheckCircle2 size={11} strokeWidth={2.2} className="shrink-0" />
+                ) : (
+                  <RefreshCw size={10} strokeWidth={2} className="shrink-0 opacity-70" />
+                )}
+                <span>{isCwdSynced ? "Synced" : "Sync CWD"}</span>
+                <ChevronDown size={10} strokeWidth={2} className="shrink-0 opacity-60" />
+              </button>
 
-          {/* Sync menu dropdown */}
-          {syncMenuOpen && (
-            <div
-              data-testid="linked-explorer-sync-menu"
-              role="menu"
-              className="absolute right-0 top-full mt-1 w-56 rounded-md border border-border bg-bg-surface p-1 shadow-xl z-50 text-xs"
-            >
-              <div className="px-2 py-1.5 border-b border-border/50 mb-1">
-                <div className="font-semibold text-text-primary text-[11px] flex items-center gap-1">
-                  <Sparkles size={12} className="text-accent" />
-                  Shell CWD Sync (OSC 7)
+              {/* Sync menu dropdown */}
+              {syncMenuOpen && (
+                <div
+                  data-testid="linked-explorer-sync-menu"
+                  role="menu"
+                  className="absolute right-0 top-full mt-1 w-56 rounded-md border border-border bg-bg-surface p-1 shadow-xl z-50 text-xs"
+                >
+                  <div className="px-2 py-1.5 border-b border-border/50 mb-1">
+                    <div className="font-semibold text-text-primary text-[11px] flex items-center gap-1">
+                      <Sparkles size={12} className="text-accent" />
+                      Shell CWD Sync (OSC 7)
+                    </div>
+                    <div className="text-[10px] text-text-muted mt-0.5">
+                      Session-local · Does not modify remote rc files
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-testid="linked-explorer-sync-bash"
+                    onClick={() => void handleShellEnable("bash")}
+                    className="w-full text-left px-2 py-1.5 rounded hover:bg-bg-subtle text-text-primary hover:text-accent transition-colors flex items-center justify-between text-[11px]"
+                  >
+                    <span>Enable for Bash</span>
+                    <span className="text-[10px] text-text-muted font-mono">PROMPT_COMMAND</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-testid="linked-explorer-sync-zsh"
+                    onClick={() => void handleShellEnable("zsh")}
+                    className="w-full text-left px-2 py-1.5 rounded hover:bg-bg-subtle text-text-primary hover:text-accent transition-colors flex items-center justify-between text-[11px]"
+                  >
+                    <span>Enable for Zsh</span>
+                    <span className="text-[10px] text-text-muted font-mono">chpwd_functions</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-testid="linked-explorer-sync-fish"
+                    onClick={() => void handleShellEnable("fish")}
+                    className="w-full text-left px-2 py-1.5 rounded hover:bg-bg-subtle text-text-primary hover:text-accent transition-colors flex items-center justify-between text-[11px]"
+                  >
+                    <span>Enable for Fish</span>
+                    <span className="text-[10px] text-text-muted font-mono">--on-variable PWD</span>
+                  </button>
+
+                  <div className="my-1 border-t border-border/40" />
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-testid="linked-explorer-sync-now"
+                    onClick={() => void handleShellEnable("oneshot")}
+                    className="w-full text-left px-2 py-1.5 rounded hover:bg-bg-subtle text-text-primary hover:text-accent transition-colors flex items-center justify-between text-[11px]"
+                  >
+                    <span>Trigger sync once</span>
+                    <span className="text-[10px] text-text-muted font-mono">printf OSC 7</span>
+                  </button>
                 </div>
-                <div className="text-[10px] text-text-muted mt-0.5">
-                  Session-local · Does not modify remote rc files
-                </div>
-              </div>
-
-              <button
-                type="button"
-                role="menuitem"
-                data-testid="linked-explorer-sync-bash"
-                onClick={() => void handleShellEnable("bash")}
-                className="w-full text-left px-2 py-1.5 rounded hover:bg-bg-subtle text-text-primary hover:text-accent transition-colors flex items-center justify-between text-[11px]"
-              >
-                <span>Enable for Bash</span>
-                <span className="text-[10px] text-text-muted font-mono">PROMPT_COMMAND</span>
-              </button>
-
-              <button
-                type="button"
-                role="menuitem"
-                data-testid="linked-explorer-sync-zsh"
-                onClick={() => void handleShellEnable("zsh")}
-                className="w-full text-left px-2 py-1.5 rounded hover:bg-bg-subtle text-text-primary hover:text-accent transition-colors flex items-center justify-between text-[11px]"
-              >
-                <span>Enable for Zsh</span>
-                <span className="text-[10px] text-text-muted font-mono">chpwd_functions</span>
-              </button>
-
-              <button
-                type="button"
-                role="menuitem"
-                data-testid="linked-explorer-sync-fish"
-                onClick={() => void handleShellEnable("fish")}
-                className="w-full text-left px-2 py-1.5 rounded hover:bg-bg-subtle text-text-primary hover:text-accent transition-colors flex items-center justify-between text-[11px]"
-              >
-                <span>Enable for Fish</span>
-                <span className="text-[10px] text-text-muted font-mono">--on-variable PWD</span>
-              </button>
-
-              <div className="my-1 border-t border-border/40" />
-
-              <button
-                type="button"
-                role="menuitem"
-                data-testid="linked-explorer-sync-now"
-                onClick={() => void handleShellEnable("oneshot")}
-                className="w-full text-left px-2 py-1.5 rounded hover:bg-bg-subtle text-text-primary hover:text-accent transition-colors flex items-center justify-between text-[11px]"
-              >
-                <span>Trigger sync once</span>
-                <span className="text-[10px] text-text-muted font-mono">printf OSC 7</span>
-              </button>
+              )}
             </div>
-          )}
-        </div>
 
-        {/* Follow path toggle */}
-        <button
-          type="button"
-          data-testid="linked-explorer-follow-toggle"
-          onClick={() => setFollowPath(!followPath)}
-          aria-pressed={followPath}
-          title={
-            followPath
-              ? "Follow terminal working directory (active)"
-              : "Auto-follow paused (click to follow terminal directory)"
-          }
-          className={[
-            btnClass,
-            followPath
-              ? "text-accent hover:text-accent-hover bg-accent/10"
-              : "text-text-muted hover:text-text-primary",
-          ].join(" ")}
-        >
-          <Compass size={13} strokeWidth={1.8} aria-hidden="true" />
-        </button>
+            {/* Follow path toggle */}
+            <button
+              type="button"
+              data-testid="linked-explorer-follow-toggle"
+              onClick={() => setFollowPath(!followPath)}
+              aria-pressed={followPath}
+              title={
+                followPath
+                  ? "Follow terminal working directory (active)"
+                  : "Auto-follow paused (click to follow terminal directory)"
+              }
+              className={[
+                btnClass,
+                followPath
+                  ? "text-accent hover:text-accent-hover bg-accent/10"
+                  : "text-text-muted hover:text-text-primary",
+              ].join(" ")}
+            >
+              <Compass size={13} strokeWidth={1.8} aria-hidden="true" />
+            </button>
 
-        {/* cd here button */}
-        <button
-          type="button"
-          data-testid="linked-explorer-cd-terminal"
-          onClick={() => handleCdToTerminal(currentPath)}
-          title={`Change terminal directory to ${currentPath}`}
-          aria-label="cd here in terminal"
-          className={btnClass}
-        >
-          <TerminalIcon size={13} strokeWidth={1.8} aria-hidden="true" />
-        </button>
+            {/* cd here button */}
+            <button
+              type="button"
+              data-testid="linked-explorer-cd-terminal"
+              onClick={() => handleCdToTerminal(currentPath)}
+              title={`Change terminal directory to ${currentPath}`}
+              aria-label="cd here in terminal"
+              className={btnClass}
+            >
+              <TerminalIcon size={13} strokeWidth={1.8} aria-hidden="true" />
+            </button>
+          </>
+        )}
 
         {/* Close linked explorer */}
         <button
@@ -347,7 +359,24 @@ export function LinkedExplorerPanel({ tabId, isActive = true }: LinkedExplorerPa
 
       {/* ─── Body ────────────────────────────────────────────────────────── */}
       <div className="flex-1 min-h-0 relative flex flex-col bg-bg-base overflow-hidden">
-        {!activePaneSessionId || !session ? (
+        {isSyncedSplitted ? (
+          <div
+            data-testid="linked-explorer-synced-blocked"
+            className="flex-1 min-h-0 flex flex-col items-center justify-center p-6 text-center select-none gap-3"
+          >
+            <div className="w-12 h-12 rounded-full bg-accent/10 border border-accent/20 flex items-center justify-center text-accent mb-1">
+              <Link2 size={24} strokeWidth={2} aria-hidden="true" />
+            </div>
+            <div className="space-y-1.5 max-w-[240px]">
+              <p className="text-xs font-semibold text-text-primary">
+                Explorer Unavailable
+              </p>
+              <p className="text-[11px] text-text-muted leading-relaxed">
+                Explorer not available when terminals are synced in splitted mode
+              </p>
+            </div>
+          </div>
+        ) : !activePaneSessionId || !session ? (
           <div className="flex-1 flex items-center justify-center p-4 text-xs text-text-muted">
             No active terminal pane
           </div>

@@ -2,7 +2,11 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Search, X, Play, Pin, PinOff } from "lucide-react";
 import type { Snippet } from "../../types";
 import { useSnippetsStore } from "../../stores/snippets-store";
-import { useSessionStore } from "../../stores/session-store";
+import {
+  useSessionStore,
+  findTabForSession,
+  collectSessionIds,
+} from "../../stores/session-store";
 import { useUiStore } from "../../stores/ui-store";
 import { extractVariables } from "../../utils/snippet-resolve";
 import { VariableDialog } from "./VariableDialog";
@@ -86,13 +90,25 @@ export function SnippetQuickPanel() {
 
   const runCommand = async (command: string, snippetId: string) => {
     if (!activeSessionId) return;
+    const store = useSessionStore.getState();
+    const tabId = findTabForSession(store.tabs, activeSessionId);
+    const isSynced = tabId ? store.isTabSynced(tabId) : false;
+    const tab = tabId ? store.tabs.get(tabId) : null;
+    const targetSessionIds = isSynced && tab ? collectSessionIds(tab.layout) : [activeSessionId];
+
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("snippet_execute", {
-        sessionId: activeSessionId,
-        resolvedCommand: command,
-        snippetId,
-      });
+      await Promise.allSettled(
+        targetSessionIds.map(async (sessId, idx) => {
+          const sess = store.sessions.get(sessId);
+          if (sess && (sess.status === "Disconnected" || sess.status === "Error")) return;
+          await invoke("snippet_execute", {
+            sessionId: sessId,
+            resolvedCommand: command,
+            snippetId: idx === 0 ? snippetId : undefined,
+          });
+        }),
+      );
       await loadSnippets(null);
       toggleSnippetPanel();
     } catch {

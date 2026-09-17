@@ -356,6 +356,26 @@ export function AppShell() {
             .tabs.get(useTabStore.getState().activeTabId ?? "")?.type ===
           "terminal",
       },
+      // ─── Parallel / synced split execution toggle ─────────────────
+      {
+        key: "s",
+        meta: true,
+        alt: true,
+        action: () => {
+          const activeTabId = useTabStore.getState().activeTabId;
+          if (!activeTabId) return;
+          const { tabs, toggleSyncPanes } = useSessionStore.getState();
+          const tab = tabs.get(activeTabId);
+          if (tab && tab.layout.type === "split") {
+            toggleSyncPanes(activeTabId);
+          }
+        },
+        when: () =>
+          useTabStore
+            .getState()
+            .tabs.get(useTabStore.getState().activeTabId ?? "")?.type ===
+          "terminal",
+      },
       // ─── Snippet palette ─────────────────────────────────────────
       {
         key: "k",

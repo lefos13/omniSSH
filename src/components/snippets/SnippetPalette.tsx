@@ -2,7 +2,11 @@ import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { Search, Play, ArrowLeft, AlertTriangle } from "lucide-react";
 import type { Snippet } from "../../types";
 import { useSnippetsStore } from "../../stores/snippets-store";
-import { useSessionStore } from "../../stores/session-store";
+import {
+  useSessionStore,
+  findTabForSession,
+  collectSessionIds,
+} from "../../stores/session-store";
 import { useUiStore } from "../../stores/ui-store";
 import { CustomSelect } from "../shared/CustomSelect";
 import { ModalBackdrop } from "../shared/ModalBackdrop";
@@ -100,14 +104,26 @@ export function SnippetPalette() {
 
   const executeSnippet = async (snippet: Snippet, values: Record<string, string>) => {
     if (!activeSessionId) return;
-    const resolved = resolveCommand(snippet.command, values, session);
+    const store = useSessionStore.getState();
+    const tabId = findTabForSession(store.tabs, activeSessionId);
+    const isSynced = tabId ? store.isTabSynced(tabId) : false;
+    const tab = tabId ? store.tabs.get(tabId) : null;
+    const targetSessionIds = isSynced && tab ? collectSessionIds(tab.layout) : [activeSessionId];
+
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("snippet_execute", {
-        sessionId: activeSessionId,
-        resolvedCommand: resolved,
-        snippetId: snippet.id,
-      });
+      await Promise.allSettled(
+        targetSessionIds.map(async (sessId, idx) => {
+          const sess = store.sessions.get(sessId);
+          if (sess && (sess.status === "Disconnected" || sess.status === "Error")) return;
+          const resolved = resolveCommand(snippet.command, values, sess ?? session);
+          await invoke("snippet_execute", {
+            sessionId: sessId,
+            resolvedCommand: resolved,
+            snippetId: idx === 0 ? snippet.id : undefined,
+          });
+        }),
+      );
       await loadSnippets(null);
     } catch { /* non-fatal */ }
     toggle();

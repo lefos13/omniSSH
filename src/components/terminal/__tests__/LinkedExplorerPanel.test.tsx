@@ -400,4 +400,77 @@ describe("LinkedExplorerPanel", () => {
 
     expect(invoke).toHaveBeenCalledWith("sftp_open", { sessionId: "ssh-active-2" });
   });
+
+  it("shows blocking message when terminals are synced in splitted mode and does not connect", async () => {
+    // Setup split tab
+    useSessionStore.setState((s) => ({
+      sessions: new Map([
+        ...s.sessions,
+        ["ssh-2", { id: "ssh-2", hostConfig: dummyHost, status: "Connected", label: "alice@10.0.0.1" }],
+      ]),
+      tabs: new Map([
+        [
+          "tab-1",
+          {
+            layout: {
+              type: "split",
+              direction: "horizontal",
+              ratio: 0.5,
+              children: [
+                { type: "pane", sessionId: "ssh-1" },
+                { type: "pane", sessionId: "ssh-2" },
+              ],
+            },
+            label: "alice@10.0.0.1",
+          },
+        ],
+      ]),
+    }));
+
+    // Turn on sync
+    useSessionStore.getState().toggleSyncPanes("tab-1");
+    expect(useSessionStore.getState().isTabSynced("tab-1")).toBe(true);
+
+    invoke.mockClear();
+
+    const { rerender } = render(<LinkedExplorerPanel tabId="tab-1" isActive={true} />);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Should NOT call sftp_open
+    expect(invoke).not.toHaveBeenCalledWith("sftp_open", expect.anything());
+
+    // Should render blocking screen
+    const blocked = screen.getByTestId("linked-explorer-synced-blocked");
+    expect(blocked).toBeInTheDocument();
+    expect(blocked).toHaveTextContent(
+      "Explorer not available when terminals are synced in splitted mode",
+    );
+
+    // Header actions should be hidden when blocked
+    expect(screen.queryByTestId("linked-explorer-sync-status")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("linked-explorer-follow-toggle")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("linked-explorer-cd-terminal")).not.toBeInTheDocument();
+
+    // Close button should still be present
+    expect(screen.getByTestId("linked-explorer-close")).toBeInTheDocument();
+
+    // Now unsync the tab
+    act(() => {
+      useSessionStore.getState().toggleSyncPanes("tab-1");
+    });
+
+    rerender(<LinkedExplorerPanel tabId="tab-1" isActive={true} />);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Blocking screen should be gone
+    expect(screen.queryByTestId("linked-explorer-synced-blocked")).not.toBeInTheDocument();
+    // And connection initiated
+    expect(invoke).toHaveBeenCalledWith("sftp_open", { sessionId: "ssh-1" });
+  });
 });

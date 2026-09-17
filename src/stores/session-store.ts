@@ -75,7 +75,7 @@ export function getTopDirection(node: LayoutNode): SplitDirection | null {
 }
 
 /** Find which tab a session belongs to. */
-function findTabForSession(
+export function findTabForSession(
   tabs: Map<string, Tab>,
   sessionId: string,
 ): string | null {
@@ -139,6 +139,8 @@ interface SessionState {
   /** Which terminal tab is focused (used by PaneHeader / TerminalArea for split detection). */
   activeTerminalTabId: string | null;
   zoomedPaneId: string | null;
+  /** Set of tab IDs whose split panes have parallel command execution / input sync enabled. */
+  syncedTabIds: Set<string>;
 
   addSession: (id: SessionId, hostConfig: HostConfig) => void;
   removeSession: (id: SessionId) => void;
@@ -156,6 +158,9 @@ interface SessionState {
   unsplitPane: (sessionId: string) => void;
   updateSplitRatio: (tabId: string, path: number[], ratio: number) => void;
   toggleZoom: (sessionId: string) => void;
+  toggleSyncPanes: (tabId: string) => void;
+  setSyncPanes: (tabId: string, enabled: boolean) => void;
+  isTabSynced: (tabId: string) => boolean;
 }
 
 // ─── Store ───────────────────────────────────────────────────────────────────
@@ -166,6 +171,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   tabs: new Map(),
   activeTerminalTabId: null,
   zoomedPaneId: null,
+  syncedTabIds: new Set(),
 
   addSession: (id, hostConfig) =>
     set((state) => {
@@ -200,6 +206,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       const tabs = new Map(state.tabs);
       let activeTerminalTabId = state.activeTerminalTabId;
+      const syncedTabIds = new Set(state.syncedTabIds);
 
       // Find which tab this session belongs to
       const ownerTabId = findTabForSession(state.tabs, id);
@@ -210,6 +217,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           if (ownerTabId === id && tab.layout.type === "pane") {
             // This session IS the tab and it's the only pane — remove the layout
             tabs.delete(ownerTabId);
+            syncedTabIds.delete(ownerTabId);
             if (activeTerminalTabId === ownerTabId) {
               activeTerminalTabId = null;
             }
@@ -220,8 +228,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
               const updatedLabel = computeTabLabel(newLayout, sessions);
               tabs.set(ownerTabId, { ...tab, layout: newLayout, label: updatedLabel });
               useTabStore.getState().updateTabLabel(ownerTabId, updatedLabel);
+              if (countPanes(newLayout) <= 1) {
+                syncedTabIds.delete(ownerTabId);
+              }
             } else {
               tabs.delete(ownerTabId);
+              syncedTabIds.delete(ownerTabId);
               if (activeTerminalTabId === ownerTabId) {
                 activeTerminalTabId = null;
               }
@@ -252,6 +264,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         tabs,
         activeTerminalTabId,
         zoomedPaneId: state.zoomedPaneId === id ? null : state.zoomedPaneId,
+        syncedTabIds,
       };
     }),
 
@@ -381,7 +394,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const tabs = new Map(state.tabs);
       tabs.set(tabId, { ...tab, layout: newLayout, label: updatedLabel });
       useTabStore.getState().updateTabLabel(tabId, updatedLabel);
-      return { tabs };
+
+      const syncedTabIds = new Set(state.syncedTabIds);
+      if (countPanes(newLayout) <= 1) {
+        syncedTabIds.delete(tabId);
+      }
+
+      return { tabs, syncedTabIds };
     }),
 
   updateSplitRatio: (tabId, path, ratio) =>
@@ -399,4 +418,47 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       zoomedPaneId: state.zoomedPaneId === sessionId ? null : sessionId,
       activeSessionId: sessionId,
     })),
+
+  /*
+   * Toggle parallel command execution across all split panes in a tab.
+   * Only activates if the tab has more than one pane. Automatically
+   * cleans up when panes are unsplit or removed.
+   */
+  toggleSyncPanes: (tabId) =>
+    set((state) => {
+      const tab = state.tabs.get(tabId);
+      if (!tab || countPanes(tab.layout) <= 1) {
+        if (state.syncedTabIds.has(tabId)) {
+          const next = new Set(state.syncedTabIds);
+          next.delete(tabId);
+          return { syncedTabIds: next };
+        }
+        return state;
+      }
+      const next = new Set(state.syncedTabIds);
+      if (next.has(tabId)) {
+        next.delete(tabId);
+      } else {
+        next.add(tabId);
+      }
+      return { syncedTabIds: next };
+    }),
+
+  setSyncPanes: (tabId, enabled) =>
+    set((state) => {
+      const tab = state.tabs.get(tabId);
+      const next = new Set(state.syncedTabIds);
+      if (enabled && tab && countPanes(tab.layout) > 1) {
+        next.add(tabId);
+      } else {
+        next.delete(tabId);
+      }
+      return { syncedTabIds: next };
+    }),
+
+  isTabSynced: (tabId) => {
+    const state = get();
+    const tab = state.tabs.get(tabId);
+    return state.syncedTabIds.has(tabId) && Boolean(tab && countPanes(tab.layout) > 1);
+  },
 }));

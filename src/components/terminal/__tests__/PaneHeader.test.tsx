@@ -121,4 +121,57 @@ describe("PaneHeader linked explorer and split controls", () => {
     expect(modalState.targetSessionId).toBe("ssh-1");
     expect(modalState.direction).toBe("vertical");
   });
+
+  it("does not show sync toggle button on single-pane tabs", () => {
+    render(<PaneHeader sessionId="ssh-1" tabId="tab-1" />);
+
+    expect(screen.queryByTestId("pane-sync-toggle")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("pane-synced-badge")).not.toBeInTheDocument();
+    expect(screen.getByTestId("pane-linked-explorer-toggle")).toBeInTheDocument();
+  });
+
+  it("omits duplicate tab-level CTAs (explorer toggle and sync toggle) on split panes", () => {
+    // Add second pane to create a split
+    useSessionStore.setState((s) => ({
+      sessions: new Map([
+        ...s.sessions,
+        ["ssh-2", { id: "ssh-2", hostConfig: dummyHost, status: "Connected", label: "alice@10.0.0.1" }],
+      ]),
+      tabs: new Map([
+        [
+          "tab-1",
+          {
+            layout: {
+              type: "split",
+              direction: "horizontal",
+              ratio: 0.5,
+              children: [
+                { type: "pane", sessionId: "ssh-1" },
+                { type: "pane", sessionId: "ssh-2" },
+              ],
+            },
+            label: "alice@10.0.0.1",
+          },
+        ],
+      ]),
+    }));
+
+    const { rerender } = render(<PaneHeader sessionId="ssh-1" tabId="tab-1" />);
+
+    // In split mode, the tab-level CTAs are omitted from individual pane headers
+    expect(screen.queryByTestId("pane-linked-explorer-toggle")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("pane-sync-toggle")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("pane-synced-badge")).not.toBeInTheDocument();
+
+    // Still retains pane-specific split buttons
+    expect(screen.getByTestId("pane-split-horizontal")).toBeInTheDocument();
+    expect(screen.getByTestId("pane-split-vertical")).toBeInTheDocument();
+    expect(screen.getByTestId("pane-split-with-host")).toBeInTheDocument();
+
+    // When synced, displays the synced badge on the pane header
+    useSessionStore.getState().toggleSyncPanes("tab-1");
+    rerender(<PaneHeader sessionId="ssh-1" tabId="tab-1" />);
+
+    expect(screen.getByTestId("pane-synced-badge")).toBeInTheDocument();
+  });
 });

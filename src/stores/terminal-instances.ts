@@ -2,7 +2,11 @@ import { Terminal as XTerm, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { registerSearchAddon, unregisterSearchAddon } from "./terminal-registry";
 import { useSettingsStore } from "./settings-store";
-import { useSessionStore } from "./session-store";
+import {
+  useSessionStore,
+  findTabForSession,
+  collectSessionIds,
+} from "./session-store";
 import { useHostsStore } from "./hosts-store";
 import { parseOsc7Cwd } from "../lib/osc7";
 import { getTerminalScheme } from "../lib/terminal-themes";
@@ -238,14 +242,46 @@ function createEntry(sessionId: string): TerminalEntry {
     if (e.metaKey && e.shiftKey && e.key === "Enter") return false;
     if (e.metaKey && e.altKey && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key))
       return false;
+    // Opt+Cmd+S / Alt+Ctrl+S — sync split panes toggle
+    if (e.metaKey && e.altKey && e.key.toLowerCase() === "s") return false;
     return true;
   });
 
+  /*
+   * Forward input to the active session or broadcast in parallel across all split
+   * panes in the tab when parallel input synchronization is enabled.
+   */
   term.onData((data) => {
     (async () => {
+      const sessionStore = useSessionStore.getState();
+      const tabId = findTabForSession(sessionStore.tabs, sessionId);
+      const isSynced = tabId ? sessionStore.isTabSynced(tabId) : false;
+
+      let targetSessionIds = [sessionId];
+      if (isSynced && tabId) {
+        const tab = sessionStore.tabs.get(tabId);
+        if (tab) {
+          const allIds = collectSessionIds(tab.layout);
+          if (allIds.length > 1) {
+            targetSessionIds = allIds;
+          }
+        }
+      }
+
       const { invoke } = await import("@tauri-apps/api/core");
       const bytes = Array.from(new TextEncoder().encode(data));
-      await invoke("ssh_send_input", { sessionId, data: bytes });
+
+      await Promise.allSettled(
+        targetSessionIds.map(async (targetId) => {
+          const s = sessionStore.sessions.get(targetId);
+          if (s && (s.status === "Disconnected" || s.status === "Error")) return;
+          try {
+            await invoke("ssh_send_input", { sessionId: targetId, data: bytes });
+          } catch {
+            /* Per-session input dispatch failure ignored */
+          }
+        }),
+      );
     })();
   });
 

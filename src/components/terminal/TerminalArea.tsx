@@ -18,11 +18,10 @@ export function TerminalPane({ sessionId, tabId }: { sessionId: string; tabId: s
   const isActive = useSessionStore((s) => s.activeSessionId === sessionId);
   const isZoomed = useSessionStore((s) => s.zoomedPaneId === sessionId);
   const hasSplits = useSessionStore((s) => {
-    const tabId = s.activeTerminalTabId;
-    if (!tabId) return false;
-    const tab = s.tabs.get(tabId);
-    return tab ? tab.layout.type === "split" : false;
+    const activeTab = s.tabs.get(tabId);
+    return activeTab ? activeTab.layout.type === "split" : false;
   });
+  const isSynced = useSessionStore((s) => s.syncedTabIds.has(tabId) && hasSplits);
   const setActiveSession = useSessionStore((s) => s.setActiveSession);
   const searchOpen = useTerminalSearchStore((s) => s.openSessions.has(sessionId));
 
@@ -42,6 +41,8 @@ export function TerminalPane({ sessionId, tabId }: { sessionId: string; tabId: s
           : "relative h-full w-full",
         !isZoomed && isActive && hasSplits
           ? "border-accent/40 shadow-[0_0_0_1px_oklch(var(--accent)/.12)]"
+          : !isZoomed && isSynced
+          ? "border-accent/30 shadow-[0_0_0_1px_oklch(var(--accent)/.06)]"
           : !isZoomed ? "border-border/60" : "",
       ].join(" ")}
       onMouseDownCapture={() => {

@@ -1,4 +1,4 @@
-import { Columns2, Rows2, Maximize2, Minimize2, X, FolderOpen, Plus } from "lucide-react";
+import { Columns2, Rows2, Maximize2, Minimize2, X, FolderOpen, Plus, Link2 } from "lucide-react";
 import { useSessionStore } from "../../stores/session-store";
 import { useTabStore } from "../../stores/tab-store";
 import { useLinkedExplorerStore } from "../../stores/linked-explorer-store";
@@ -18,11 +18,10 @@ export function PaneHeader({ sessionId, tabId }: PaneHeaderProps) {
   const isActive = useSessionStore((s) => s.activeSessionId === sessionId);
   const isZoomed = useSessionStore((s) => s.zoomedPaneId === sessionId);
   const hasSplits = useSessionStore((s) => {
-    const tabId = s.activeTerminalTabId;
-    if (!tabId) return false;
-    const tab = s.tabs.get(tabId);
-    return tab ? tab.layout.type === "split" : false;
+    const activeTab = s.tabs.get(tabId);
+    return activeTab ? activeTab.layout.type === "split" : false;
   });
+  const isSynced = useSessionStore((s) => s.syncedTabIds.has(tabId) && hasSplits);
   const isLinkedOpen = useLinkedExplorerStore((s) => s.openTabIds.has(tabId));
   const toggleLinkedExplorer = useLinkedExplorerStore((s) => s.toggleLinkedExplorer);
 
@@ -111,6 +110,18 @@ export function PaneHeader({ sessionId, tabId }: PaneHeaderProps) {
         {session.hostConfig.host}
       </span>
 
+      {/* Synced indicator badge */}
+      {isSynced && (
+        <span
+          data-testid="pane-synced-badge"
+          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-accent/15 text-accent border border-accent/30 shrink-0 select-none animate-in fade-in duration-150"
+          title="Terminal input is linked: commands typed will run in all split panes in this tab"
+        >
+          <Link2 size={10} strokeWidth={2.5} aria-hidden="true" />
+          Synced
+        </span>
+      )}
+
       {/* Action buttons — visible on hover or when active */}
       <div
         className={[
@@ -133,22 +144,24 @@ export function PaneHeader({ sessionId, tabId }: PaneHeaderProps) {
           testId="pane-recent-paths"
         />
 
-        {/* Linked Explorer toggle */}
-        <button
-          type="button"
-          onClick={() => toggleLinkedExplorer(tabId)}
-          className={[
-            btnClass,
-            isLinkedOpen
-              ? "text-accent hover:text-accent-hover hover:bg-accent/10"
-              : "text-text-muted hover:text-text-primary hover:bg-bg-muted",
-          ].join(" ")}
-          data-testid="pane-linked-explorer-toggle"
-          aria-label={isLinkedOpen ? "Close file explorer" : "Open file explorer"}
-          title={isLinkedOpen ? "Close file explorer (⇧⌘E)" : "Open file explorer (⇧⌘E)"}
-        >
-          <FolderOpen size={13} strokeWidth={1.8} aria-hidden="true" />
-        </button>
+        {/* Linked Explorer toggle — only on single-pane terminals; moved to SplitGlobalHeader in split mode */}
+        {!hasSplits && (
+          <button
+            type="button"
+            onClick={() => toggleLinkedExplorer(tabId)}
+            className={[
+              btnClass,
+              isLinkedOpen
+                ? "text-accent hover:text-accent-hover hover:bg-accent/10"
+                : "text-text-muted hover:text-text-primary hover:bg-bg-muted",
+            ].join(" ")}
+            data-testid="pane-linked-explorer-toggle"
+            aria-label={isLinkedOpen ? "Close file explorer" : "Open file explorer"}
+            title={isLinkedOpen ? "Close file explorer (⇧⌘E)" : "Open file explorer (⇧⌘E)"}
+          >
+            <FolderOpen size={13} strokeWidth={1.8} aria-hidden="true" />
+          </button>
+        )}
 
         {/* Split horizontal */}
         <button
