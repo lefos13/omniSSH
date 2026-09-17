@@ -13,7 +13,11 @@ export async function waitForAnyTerminal(timeoutMs = 30_000): Promise<string> {
     return id;
 }
 
-/** Wait for the terminal buffer to contain `needle`. */
+/* Wait for the terminal buffer to contain `needle`.
+ * On timeout the tail of the buffer is included in the message: a typed
+ * command that got interleaved with another writer (shell-integration
+ * installer, sync broadcast) produces a garbled line that never matches, and
+ * that is indistinguishable from "too slow" without seeing the buffer. */
 export async function waitForTerminalText(
     sessionId: string,
     needle: string,
@@ -21,19 +25,22 @@ export async function waitForTerminalText(
 ): Promise<void> {
     const timeoutMs = opts.timeoutMs ?? 15_000;
     const ignoreCase = opts.ignoreCase ?? true;
-    await browser.waitUntil(
-        async () => {
-            const text = await readTerminalText(sessionId);
-            return ignoreCase
-                ? text.toLowerCase().includes(needle.toLowerCase())
-                : text.includes(needle);
-        },
-        {
-            timeout: timeoutMs,
-            interval: 250,
-            timeoutMsg: `terminal '${sessionId}' did not show '${needle}' within ${timeoutMs}ms`,
-        },
-    );
+    try {
+        await browser.waitUntil(
+            async () => {
+                const text = await readTerminalText(sessionId);
+                return ignoreCase
+                    ? text.toLowerCase().includes(needle.toLowerCase())
+                    : text.includes(needle);
+            },
+            { timeout: timeoutMs, interval: 250 },
+        );
+    } catch {
+        const tail = (await readTerminalText(sessionId)).trimEnd().split("\n").slice(-12).join("\n");
+        throw new Error(
+            `terminal '${sessionId}' did not show '${needle}' within ${timeoutMs}ms. Buffer tail:\n${tail}`,
+        );
+    }
 }
 
 /** Read the full terminal buffer as plain text. */

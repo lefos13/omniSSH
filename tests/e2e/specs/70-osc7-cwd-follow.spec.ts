@@ -97,7 +97,11 @@ describe("OSC 7 CWD follow and explicit cd", () => {
         const cdTerminalBtn = await $("[data-testid='linked-explorer-cd-terminal']");
         await cdTerminalBtn.waitForClickable({ timeout: 10_000 });
         await cdTerminalBtn.click();
-        await browser.pause(500);
+        /* The cd is dispatched by typing into the live shell, as is the OSC 7
+         * installer the app sends shortly after connect. Let the dispatched
+         * line land and echo before typing the next command, so the two
+         * writers cannot interleave into one garbled line. */
+        await browser.pause(1_500);
 
         // Prove explicit cd changed terminal PWD to /tmp using a unique marker
         const cdMarker = `cd_marker_${Date.now()}`;
@@ -105,6 +109,7 @@ describe("OSC 7 CWD follow and explicit cd", () => {
             sessionId,
             `printf "${cdMarker}:%s\\n" "$PWD"`,
             `${cdMarker}:/tmp`,
+            30_000,
         );
 
         // 3. Test OSC 7 CWD synchronization
@@ -114,6 +119,10 @@ describe("OSC 7 CWD follow and explicit cd", () => {
         await bashOption.waitForClickable({ timeout: 5_000 });
         await bashOption.click();
 
+        /* Enabling Bash integration also types an installer line into the
+         * shell; wait for it to execute before typing the next command. */
+        await browser.pause(1_500);
+
         // Create a distinct target directory and navigate into it in the terminal
         const uniqueDirName = `sync_dir_${Date.now()}`;
         const oscMarker = `osc_marker_${Date.now()}`;
@@ -121,6 +130,7 @@ describe("OSC 7 CWD follow and explicit cd", () => {
             sessionId,
             `mkdir -p /config/${uniqueDirName} && cd /config/${uniqueDirName} && printf "${oscMarker}:%s\\n" "$PWD"`,
             `${oscMarker}:/config/${uniqueDirName}`,
+            30_000,
         );
 
         // Verify OSC 7 hook caused the linked explorer breadcrumb/path to update to uniqueDirName
