@@ -12,6 +12,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { PaneHeader } from "../PaneHeader";
 import { useSessionStore } from "../../../stores/session-store";
 import { useLinkedExplorerStore } from "../../../stores/linked-explorer-store";
+import { useUiStore } from "../../../stores/ui-store";
 import type { HostConfig } from "../../../types";
 
 const dummyHost: HostConfig = {
@@ -21,7 +22,7 @@ const dummyHost: HostConfig = {
   auth_method: { type: "password", password: "pwd" },
 };
 
-describe("PaneHeader linked explorer toggle", () => {
+describe("PaneHeader linked explorer and split controls", () => {
   beforeEach(() => {
     useSessionStore.setState({
       sessions: new Map([
@@ -55,6 +56,14 @@ describe("PaneHeader linked explorer toggle", () => {
       followPath: true,
       bindings: new Map(),
     });
+
+    useUiStore.setState({
+      splitModal: {
+        open: false,
+        targetSessionId: null,
+        direction: "horizontal",
+      },
+    });
   });
 
   it("renders linked explorer toggle button with proper label", () => {
@@ -76,5 +85,40 @@ describe("PaneHeader linked explorer toggle", () => {
 
     fireEvent.click(toggleBtn);
     expect(useLinkedExplorerStore.getState().openTabIds.has("tab-1")).toBe(false);
+  });
+
+  it("opens split host modal when clicking pane-split-with-host button", () => {
+    render(<PaneHeader sessionId="ssh-1" tabId="tab-1" />);
+
+    const splitHostBtn = screen.getByTestId("pane-split-with-host");
+    expect(splitHostBtn).toBeInTheDocument();
+
+    fireEvent.click(splitHostBtn);
+    const modalState = useUiStore.getState().splitModal;
+    expect(modalState.open).toBe(true);
+    expect(modalState.targetSessionId).toBe("ssh-1");
+    expect(modalState.direction).toBe("horizontal");
+  });
+
+  it("opens split host modal when alt-clicking horizontal or vertical split buttons", () => {
+    render(<PaneHeader sessionId="ssh-1" tabId="tab-1" />);
+
+    const splitRightBtn = screen.getByTestId("pane-split-horizontal");
+    fireEvent.click(splitRightBtn, { altKey: true });
+
+    let modalState = useUiStore.getState().splitModal;
+    expect(modalState.open).toBe(true);
+    expect(modalState.targetSessionId).toBe("ssh-1");
+    expect(modalState.direction).toBe("horizontal");
+
+    useUiStore.getState().closeSplitModal();
+
+    const splitDownBtn = screen.getByTestId("pane-split-vertical");
+    fireEvent.click(splitDownBtn, { altKey: true });
+
+    modalState = useUiStore.getState().splitModal;
+    expect(modalState.open).toBe(true);
+    expect(modalState.targetSessionId).toBe("ssh-1");
+    expect(modalState.direction).toBe("vertical");
   });
 });

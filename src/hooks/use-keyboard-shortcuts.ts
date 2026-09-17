@@ -6,6 +6,7 @@ export interface ShortcutDef {
   /** Requires Cmd (mac) / Ctrl (win/linux) */
   meta: boolean;
   shift?: boolean;
+  alt?: boolean;
   action: () => void;
   /** Only fire when this returns true */
   when?: () => boolean;
@@ -36,6 +37,7 @@ export function useKeyboardShortcuts(shortcuts: ShortcutDef[]) {
       for (const s of shortcuts) {
         if (s.meta !== meta) continue;
         if ((s.shift ?? false) !== e.shiftKey) continue;
+        if ((s.alt ?? false) !== e.altKey) continue;
         if (e.key.toLowerCase() !== s.key) continue;
         if (s.when && !s.when()) continue;
 

@@ -918,6 +918,7 @@ mod tests {
             keep_alive_interval: None,
             default_shell: None,
             font_size: None,
+            terminal_theme: None,
             last_connected_at: None,
             connection_count: None,
         }

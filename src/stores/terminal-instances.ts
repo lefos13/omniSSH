@@ -1,9 +1,11 @@
-import { Terminal as XTerm } from "@xterm/xterm";
+import { Terminal as XTerm, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { registerSearchAddon, unregisterSearchAddon } from "./terminal-registry";
 import { useSettingsStore } from "./settings-store";
 import { useSessionStore } from "./session-store";
+import { useHostsStore } from "./hosts-store";
 import { parseOsc7Cwd } from "../lib/osc7";
+import { getTerminalScheme } from "../lib/terminal-themes";
 
 /**
  * Module-level registry of live xterm.js instances, keyed by sessionId.
@@ -93,7 +95,7 @@ const ANSI_PALETTE_LIGHT = {
 };
 
 /** Read OKLCH CSS custom properties and convert to hex for xterm.js. */
-export function getTerminalTheme(): Record<string, string> {
+export function getTerminalTheme(): ITheme {
   const styles = getComputedStyle(document.documentElement);
   const canvas = document.createElement("canvas");
   canvas.width = 1;
@@ -124,6 +126,30 @@ export function getTerminalTheme(): Record<string, string> {
   };
 }
 
+/*
+ * Resolve the palette for a host's stored scheme id, falling back to the
+ * app-derived theme when the host has no scheme (or an unknown one, e.g. from a
+ * newer build). Kept separate from getTerminalTheme so callers that only know
+ * the id (the modal preview) don't need a live session.
+ */
+export function resolveTerminalTheme(schemeId?: string | null): ITheme {
+  const scheme = getTerminalScheme(schemeId);
+  return scheme ? scheme.theme : getTerminalTheme();
+}
+
+/*
+ * Palette for a live session. A session carries its saved host id, which we
+ * resolve against the hosts store to recover the scheme. Quick (unsaved)
+ * connections have no saved host and fall back to the app theme.
+ */
+export function terminalThemeForSession(sessionId: string): ITheme {
+  const savedHostId = useSessionStore.getState().sessions.get(sessionId)?.hostConfig.savedHostId;
+  const schemeId = savedHostId
+    ? useHostsStore.getState().hosts.find((h) => h.id === savedHostId)?.terminal_theme ?? null
+    : null;
+  return resolveTerminalTheme(schemeId);
+}
+
 function createEntry(sessionId: string): TerminalEntry {
   const settings = useSettingsStore.getState();
 
@@ -140,7 +166,7 @@ function createEntry(sessionId: string): TerminalEntry {
     lineHeight: settings.terminalLineHeight,
     letterSpacing: 0,
     scrollback: settings.terminalScrollback,
-    theme: getTerminalTheme(),
+    theme: terminalThemeForSession(sessionId),
     allowProposedApi: true,
     // Open OSC 8 hyperlinks (emitted by ls --hyperlink, git, etc.) through the
     // OS browser instead of xterm's window.open() fallback, which errors in the

@@ -44,6 +44,12 @@ export function TerminalPane({ sessionId, tabId }: { sessionId: string; tabId: s
           ? "border-accent/40 shadow-[0_0_0_1px_oklch(var(--accent)/.12)]"
           : !isZoomed ? "border-border/60" : "",
       ].join(" ")}
+      onMouseDownCapture={() => {
+        if (!isActive) setActiveSession(sessionId);
+      }}
+      onFocusCapture={() => {
+        if (!isActive) setActiveSession(sessionId);
+      }}
       onClick={() => {
         if (!isActive) setActiveSession(sessionId);
       }}

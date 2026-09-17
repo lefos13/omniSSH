@@ -7,6 +7,11 @@ interface UiState {
   editingHostId: string | null;
   snippetPanelOpen: boolean;
   snippetPanelPinned: boolean;
+  splitModal: {
+    open: boolean;
+    targetSessionId: string | null;
+    direction: "horizontal" | "vertical";
+  };
 
   toggleSidebar: () => void;
   setSidebarWidth: (width: number) => void;
@@ -14,6 +19,8 @@ interface UiState {
   setEditingHostId: (id: string | null) => void;
   toggleSnippetPanel: () => void;
   toggleSnippetPanelPinned: () => void;
+  openSplitModal: (targetSessionId: string, direction?: "horizontal" | "vertical") => void;
+  closeSplitModal: () => void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
@@ -23,6 +30,11 @@ export const useUiStore = create<UiState>((set) => ({
   editingHostId: null,
   snippetPanelOpen: false,
   snippetPanelPinned: false,
+  splitModal: {
+    open: false,
+    targetSessionId: null,
+    direction: "horizontal",
+  },
 
   toggleSidebar: () =>
     set((s) => ({ sidebarExpanded: !s.sidebarExpanded })),
@@ -41,6 +53,23 @@ export const useUiStore = create<UiState>((set) => ({
 
   toggleSnippetPanelPinned: () =>
     set((s) => ({ snippetPanelPinned: !s.snippetPanelPinned })),
+
+  openSplitModal: (targetSessionId, direction = "horizontal") =>
+    set({
+      splitModal: {
+        open: true,
+        targetSessionId,
+        direction,
+      },
+    }),
+
+  closeSplitModal: () =>
+    set((s) => ({
+      splitModal: {
+        ...s.splitModal,
+        open: false,
+      },
+    })),
 }));
 
 // E2E test hook — lets WebDriver tests open the HostEditModal for a given

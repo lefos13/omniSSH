@@ -39,6 +39,7 @@ function host(overrides: Partial<SavedHost> = {}): SavedHost {
     keep_alive_interval: null,
     default_shell: null,
     font_size: null,
+    terminal_theme: null,
     last_connected_at: null,
     connection_count: null,
     ...overrides,

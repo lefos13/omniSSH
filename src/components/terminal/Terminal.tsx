@@ -4,11 +4,13 @@ import { useSshOutput } from "../../hooks/use-ssh-events";
 import {
   ensureTerminal,
   getTerminal,
-  getTerminalTheme,
+  resolveTerminalTheme,
 } from "../../stores/terminal-instances";
 import { useSettingsStore } from "../../stores/settings-store";
 import { useSessionStore } from "../../stores/session-store";
+import { useHostsStore } from "../../stores/hosts-store";
 import { ensureAutoCwdSync } from "../../lib/cwd-sync";
+import { getTerminalScheme } from "../../lib/terminal-themes";
 import type { SessionId } from "../../types";
 
 interface TerminalProps {
@@ -33,11 +35,24 @@ export function Terminal({ sessionId }: TerminalProps) {
   const scrollback = useSettingsStore((s) => s.terminalScrollback);
   const copyOnSelect = useSettingsStore((s) => s.terminalCopyOnSelect);
   const pasteButton = useSettingsStore((s) => s.terminalPasteButton);
+  // The app-derived palette reads --color-accent, so accent changes must
+  // re-apply the theme too (not just dark/light toggles).
+  const accentHue = useSettingsStore((s) => s.accentHue);
+  const accentCustom = useSettingsStore((s) => s.accentCustom);
 
   // Install the shell-side OSC 7 reporter once the connection is up so the
   // recent-paths menu is populated from the shell's own `cd`s.
   const sessionStatus = useSessionStore((s) => s.sessions.get(sessionId)?.status);
   const hostConfig = useSessionStore((s) => s.sessions.get(sessionId)?.hostConfig);
+  // Per-host color scheme, resolved through the session's saved host id. The
+  // selector returns a primitive, so it only re-renders when the scheme changes
+  // (e.g. the host modal saves a new one), which drives the live re-apply below.
+  const savedHostId = hostConfig?.savedHostId;
+  const schemeId = useHostsStore((s) =>
+    savedHostId
+      ? s.hosts.find((h) => h.id === savedHostId)?.terminal_theme ?? null
+      : null,
+  );
   useEffect(() => {
     if (sessionStatus !== "Connected" || !hostConfig) return;
     ensureAutoCwdSync(sessionId, hostConfig);
@@ -108,8 +123,8 @@ export function Terminal({ sessionId }: TerminalProps) {
 
   useEffect(() => {
     const term = getTerminal(sessionId)?.term;
-    if (term) term.options.theme = getTerminalTheme();
-  }, [sessionId, themeMode]);
+    if (term) term.options.theme = resolveTerminalTheme(schemeId);
+  }, [sessionId, themeMode, schemeId, accentHue, accentCustom]);
 
   // Clipboard behaviours (#71): copy-on-select and configurable paste button.
   // Registered once per session; the current setting values are read through
@@ -188,12 +203,17 @@ export function Terminal({ sessionId }: TerminalProps) {
     term.refresh(0, term.rows - 1);
   }, [sessionId, fontFamily, fontSize, lineHeight, cursorStyle, cursorBlink, scrollback]);
 
+  // Match the container padding to a pinned scheme so the app background does
+  // not show through the terminal's edge; un-themed terminals keep bg-bg-base.
+  const scheme = getTerminalScheme(schemeId);
+
   return (
     <div
       ref={containerRef}
       data-testid={`terminal-${sessionId}`}
       data-session-id={sessionId}
       className="h-full w-full bg-bg-base p-2"
+      style={scheme ? { backgroundColor: scheme.theme.background } : undefined}
       onKeyDown={(e) => {
         if (e.metaKey && (e.key === "d" || e.key === "D")) {
           e.preventDefault();

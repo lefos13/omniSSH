@@ -1,7 +1,8 @@
-import { Columns2, Rows2, Maximize2, Minimize2, X, FolderOpen } from "lucide-react";
+import { Columns2, Rows2, Maximize2, Minimize2, X, FolderOpen, Plus } from "lucide-react";
 import { useSessionStore } from "../../stores/session-store";
 import { useTabStore } from "../../stores/tab-store";
 import { useLinkedExplorerStore } from "../../stores/linked-explorer-store";
+import { useUiStore } from "../../stores/ui-store";
 import { RecentPathsMenu } from "../explorer/RecentPathsMenu";
 import { hostKeyFor } from "../../lib/host-key";
 import { sendCdToTerminal } from "../../lib/shell-sync";
@@ -34,7 +35,15 @@ export function PaneHeader({ sessionId, tabId }: PaneHeaderProps) {
     status === "Error"        ? "bg-status-error" :
                                 "bg-status-disconnected";
 
-  const handleSplit = (direction: "horizontal" | "vertical") => {
+  const handleSplitWithHost = (dir: "horizontal" | "vertical" = "horizontal") => {
+    useUiStore.getState().openSplitModal(sessionId, dir);
+  };
+
+  const handleSplit = (direction: "horizontal" | "vertical", e?: React.MouseEvent) => {
+    if (e?.altKey) {
+      handleSplitWithHost(direction);
+      return;
+    }
     void (async () => {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
@@ -142,15 +151,39 @@ export function PaneHeader({ sessionId, tabId }: PaneHeaderProps) {
         </button>
 
         {/* Split horizontal */}
-        <button type="button" onClick={() => handleSplit("horizontal")} className={btnClass}
-          aria-label="Split right" title="Split right (⌘D)">
+        <button
+          type="button"
+          onClick={(e) => handleSplit("horizontal", e)}
+          className={btnClass}
+          data-testid="pane-split-horizontal"
+          aria-label="Split right"
+          title="Split right (⌘D, ⌥-click to choose host)"
+        >
           <Columns2 size={13} strokeWidth={1.8} aria-hidden="true" />
         </button>
 
         {/* Split vertical */}
-        <button type="button" onClick={() => handleSplit("vertical")} className={btnClass}
-          aria-label="Split down" title="Split down (⇧⌘D)">
+        <button
+          type="button"
+          onClick={(e) => handleSplit("vertical", e)}
+          className={btnClass}
+          data-testid="pane-split-vertical"
+          aria-label="Split down"
+          title="Split down (⇧⌘D, ⌥-click to choose host)"
+        >
           <Rows2 size={13} strokeWidth={1.8} aria-hidden="true" />
+        </button>
+
+        {/* Split with another host */}
+        <button
+          type="button"
+          onClick={() => handleSplitWithHost("horizontal")}
+          className={btnClass}
+          data-testid="pane-split-with-host"
+          aria-label="Split with another host"
+          title="Split with another host... (⌥⌘D)"
+        >
+          <Plus size={13} strokeWidth={2} aria-hidden="true" />
         </button>
 
         {/* Zoom toggle — only show when in a split */}

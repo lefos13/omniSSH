@@ -32,6 +32,7 @@ function makeHost(id: string, label: string): SavedHost {
     keep_alive_interval: null,
     default_shell: null,
     font_size: null,
+    terminal_theme: null,
     last_connected_at: null,
     connection_count: null,
   };

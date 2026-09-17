@@ -38,6 +38,7 @@ vi.mock("../../stores/terminal-instances", () => {
     ensureTerminal: () => entry,
     getTerminal: () => entry,
     getTerminalTheme: () => ({}),
+    resolveTerminalTheme: () => ({}),
     disposeTerminal: vi.fn(),
   };
 });

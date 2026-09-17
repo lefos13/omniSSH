@@ -85,6 +85,8 @@ export interface SavedHost {
   keep_alive_interval: number | null;
   default_shell: string | null;
   font_size: number | null;
+  /** Terminal color-scheme id (see src/lib/terminal-themes.ts); null = app theme. */
+  terminal_theme: string | null;
   last_connected_at: string | null;
   connection_count: number | null;
 }

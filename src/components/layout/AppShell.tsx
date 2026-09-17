@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTabStore } from "../../stores/tab-store";
-import { useSessionStore } from "../../stores/session-store";
+import { useSessionStore, collectSessionIds } from "../../stores/session-store";
 import { useTerminalSearchStore } from "../../stores/terminal-search-store";
 import { useTerminalAutoFocus } from "../../hooks/use-terminal-autofocus";
 import { useSettingsStore } from "../../stores/settings-store";
+import { useHostsStore } from "../../stores/hosts-store";
 import { useUpdaterStore } from "../../stores/updater-store";
 import { useUiStore } from "../../stores/ui-store";
 import { useLinkedExplorerStore } from "../../stores/linked-explorer-store";
@@ -12,7 +13,7 @@ import { useSshStatus } from "../../hooks/use-ssh-status";
 import { useSftpTransfers } from "../../hooks/use-sftp-transfers";
 import type { ShortcutDef } from "../../hooks/use-keyboard-shortcuts";
 import { Sidebar } from "../sidebar";
-import { TerminalTabContainer } from "../terminal";
+import { TerminalTabContainer, SplitHostModal } from "../terminal";
 import { UnifiedTabBar } from "./UnifiedTabBar";
 
 import { HostsDashboard, HostEditModal } from "../dashboard";
@@ -249,6 +250,65 @@ export function AppShell() {
           "terminal",
       },
       {
+        key: "d",
+        meta: true,
+        alt: true,
+        action: () => {
+          const { activeSessionId } = useSessionStore.getState();
+          if (!activeSessionId) return;
+          useUiStore.getState().openSplitModal(activeSessionId, "horizontal");
+        },
+        when: () =>
+          useTabStore
+            .getState()
+            .tabs.get(useTabStore.getState().activeTabId ?? "")?.type ===
+          "terminal",
+      },
+      {
+        key: "[",
+        meta: true,
+        alt: true,
+        action: () => {
+          const { activeTerminalTabId, activeSessionId, tabs, setActiveSession } =
+            useSessionStore.getState();
+          if (!activeTerminalTabId || !activeSessionId) return;
+          const termTab = tabs.get(activeTerminalTabId);
+          if (!termTab || termTab.layout.type !== "split") return;
+          const ids = collectSessionIds(termTab.layout);
+          const idx = ids.indexOf(activeSessionId);
+          if (idx === -1) return;
+          const prev = (idx - 1 + ids.length) % ids.length;
+          setActiveSession(ids[prev]);
+        },
+        when: () =>
+          useTabStore
+            .getState()
+            .tabs.get(useTabStore.getState().activeTabId ?? "")?.type ===
+          "terminal",
+      },
+      {
+        key: "]",
+        meta: true,
+        alt: true,
+        action: () => {
+          const { activeTerminalTabId, activeSessionId, tabs, setActiveSession } =
+            useSessionStore.getState();
+          if (!activeTerminalTabId || !activeSessionId) return;
+          const termTab = tabs.get(activeTerminalTabId);
+          if (!termTab || termTab.layout.type !== "split") return;
+          const ids = collectSessionIds(termTab.layout);
+          const idx = ids.indexOf(activeSessionId);
+          if (idx === -1) return;
+          const next = (idx + 1) % ids.length;
+          setActiveSession(ids[next]);
+        },
+        when: () =>
+          useTabStore
+            .getState()
+            .tabs.get(useTabStore.getState().activeTabId ?? "")?.type ===
+          "terminal",
+      },
+      {
         key: "enter",
         meta: true,
         shift: true,
@@ -363,9 +423,12 @@ export function AppShell() {
   useKeyboardShortcuts(shortcuts);
   useSshStatus();
 
-  // Load persisted settings on mount
+  // Load persisted settings and hosts on mount. Hosts are app-wide data: live
+  // terminals resolve their per-host color scheme from this store, so it must be
+  // populated independently of which page happens to be open.
   useEffect(() => {
     void useSettingsStore.getState().loadSettings();
+    void useHostsStore.getState().loadHosts();
   }, []);
 
   // Check for updates once on launch, after settings load so the auto-update
@@ -523,6 +586,9 @@ export function AppShell() {
 
       {/* Host modal (new + edit) */}
       <HostEditModal />
+
+      {/* Split terminal host picker modal */}
+      <SplitHostModal />
 
       {/* Update-available popup */}
       <UpdateDialog />

@@ -33,7 +33,7 @@ import { useTabStore } from "../../stores/tab-store";
 import { useSftpStore } from "../../stores/sftp-store";
 import { useS3Store } from "../../stores/s3-store";
 import { useSettingsStore } from "../../stores/settings-store";
-import type { SavedHost, HostGroup, RecentConnection, S3Connection } from "../../types";
+import type { SavedHost, HostGroup, RecentConnection, S3Connection, HostConfig, SplitDirection } from "../../types";
 import { HostCard } from "./HostCard";
 import { HostListRow } from "./HostListRow";
 import { S3Card } from "./S3Card";
@@ -317,6 +317,43 @@ export function HostsDashboard() {
           ? String((err as { message: string }).message)
           : "Connection failed.";
         setConnectingHost({ label, error: msg, retry: () => void handleRecentConnect(conn), cancel: null });
+      }
+    },
+    [],
+  );
+
+  /*
+   * Connect to a saved host and attach it as a new split pane in the active
+   * terminal tab. Re-uses the active terminal's layout and switches tab focus.
+   */
+  const splitHostIntoTerminal = useCallback(
+    async (host: SavedHost, direction: SplitDirection) => {
+      const { activeTerminalTabId, activeSessionId } = useSessionStore.getState();
+      const targetSessionId = activeSessionId;
+      if (!targetSessionId) return;
+
+      const attemptId = crypto.randomUUID();
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const sessionId = await invoke<string>("connect_saved_host", { hostId: host.id, attemptId });
+        const hostConfig: HostConfig = {
+          host: host.host,
+          port: host.port,
+          username: host.username,
+          label: host.label || undefined,
+          auth_method:
+            host.auth_type === "privateKey"
+              ? { type: "privateKey", key_path: host.key_path ?? "" }
+              : { type: "password", password: "" },
+          savedHostId: host.id,
+        };
+        useSessionStore.getState().splitPane(direction, targetSessionId, sessionId, hostConfig);
+        void useHostsStore.getState().recordConnection(host.id);
+        if (activeTerminalTabId) {
+          useTabStore.getState().setActiveTab(activeTerminalTabId);
+        }
+      } catch (err) {
+        console.error("Failed to split host into terminal:", err);
       }
     },
     [],
@@ -747,6 +784,7 @@ export function HostsDashboard() {
                             onEdit={setEditingHostId}
                             onDelete={(id) => void handleDeleteHost(id)}
                             onDuplicate={(h) => void handleDuplicateHost(h)}
+                            onSplit={splitHostIntoTerminal}
                           />
                         </SortableCard>
                       ))}
@@ -762,6 +800,7 @@ export function HostsDashboard() {
                             onEdit={setEditingHostId}
                             onDelete={(id) => void handleDeleteHost(id)}
                             onDuplicate={(h) => void handleDuplicateHost(h)}
+                            onSplit={splitHostIntoTerminal}
                           />
                         </SortableCard>
                       ))}

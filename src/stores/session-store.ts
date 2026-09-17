@@ -9,6 +9,7 @@ import type {
 } from "../types";
 import { hostKeyFor } from "../lib/host-key";
 import { useRecentPathsStore } from "./recent-paths-store";
+import { useTabStore } from "./tab-store";
 
 // ─── Layout tree helpers ─────────────────────────────────────────────────────
 
@@ -90,9 +91,37 @@ function containsSession(node: LayoutNode, sessionId: string): boolean {
 }
 
 /** Collect all session IDs from a layout tree. */
-function collectSessionIds(node: LayoutNode): string[] {
+export function collectSessionIds(node: LayoutNode): string[] {
   if (node.type === "pane") return [node.sessionId];
   return [...collectSessionIds(node.children[0]), ...collectSessionIds(node.children[1])];
+}
+
+/*
+ * Generate an aggregated tab label for a layout tree based on active sessions.
+ * Multiple distinct hosts are formatted as "HostA | HostB", while a single host
+ * retains its standard username@host or custom label.
+ */
+export function computeTabLabel(
+  layout: LayoutNode,
+  sessions: Map<SessionId, Session>,
+): string {
+  const ids = collectSessionIds(layout);
+  const hostLabels = ids
+    .map((id) => {
+      const s = sessions.get(id);
+      return s ? (s.hostConfig.label || s.hostConfig.host) : null;
+    })
+    .filter(Boolean) as string[];
+
+  const unique = Array.from(new Set(hostLabels));
+  if (unique.length > 1) {
+    return unique.join(" | ");
+  }
+  if (unique.length === 1) {
+    const first = sessions.get(ids[0]);
+    return first?.label || unique[0];
+  }
+  return "Terminal";
 }
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -118,7 +147,12 @@ interface SessionState {
   focusTab: (tabId: string) => void;
   updateStatus: (id: SessionId, status: ConnectionStatus, message?: string) => void;
   setRemoteCwd: (id: SessionId, cwd: string | null) => void;
-  splitPane: (direction: SplitDirection, targetSessionId: string, newSessionId: string) => void;
+  splitPane: (
+    direction: SplitDirection,
+    targetSessionId: string,
+    newSessionId: string,
+    hostConfig?: HostConfig,
+  ) => void;
   unsplitPane: (sessionId: string) => void;
   updateSplitRatio: (tabId: string, path: number[], ratio: number) => void;
   toggleZoom: (sessionId: string) => void;
@@ -135,19 +169,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   addSession: (id, hostConfig) =>
     set((state) => {
+      const label = hostConfig.label || `${hostConfig.username}@${hostConfig.host}`;
       const sessions = new Map(state.sessions);
       sessions.set(id, {
         id,
         hostConfig,
         status: "Connected",
-        label: `${hostConfig.username}@${hostConfig.host}`,
+        label,
       });
 
       // New connection = new layout tree entry
       const tabs = new Map(state.tabs);
       tabs.set(id, {
         layout: { type: "pane", sessionId: id },
-        label: `${hostConfig.username}@${hostConfig.host}`,
+        label,
       });
 
       return {
@@ -182,7 +217,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             // Session is in a split — remove it from the tree
             const newLayout = removePane(tab.layout, id);
             if (newLayout) {
-              tabs.set(ownerTabId, { ...tab, layout: newLayout });
+              const updatedLabel = computeTabLabel(newLayout, sessions);
+              tabs.set(ownerTabId, { ...tab, layout: newLayout, label: updatedLabel });
+              useTabStore.getState().updateTabLabel(ownerTabId, updatedLabel);
             } else {
               tabs.delete(ownerTabId);
               if (activeTerminalTabId === ownerTabId) {
@@ -283,24 +320,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
-
-  splitPane: (direction, targetSessionId, newSessionId) =>
+  splitPane: (direction, targetSessionId, newSessionId, hostConfig) =>
     set((state) => {
       const tabId = findTabForSession(state.tabs, targetSessionId);
       if (!tabId) return state;
       const tab = state.tabs.get(tabId);
       if (!tab) return state;
 
-      // Create the new session from the source
-      const sourceSession = state.sessions.get(targetSessionId);
       const sessions = new Map(state.sessions);
-      if (sourceSession) {
+      if (hostConfig) {
+        const label = hostConfig.label || `${hostConfig.username}@${hostConfig.host}`;
         sessions.set(newSessionId, {
           id: newSessionId,
-          hostConfig: sourceSession.hostConfig,
+          hostConfig,
           status: "Connected",
-          label: sourceSession.label,
+          label,
         });
+      } else {
+        const sourceSession = state.sessions.get(targetSessionId);
+        if (sourceSession) {
+          sessions.set(newSessionId, {
+            id: newSessionId,
+            hostConfig: sourceSession.hostConfig,
+            status: "Connected",
+            label: sourceSession.label,
+          });
+        }
       }
 
       const splitNode: LayoutNode = {
@@ -314,8 +359,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       };
 
       const newLayout = replacePane(tab.layout, targetSessionId, splitNode);
+      const updatedLabel = computeTabLabel(newLayout, sessions);
       const tabs = new Map(state.tabs);
-      tabs.set(tabId, { ...tab, layout: newLayout });
+      tabs.set(tabId, { ...tab, layout: newLayout, label: updatedLabel });
+      useTabStore.getState().updateTabLabel(tabId, updatedLabel);
 
       return { sessions, tabs, activeSessionId: newSessionId };
     }),
@@ -330,8 +377,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const newLayout = removePane(tab.layout, sessionId);
       if (!newLayout) return state;
 
+      const updatedLabel = computeTabLabel(newLayout, state.sessions);
       const tabs = new Map(state.tabs);
-      tabs.set(tabId, { ...tab, layout: newLayout });
+      tabs.set(tabId, { ...tab, layout: newLayout, label: updatedLabel });
+      useTabStore.getState().updateTabLabel(tabId, updatedLabel);
       return { tabs };
     }),
 

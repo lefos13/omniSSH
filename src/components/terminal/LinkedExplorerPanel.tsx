@@ -191,6 +191,11 @@ export function LinkedExplorerPanel({ tabId, isActive = true }: LinkedExplorerPa
 
         <span className="text-[11px] font-medium truncate flex-1 min-w-0 text-text-primary leading-none">
           Files
+          {session && (
+            <span className="ml-1 text-[10px] text-text-muted font-normal font-mono truncate" title={session.label}>
+              · {session.hostConfig.label || session.hostConfig.host}
+            </span>
+          )}
           {binding?.transport === "scp" && (
             <span className="ml-1 text-[10px] text-text-muted font-normal font-mono">
               · SCP

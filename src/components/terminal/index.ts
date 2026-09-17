@@ -6,3 +6,4 @@ export { TerminalSearchBar } from "./TerminalSearchBar";
 export { PaneHeader } from "./PaneHeader";
 export { LinkedExplorerPanel } from "./LinkedExplorerPanel";
 export { TerminalTabContainer } from "./TerminalTabContainer";
+export { SplitHostModal } from "./SplitHostModal";

@@ -131,6 +131,9 @@ pub struct SavedHost {
     // Terminal per-host overrides
     /// Terminal font-size override for this host.
     pub font_size: Option<u32>,
+    /// Terminal color-scheme id for this host (see the frontend scheme gallery).
+    /// Opaque to the backend; `None` means follow the app theme.
+    pub terminal_theme: Option<String>,
 
     // Usage statistics (updated automatically by record_connection)
     /// ISO-8601 timestamp of the most-recent successful connection.
@@ -664,6 +667,23 @@ impl HostDb {
             tracing::info!("migration 17→18 applied: added recent paths");
         }
 
+        if version < 19 {
+            /* Per-host terminal color scheme. The value is an opaque scheme id
+             * owned by the frontend gallery; the backend only persists it and
+             * treats `NULL` as "follow the app theme". */
+            let has_terminal_theme: bool = conn
+                .prepare("SELECT terminal_theme FROM saved_hosts LIMIT 0")
+                .is_ok();
+            if !has_terminal_theme {
+                conn.execute("ALTER TABLE saved_hosts ADD COLUMN terminal_theme TEXT", [])?;
+            }
+            conn.execute(
+                "INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', '19')",
+                [],
+            )?;
+            tracing::info!("migration 18→19 applied: added saved_hosts.terminal_theme");
+        }
+
         Ok(())
     }
 
@@ -1130,14 +1150,14 @@ impl HostDb {
                  key_path, color, notes, environment, os_type,
                  startup_command, proxy_jump, keep_alive_interval, default_shell,
                  font_size, last_connected_at, connection_count, proxy_jump_host_id,
-                 start_directory, credential_storage
+                 start_directory, credential_storage, terminal_theme
              )
              VALUES (
                  ?1,  ?2,  ?3,  ?4,  ?5,  ?6,  ?7,  ?8,  ?9,
                  ?10, ?11, ?12, ?13, ?14,
                  ?15, ?16, ?17, ?18,
                  ?19, ?20, ?21, ?22,
-                 ?23, ?24
+                 ?23, ?24, ?25
              )
              ON CONFLICT(id) DO UPDATE SET
                  label                = excluded.label,
@@ -1161,6 +1181,7 @@ impl HostDb {
                  connection_count     = excluded.connection_count,
                  proxy_jump_host_id   = excluded.proxy_jump_host_id,
                  start_directory      = excluded.start_directory,
+                 terminal_theme       = excluded.terminal_theme,
                  credential_storage  = CASE
                      WHEN excluded.credential_storage = 'keychain'
                           AND excluded.auth_type = 'password'
@@ -1193,6 +1214,7 @@ impl HostDb {
                 host.proxy_jump_host_id,
                 host.start_directory,
                 host.credential_storage.as_str(),
+                host.terminal_theme,
             ],
         )?;
         conn.execute(
@@ -1218,7 +1240,7 @@ impl HostDb {
                     key_path, color, notes, environment, os_type,
                     startup_command, proxy_jump, keep_alive_interval, default_shell,
                     font_size, last_connected_at, connection_count, proxy_jump_host_id,
-                    start_directory, credential_storage
+                    start_directory, credential_storage, terminal_theme
              FROM saved_hosts
              ORDER BY sort_order ASC, label ASC",
         )?;
@@ -1249,6 +1271,7 @@ impl HostDb {
                 proxy_jump_host_id: row.get(21)?,
                 start_directory: row.get(22)?,
                 credential_storage: CredentialStorage::from_db(row.get(23)?)?,
+                terminal_theme: row.get(24)?,
             })
         })?;
 
@@ -1316,7 +1339,7 @@ impl HostDb {
                     key_path, color, notes, environment, os_type,
                     startup_command, proxy_jump, keep_alive_interval, default_shell,
                     font_size, last_connected_at, connection_count, proxy_jump_host_id,
-                    start_directory, credential_storage
+                    start_directory, credential_storage, terminal_theme
              FROM saved_hosts
              WHERE id = ?1",
         )?;
@@ -1347,6 +1370,7 @@ impl HostDb {
                 proxy_jump_host_id: row.get(21)?,
                 start_directory: row.get(22)?,
                 credential_storage: CredentialStorage::from_db(row.get(23)?)?,
+                terminal_theme: row.get(24)?,
             })
         })?;
 
@@ -2641,6 +2665,7 @@ mod tests {
             keep_alive_interval: None,
             default_shell: None,
             font_size: None,
+            terminal_theme: None,
             last_connected_at: None,
             connection_count: Some(0),
         }
@@ -2670,6 +2695,52 @@ mod tests {
         assert_eq!(all[0].id, "host-1");
         assert_eq!(all[0].port, 22);
         assert!(all[0].group_id.is_none());
+    }
+
+    #[test]
+    fn terminal_theme_persists_and_migrates() {
+        let (db, _dir) = test_db();
+        {
+            let conn = db.conn.lock().unwrap();
+            // The migration must have added the column and recorded version 19.
+            let version: String = conn
+                .query_row(
+                    "SELECT value FROM _meta WHERE key = 'schema_version'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(version, "19");
+            assert!(conn
+                .prepare("SELECT terminal_theme FROM saved_hosts LIMIT 0")
+                .is_ok());
+        }
+
+        let themed = SavedHost {
+            terminal_theme: Some("dracula".to_string()),
+            ..sample_host("themed")
+        };
+        let unthemed = sample_host("unthemed");
+        db.save_host(&themed).expect("save themed");
+        db.save_host(&unthemed).expect("save unthemed");
+
+        assert_eq!(
+            db.get_host("themed").unwrap().unwrap().terminal_theme,
+            Some("dracula".to_string())
+        );
+        assert_eq!(
+            db.get_host("unthemed").unwrap().unwrap().terminal_theme,
+            None
+        );
+
+        let listed = db.list_hosts().expect("list");
+        let from_list = listed
+            .iter()
+            .find(|h| h.id == "themed")
+            .unwrap()
+            .terminal_theme
+            .clone();
+        assert_eq!(from_list, Some("dracula".to_string()));
     }
 
     #[test]
@@ -2757,7 +2828,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(version, "18");
+        assert_eq!(version, "19");
         for table in [
             "local_vault_metadata",
             "local_vault_credentials",

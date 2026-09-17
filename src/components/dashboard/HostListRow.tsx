@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { Activity, Pencil, TerminalSquare, Copy, Trash2, FolderOpen, Waypoints } from "lucide-react";
+import { Activity, Pencil, TerminalSquare, Copy, Trash2, FolderOpen, Waypoints, Columns2, Rows2 } from "lucide-react";
 import { CardActionButton } from "./CardActionButton";
 import { relativeTime } from "../../utils/time";
 import { ContextMenu } from "../shared/ContextMenu";
 import { ConfirmDangerDialog } from "../shared/ConfirmDangerDialog";
 import { useHealthStore, IDLE_HEALTH } from "../../stores/health-store";
 import { useHostsStore } from "../../stores/hosts-store";
+import { useTabStore } from "../../stores/tab-store";
 import {
   getHostColor,
   statusColor,
@@ -26,6 +27,7 @@ export function HostListRow({
   onEdit,
   onDelete,
   onDuplicate,
+  onSplit,
 }: HostCardProps) {
   const displayName = host.label || host.host;
   const avatarColor = host.color || getHostColor(host.host);
@@ -33,6 +35,7 @@ export function HostListRow({
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const hasActiveTerminal = useTabStore((s) => s.tabs.get(s.activeTabId ?? "")?.type === "terminal");
 
   const health = useHealthStore((s) => s.byHostId[host.id] ?? IDLE_HEALTH);
   const checkHealth = useHealthStore((s) => s.checkHealth);
@@ -77,6 +80,20 @@ export function HostListRow({
       icon: TerminalSquare,
       onClick: () => onConnect(host),
     },
+    ...(hasActiveTerminal && onSplit
+      ? [
+          {
+            label: "Split Right with Terminal",
+            icon: Columns2,
+            onClick: () => onSplit(host, "horizontal"),
+          },
+          {
+            label: "Split Down with Terminal",
+            icon: Rows2,
+            onClick: () => onSplit(host, "vertical"),
+          },
+        ]
+      : []),
     {
       label: "Explorer",
       icon: FolderOpen,

@@ -2229,6 +2229,7 @@ fn commit_pending(
             keep_alive_interval: None,
             default_shell: None,
             font_size: None,
+            terminal_theme: None,
             last_connected_at: None,
             connection_count: Some(0),
         };
@@ -2995,6 +2996,7 @@ mod tests {
             keep_alive_interval: None,
             default_shell: None,
             font_size: None,
+            terminal_theme: None,
             last_connected_at: None,
             connection_count: Some(0),
         }

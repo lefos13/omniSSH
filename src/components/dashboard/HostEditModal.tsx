@@ -9,6 +9,7 @@ import { useTabStore } from "../../stores/tab-store";
 import type { CredentialStorage, SavedHost, HostConfig, StoredCredential } from "../../types";
 import { HOST_COLORS } from "./HostCard";
 import { CustomSelect } from "../shared/CustomSelect";
+import { TERMINAL_SCHEMES } from "../../lib/terminal-themes";
 import { useVaultGuard } from "../vault";
 import { RevealPasswordDialog } from "../vault";
 import { useSettingsStore } from "../../stores/settings-store";
@@ -41,6 +42,7 @@ interface FormState {
   passphrase: string;
   // Appearance
   color: string;
+  terminalTheme: string;
   environment: string;
   osType: string;
   // Notes
@@ -64,6 +66,7 @@ const EMPTY_FORM: FormState = {
   password: "",
   passphrase: "",
   color: "",
+  terminalTheme: "",
   environment: "",
   osType: "",
   notes: "",
@@ -98,6 +101,7 @@ function savedHostToForm(host: SavedHost): FormState {
     password: "",
     passphrase: "",
     color: host.color ?? "",
+    terminalTheme: host.terminal_theme ?? "",
     environment: host.environment ?? "",
     osType: host.os_type ?? "",
     notes: host.notes ?? "",
@@ -113,6 +117,88 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
         {children}
       </span>
       <div className="flex-1 h-px bg-border" aria-hidden="true" />
+    </div>
+  );
+}
+
+/*
+ * Terminal color-scheme gallery. The first card is the app-derived default
+ * (value ""), the rest mirror the bundled schemes. Each card previews the
+ * scheme's background/foreground plus a row of ANSI swatches, so the choice is
+ * visible without opening a terminal.
+ */
+function TerminalThemePicker({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: string;
+  onChange: (id: string) => void;
+  disabled?: boolean;
+}) {
+  const previews = [
+    {
+      id: "",
+      name: "App theme",
+      background: "var(--color-bg-base)",
+      foreground: "var(--color-text-primary)",
+      dots: [
+        "var(--color-status-error)",
+        "var(--color-status-connected)",
+        "var(--color-status-connecting)",
+        "var(--color-accent)",
+        "var(--color-text-muted)",
+      ],
+    },
+    ...TERMINAL_SCHEMES.map((s) => ({
+      id: s.id,
+      name: s.name,
+      background: s.theme.background ?? "#000000",
+      foreground: s.theme.foreground ?? "#ffffff",
+      dots: [s.theme.red, s.theme.green, s.theme.yellow, s.theme.blue, s.theme.magenta],
+    })),
+  ];
+
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+      {previews.map((p) => (
+        <button
+          key={p.id || "app"}
+          type="button"
+          onClick={() => onChange(p.id)}
+          disabled={disabled}
+          aria-pressed={value === p.id}
+          data-testid={`host-modal-theme-${p.id || "app"}`}
+          className={[
+            "rounded-md border p-2 text-left",
+            "transition-[border-color,box-shadow] duration-[var(--duration-fast)]",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            value === p.id
+              ? "border-border-focus ring-2 ring-ring"
+              : "border-border hover:border-border-focus",
+          ].join(" ")}
+        >
+          <div
+            className="h-9 rounded-sm flex items-center justify-between px-2 font-mono text-[13px] leading-none"
+            style={{ backgroundColor: p.background, color: p.foreground }}
+            aria-hidden="true"
+          >
+            <span>Aa</span>
+            <span className="flex items-center gap-1">
+              {p.dots.map((c, i) => (
+                <span
+                  key={i}
+                  className="w-2 h-2 rounded-full"
+                  style={{ backgroundColor: c }}
+                />
+              ))}
+            </span>
+          </div>
+          <span className="mt-1.5 block truncate text-[length:var(--text-xs)] text-text-secondary">
+            {p.name}
+          </span>
+        </button>
+      ))}
     </div>
   );
 }
@@ -316,6 +402,7 @@ export function HostEditModal() {
       keep_alive_interval: null,
       default_shell: null,
       font_size: null,
+      terminal_theme: null,
       last_connected_at: null,
       connection_count: null,
     };
@@ -341,6 +428,7 @@ export function HostEditModal() {
       startup_command: form.startupCommand.trim() || null,
       start_directory: form.startDirectory.trim() || null,
       color: form.color || null,
+      terminal_theme: form.terminalTheme || null,
       environment: form.environment || null,
       os_type: form.osType || null,
       notes: form.notes.trim() || null,
@@ -977,6 +1065,20 @@ export function HostEditModal() {
                     />
                   ))}
                 </div>
+              </div>
+
+              {/* Terminal color scheme */}
+              <div>
+                <span className={labelClass}>Terminal theme</span>
+                <TerminalThemePicker
+                  value={form.terminalTheme}
+                  onChange={(v) => setField("terminalTheme", v)}
+                  disabled={isBusy}
+                />
+                <p className="mt-1 text-[length:var(--text-xs)] text-text-muted">
+                  Colors this host&apos;s terminal uses. Hosts without a theme follow the
+                  app theme.
+                </p>
               </div>
 
               {/* Environment + OS Type row */}

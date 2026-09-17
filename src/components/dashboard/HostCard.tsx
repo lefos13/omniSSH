@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Activity, Pencil, TerminalSquare, Copy, Trash2, FolderOpen, Waypoints } from "lucide-react";
+import { Activity, Pencil, TerminalSquare, Copy, Trash2, FolderOpen, Waypoints, Columns2, Rows2 } from "lucide-react";
 import type { SavedHost } from "../../types";
 import { CardActionButton, CardActionStrip } from "./CardActionButton";
 import { relativeTime } from "../../utils/time";
@@ -7,6 +7,7 @@ import { ContextMenu } from "../shared/ContextMenu";
 import { ConfirmDangerDialog } from "../shared/ConfirmDangerDialog";
 import { useHealthStore, IDLE_HEALTH, type HealthStatus } from "../../stores/health-store";
 import { useHostsStore } from "../../stores/hosts-store";
+import { useTabStore } from "../../stores/tab-store";
 
 // Single source of truth for status → colour, shared by the button and the label.
 export function statusColor(status: HealthStatus): string {
@@ -23,6 +24,7 @@ export interface HostCardProps {
   onEdit: (hostId: string) => void;
   onDelete: (hostId: string) => void;
   onDuplicate: (host: SavedHost) => void;
+  onSplit?: (host: SavedHost, direction: "horizontal" | "vertical") => void;
 }
 
 export const HOST_COLORS = [
@@ -68,13 +70,14 @@ export function isEnvironmentValue(val: string): val is EnvironmentValue {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function HostCard({ host, onConnect, onExplore, onEdit, onDelete, onDuplicate }: HostCardProps) {
+export function HostCard({ host, onConnect, onExplore, onEdit, onDelete, onDuplicate, onSplit }: HostCardProps) {
   const displayName = host.label || host.host;
   const avatarColor = host.color || getHostColor(host.host);
   const initial = displayName.charAt(0).toUpperCase();
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const hasActiveTerminal = useTabStore((s) => s.tabs.get(s.activeTabId ?? "")?.type === "terminal");
   // Health lives in a store (keyed by host id), not local state, so a status
   // survives the dashboard unmounting when a terminal/other tab becomes active.
   const health = useHealthStore((s) => s.byHostId[host.id] ?? IDLE_HEALTH);
@@ -123,6 +126,20 @@ export function HostCard({ host, onConnect, onExplore, onEdit, onDelete, onDupli
       icon: TerminalSquare,
       onClick: () => onConnect(host),
     },
+    ...(hasActiveTerminal && onSplit
+      ? [
+          {
+            label: "Split Right with Terminal",
+            icon: Columns2,
+            onClick: () => onSplit(host, "horizontal"),
+          },
+          {
+            label: "Split Down with Terminal",
+            icon: Rows2,
+            onClick: () => onSplit(host, "vertical"),
+          },
+        ]
+      : []),
     {
       label: "Explorer",
       icon: FolderOpen,
