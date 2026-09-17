@@ -167,7 +167,9 @@ describe("SettingsPage backup preflight and export credential selection", () => 
     fireEvent.click(screen.getByTestId("s-export-backup"));
 
     expect(await screen.findByTestId("backup-include-credentials")).toBeInTheDocument();
-    expect(screen.getByText("Couldn’t inspect credential counts.")).toBeInTheDocument();
+    /* The preflight rejection is handled a tick after the dialog mounts, so
+     * the fallback notice is not present in the dialog's first render. */
+    expect(await screen.findByText("Couldn’t inspect credential counts.")).toBeInTheDocument();
     expect(screen.queryByText("Preflight DB lock error")).not.toBeInTheDocument();
 
     const pwInput = screen.getByTestId("backup-password");
