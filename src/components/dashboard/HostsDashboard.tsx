@@ -1087,7 +1087,7 @@ export function HostsDashboard() {
       {importModalOpen && (
         <ImportSshConfigModal
           onClose={() => setImportModalOpen(false)}
-          onImported={() => void loadHosts()}
+          onImported={() => void Promise.all([loadHosts(), loadGroups()])}
           initialSource={importSource}
         />
       )}
