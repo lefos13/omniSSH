@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.5.0] - 2026-09-18
+
+### 🚀 Improvements
+
+#### 1. Refreshed Application Branding
+* **Consistent Icons Everywhere**: Updated the app icon, favicon, and all Tauri, Android, and iOS icon sizes to the current OmniSSH branding.
+* **Live Session Walkthrough**: The README gains a live demo (`screens/omnissh.gif` / `screens/omnissh.mp4`) showing split terminals, real-time OSC 7 directory sync, and docked host plugins. The screenshot pipeline now emits `omnissh.gif` (keeping `anyscp.gif` as a legacy copy).
+
+### 🐛 Fixes
+
+#### 1. Imported Groups Now Appear Immediately
+* **Concurrent Reload After Import**: The hosts dashboard reloads hosts and groups together once an SSH config import commits, so newly imported groups show up without a manual refresh.
+
+---
+
 ## [1.4.0] - 2026-09-17
 
 ### 🚀 Highlights & New Features
