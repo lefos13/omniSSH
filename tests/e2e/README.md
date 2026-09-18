@@ -34,7 +34,7 @@ needs no host tooling:
    into the finished look: a macOS-style titlebar (traffic lights + `anySCP`),
    rounded corners, drop shadow, and a violet→blue wallpaper → `screens/<view>.png`.
 3. **Gif** — `screenshot-tools/build-assets.sh` converts the tour mp4 to
-   `screens/anyscp.gif` (ffmpeg, two-pass palette).
+   `screens/omnissh.gif` (and `screens/anyscp.gif`) via ffmpeg, two-pass palette.
 
 Seeding is *representative*, not a pixel replica of the originals — the point is
 assets that regenerate and stay current. Tunables (wallpaper colors, corner

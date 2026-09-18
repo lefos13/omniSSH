@@ -312,7 +312,7 @@ e2e-clean-artifacts:
 # so the whole pipeline is deterministic and needs no host tooling:
 #   1. drive the app to each view, save raw WebKit captures
 #   2. frame them (titlebar + rounded corners + shadow + wallpaper)
-#   3. convert the recorded tour to screens/anyscp.gif
+#   3. convert the recorded tour to screens/omnissh.gif & screens/anyscp.gif
 # Note: screens/header.png is a hand-made marketing banner and is NOT regenerated.
 SCREENSHOT_SPEC := ./screenshot-tools/capture.screens.ts
 SCREENSHOT_BUILD := /workspace/tests/e2e/screenshot-tools/build-assets.sh

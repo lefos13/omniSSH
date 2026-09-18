@@ -125,12 +125,17 @@
 
 ---
 
-## 📸 Screenshots
+## 📸 Screenshots & Live Demo
+
+| Live Session Walkthrough (Terminal + OSC 7 Sync + Host Plugins) |
+| :---: |
+| ![OmniSSH Live Session Demo](screens/omnissh.gif) |
+| *Live session walkthrough: split WebGL terminals, real-time OSC 7 directory sync, and docked host plugins* |
 
 | Unified Terminal Workspace (Terminal + Linked Explorer + Host Plugins) |
 | :---: |
 | ![Unified Workspace](screens/terminal-explorer-plugins.jpg) |
-| *Live SSH terminal, OSC 7 linked directory explorer, and host monitoring plugins all active at the same time in one screen* |
+| *Live SSH terminal, OSC 7 linked directory sync, and host monitoring plugins all active at the same time in one screen* |
 
 | Connection Manager & Dashboard | Multi-Pane SSH Terminal & Search |
 | :---: | :---: |
