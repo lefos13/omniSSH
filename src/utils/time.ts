@@ -1,20 +1,24 @@
-/**
- * Parse a timestamp string from SQLite into a Date.
- * SQLite's `datetime('now')` returns UTC without a trailing "Z", which
- * `new Date()` would otherwise interpret as local time. Append "Z" so the
- * string is parsed as UTC.
- */
+/* Timestamps reach the UI in three shapes: SQLite's `datetime('now')`
+ * ("2026-09-18 17:51:27", UTC with no designator), plain ISO ending in "Z",
+ * and RFC3339 with a numeric offset ("…+00:00") as the sync layer writes with
+ * chrono. Only the first needs a "Z" appended — doing it to the third produced
+ * "…+00:00Z", which parses as NaN and rendered as "NaNmo ago". */
+const HAS_ZONE = /(?:Z|[+-]\d{2}:?\d{2})$/i;
+
+/** Parse a stored timestamp into a Date, treating a bare SQLite value as UTC. */
 export function parseSqliteUtc(isoDate: string): Date {
-  return new Date(isoDate.endsWith("Z") ? isoDate : isoDate + "Z");
+  const value = isoDate.trim().replace(" ", "T");
+  return new Date(HAS_ZONE.test(value) ? value : `${value}Z`);
 }
 
 /**
- * Format an ISO date string as a human-readable relative time.
- * Handles SQLite UTC strings without the trailing "Z".
+ * Format a stored timestamp as a human-readable relative time. An unparseable
+ * value reports itself rather than rendering arithmetic on NaN.
  */
 export function relativeTime(isoDate: string): string {
   const now = Date.now();
   const then = parseSqliteUtc(isoDate).getTime();
+  if (Number.isNaN(then)) return "unknown";
   const diffMs = now - then;
   const minutes = Math.floor(diffMs / 60000);
   if (minutes < 1) return "just now";

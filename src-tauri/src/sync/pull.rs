@@ -17,6 +17,23 @@
  * written, which makes a partially applied pull safe to re-run: the records that
  * landed are already at base and the rest are simply applied again.
  *
+ * `scopeRemovals` is applied last and is not a delete: it tells this machine to
+ * stop claiming a host for this dataset, so the base state goes while the host
+ * row, its credential, and its children stay exactly where they are.
+ *
+ * Managed hosts (AD-9): when this machine's role for the dataset is `member`,
+ * every applied host is stamped `managed=true`, which makes the validated save
+ * path reject edits until the user detaches. Owner pulls stamp `managed=false`
+ * — the owner is the source of truth and stays editable. Hosts cover the same
+ * rule as groups, snippets, and the rest: only hosts are marked, because only
+ * hosts have an editor lock behind the flag.
+ *
+ * Detach is an opt-out, not a delete: `sync_detached` rows (written by
+ * `sync_detach_host`) make pull skip the record entirely — never applied, never
+ * re-managed — while the local row stays untouched. To re-add a host, delete
+ * its opt-out row (`sync_reattach_host`, exposed in the host UI as "Re-attach")
+ * and the next pull applies and re-manages it normally.
+ *
  * Nothing here logs a host, path, or credential.
  */
 
@@ -37,7 +54,9 @@ use super::codec::{
 use super::dataset::{endpoint_for, SyncContentFlags};
 use super::merge::{merge_kind, Base, Decision, LocalItem, MergeConflict, MergePlan, RemoteItem};
 use super::meta::DatasetMeta;
+use super::scope;
 use super::secrets;
+use super::signing;
 use super::transport::{RemoteStore, DATASET_FILE, META_FILE};
 use super::SyncError;
 
@@ -109,11 +128,16 @@ pub async fn pull(
                 .into(),
         ));
     }
+    /* Owner verification runs before any decryption or apply: a bundle the
+     * pinned owner did not sign is rejected whole, and nothing is written.
+     * Returns the fingerprint to pin when this row has none yet. */
+    let pin = signing::verify_for_pull(row.owner_fingerprint.as_deref(), &meta)?;
 
     let key = unwrap_dataset_key(&passphrase, &meta.key_wrap)?;
     let payload = open_payload(&key, &bundle)?;
 
     let flags = SyncContentFlags::from_json(&row.content_flags);
+    let member_managed = row.role == "member";
     let db_for_apply = Arc::clone(db);
     let vault_for_apply = Arc::clone(local_vault);
     let dataset_id_owned = row.id.clone();
@@ -125,6 +149,7 @@ pub async fn pull(
             &dataset_id_owned,
             generation,
             flags,
+            member_managed,
             payload,
         )
     })
@@ -144,6 +169,11 @@ pub async fn pull(
 
     let mut updated = row;
     updated.last_generation = generation as i64;
+    /* Joining pins the owner's fingerprint on the first successful pull, so a
+     * later bundle signed by another key is rejected above. */
+    if updated.owner_fingerprint.is_none() {
+        updated.owner_fingerprint = pin;
+    }
     updated.last_synced_at = Some(chrono::Utc::now().to_rfc3339());
     updated.updated_at = chrono::Utc::now().to_rfc3339();
     db.upsert_sync_dataset(&updated)?;
@@ -244,6 +274,10 @@ fn tombstones_of(
 struct ApplyState<'a> {
     db: &'a HostDb,
     dataset_id: &'a str,
+    /* True when this machine pulls as a dataset member: applied hosts are
+     * stamped `managed=true` and become read-only until detached. Owners keep
+     * `managed=false` — they are the source of truth. */
+    member_managed: bool,
     states: Vec<SyncRecordState>,
     conflicts: Vec<MergeConflict>,
     deleted: usize,
@@ -253,15 +287,17 @@ struct ApplyState<'a> {
 
 impl ApplyState<'_> {
     fn record_base(&mut self, entity_type: SyncEntityType, id: &str, revision: u64, hash: String) {
+        /* Only hosts carry the read-only marker: groups, snippets, rules, and
+         * the rest apply the same merge path but stay editable, because only
+         * hosts have an editor lock behind the flag. */
+        let managed = self.member_managed && entity_type == SyncEntityType::Host;
         self.states.push(SyncRecordState {
             dataset_id: self.dataset_id.to_string(),
             entity_type,
             entity_id: id.to_string(),
             remote_revision: revision as i64,
             base_hash: hash,
-            // A pulled record is only marked read-only for member datasets; the
-            // member role and its editor lock land with Tasks 9-10.
-            managed: false,
+            managed,
             synced_at: String::new(),
         });
     }
@@ -317,6 +353,7 @@ fn apply(
     dataset_id: &str,
     generation: u64,
     flags: SyncContentFlags,
+    member_managed: bool,
     payload: SyncPayload,
 ) -> Result<SyncPullOutcome, SyncError> {
     let flags = flags.normalized();
@@ -324,6 +361,7 @@ fn apply(
     let mut state = ApplyState {
         db,
         dataset_id,
+        member_managed,
         states: Vec::new(),
         conflicts: Vec::new(),
         deleted: 0,
@@ -414,6 +452,14 @@ fn apply(
         for decision in &merged.plan.decisions {
             match decision {
                 Decision::Apply { id, revision } => {
+                    /* Detached records are opted out, not deleted: the user took
+                     * the row back, so pull neither applies nor re-manages it.
+                     * Local Only records were never in the remote, hence were
+                     * never detached for this dataset, and bypass this check. */
+                    if db.is_sync_detached(dataset_id, SyncEntityType::Host, id)? {
+                        state.kept_local += 1;
+                        continue;
+                    }
                     let record = remotes
                         .iter()
                         .find(|record| &record.id == id)
@@ -455,6 +501,13 @@ fn apply(
                     applied.hosts += 1;
                 }
                 Decision::Delete { id } => {
+                    /* A detached-then-remotely-deleted record stays local: the
+                     * opt-out outranks the tombstone, and the tombstone still
+                     * applies on re-attach. */
+                    if db.is_sync_detached(dataset_id, SyncEntityType::Host, id)? {
+                        state.kept_local += 1;
+                        continue;
+                    }
                     db.delete_host(id)?;
                     let _ = vault::delete_credential(id);
                     state.drop_base(SyncEntityType::Host, id)?;
@@ -463,7 +516,6 @@ fn apply(
                 Decision::KeepLocal { .. } => state.kept_local += 1,
             }
         }
-        state.conflicts.extend(merged.plan.conflicts);
     }
 
     // ── Snippet folders, then snippets ───────────────────────────────────────
@@ -767,6 +819,13 @@ fn apply(
         }
     }
 
+    /* Scope removals last, and before the base state is written: a host that
+     * left the writer's scope arrives with no record and no tombstone, so the
+     * only thing that tells this machine to stop claiming it for this dataset
+     * is this list. The host row, its credential, and its child rules stay —
+     * they may belong to another dataset, or to no dataset at all. */
+    scope::apply_scope_removals(db, dataset_id, &payload.scope_removals)?;
+
     db.upsert_sync_record_state(&state.states)?;
     let conflict_rows: Vec<crate::db::SyncConflict> = state
         .conflicts
@@ -801,6 +860,7 @@ fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::{SavedHost, SyncDataset};
 
     #[test]
     fn outcome_serializes_for_the_pull_panel() {
@@ -892,6 +952,180 @@ mod tests {
             credential_target_for(CredentialTarget::Keychain, Some(&password)),
             CredentialTarget::Keychain
         );
+    }
+
+    /* Member pulls mark applied hosts managed; owner pulls never do. The db
+     * gate tests cover the save rejection itself — these pin the stamping. */
+    fn tests_host(id: &str) -> SavedHost {
+        SavedHost {
+            id: id.into(),
+            label: format!("Host {id}"),
+            host: "10.0.0.5".into(),
+            port: 22,
+            username: "deployer".into(),
+            auth_type: "password".into(),
+            credential_storage: CredentialStorage::Keychain,
+            group_id: None,
+            created_at: "2026-09-01T00:00:00Z".into(),
+            updated_at: "2026-09-03T00:00:00Z".into(),
+            key_path: None,
+            color: None,
+            notes: None,
+            environment: None,
+            os_type: None,
+            startup_command: None,
+            proxy_jump: None,
+            proxy_jump_host_id: None,
+            start_directory: None,
+            keep_alive_interval: None,
+            default_shell: None,
+            font_size: None,
+            terminal_theme: None,
+            last_connected_at: None,
+            connection_count: None,
+        }
+    }
+
+    #[test]
+    fn member_pull_marks_hosts_managed_owner_pull_does_not() {
+        use crate::sync::codec::{Record, SyncPayload};
+        use crate::sync::dataset::SyncContentFlags;
+
+        fn host_record(id: &str) -> Record<SavedHost> {
+            let data = tests_host(id);
+            Record {
+                id: data.id.clone(),
+                revision: 3,
+                updated_at: data.updated_at.clone(),
+                deleted: false,
+                credential: None,
+                data,
+            }
+        }
+
+        fn dataset_row(id: &str, role: &str, dir: &tempfile::TempDir) -> HostDb {
+            let db = HostDb::new(dir.path()).expect("temp database");
+            db.upsert_sync_dataset(&SyncDataset {
+                id: id.into(),
+                name: "NOVA".into(),
+                host: "10.0.0.9".into(),
+                port: 2222,
+                username: "sync".into(),
+                auth_type: "password".into(),
+                remote_path: format!("/srv/omnissh/{id}"),
+                role: role.into(),
+                content_flags: SyncContentFlags::default().to_json().unwrap(),
+                scope_mode: "{\"mode\":\"all\"}".into(),
+                auto_sync: false,
+                pull_interval_secs: 0,
+                push_debounce_secs: 0,
+                owner_fingerprint: None,
+                kdf_salt: None,
+                kdf_m_kib: None,
+                kdf_t: None,
+                kdf_p: None,
+                wrapped_key: None,
+                last_generation: 0,
+                last_synced_at: None,
+                created_at: "2026-09-01T00:00:00Z".into(),
+                updated_at: "2026-09-01T00:00:00Z".into(),
+            })
+            .expect("dataset row");
+            db
+        }
+
+        fn payload() -> SyncPayload {
+            let mut payload = SyncPayload::new("ds-x", 4);
+            payload.sections.hosts = Some(vec![host_record("h-1")]);
+            payload.sections.groups = Some(vec![]);
+            payload
+        }
+
+        let vault = LocalVault::new();
+        let flags = SyncContentFlags::default();
+
+        let member_dir = tempfile::tempdir().expect("temp dir");
+        let member_db = dataset_row("ds-x", "member", &member_dir);
+        let outcome =
+            apply(&member_db, &vault, "ds-x", 4, flags, true, payload()).expect("member apply");
+        assert_eq!(outcome.applied.hosts, 1);
+        let states = member_db.list_sync_record_state("ds-x").expect("state");
+        assert_eq!(states.len(), 1);
+        assert!(states[0].managed, "member pulls stamp managed=true");
+
+        let owner_dir = tempfile::tempdir().expect("temp dir");
+        let owner_db = dataset_row("ds-x", "owner", &owner_dir);
+        let outcome =
+            apply(&owner_db, &vault, "ds-x", 4, flags, false, payload()).expect("owner apply");
+        assert_eq!(outcome.applied.hosts, 1);
+        let states = owner_db.list_sync_record_state("ds-x").expect("state");
+        assert_eq!(states.len(), 1);
+        assert!(!states[0].managed, "owner pulls keep managed=false");
+    }
+
+    #[test]
+    fn detached_host_is_never_applied_or_remanaged() {
+        use crate::sync::codec::{Record, SyncPayload};
+        use crate::sync::dataset::SyncContentFlags;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = HostDb::new(dir.path()).expect("temp database");
+        db.upsert_sync_dataset(&SyncDataset {
+            id: "ds-x".into(),
+            name: "NOVA".into(),
+            host: "10.0.0.9".into(),
+            port: 2222,
+            username: "sync".into(),
+            auth_type: "password".into(),
+            remote_path: "/srv/omnissh/ds-x".into(),
+            role: "member".into(),
+            content_flags: SyncContentFlags::default().to_json().unwrap(),
+            scope_mode: "{\"mode\":\"all\"}".into(),
+            auto_sync: false,
+            pull_interval_secs: 0,
+            push_debounce_secs: 0,
+            owner_fingerprint: None,
+            kdf_salt: None,
+            kdf_m_kib: None,
+            kdf_t: None,
+            kdf_p: None,
+            wrapped_key: None,
+            last_generation: 0,
+            last_synced_at: None,
+            created_at: "2026-09-01T00:00:00Z".into(),
+            updated_at: "2026-09-01T00:00:00Z".into(),
+        })
+        .expect("dataset row");
+
+        let vault = LocalVault::new();
+        let flags = SyncContentFlags::default();
+        let mut payload = SyncPayload::new("ds-x", 4);
+        let data = tests_host("h-9");
+        payload.sections.hosts = Some(vec![Record {
+            id: data.id.clone(),
+            revision: 2,
+            updated_at: "2026-09-04T00:00:00Z".into(),
+            deleted: false,
+            credential: None,
+            data,
+        }]);
+
+        db.detach_sync_host("ds-x", "h-9").expect("detach");
+        let outcome = apply(&db, &vault, "ds-x", 4, flags, true, payload.clone())
+            .expect("apply with opt-out");
+        assert_eq!(outcome.applied.hosts, 0, "detached records are skipped");
+        assert!(db.get_host("h-9").expect("lookup").is_none());
+        assert!(
+            db.list_sync_record_state("ds-x").expect("state").is_empty(),
+            "detached records are never re-managed"
+        );
+
+        db.reattach_sync_host("ds-x", "h-9").expect("re-attach");
+        let outcome = apply(&db, &vault, "ds-x", 4, flags, true, payload).expect("re-apply");
+        assert_eq!(outcome.applied.hosts, 1);
+        let states = db.list_sync_record_state("ds-x").expect("state");
+        assert_eq!(states.len(), 1);
+        assert!(states[0].managed);
     }
 }
 

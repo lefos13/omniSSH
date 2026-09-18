@@ -12,20 +12,29 @@
  *   already had, so a push does not make every record look newly edited to the
  *   other machine.
  *
+ * The dataset's scope narrows the host-shaped kinds: `hosts`, `groups`, port
+ * forwards, and plugin configs come from the resolved selection only, because a
+ * scoped dataset that published every group would hand a peer the groups its
+ * hosts were meant to be separated from. Snippets, S3 connections, and app
+ * settings are not host-shaped and keep their content-flag behaviour.
+ *
  * Credentials are read only when the dataset opts in. A secret that cannot be
  * read without prompting (a locked App Vault) is *reported*, never silently
  * dropped — the push command turns that count into a blocking preflight.
  */
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use serde::Serialize;
 
 use crate::db::{CredentialStorage, HostDb, SyncEntityType};
 use crate::vault::{self, LocalVault, StoredCredential, VaultError};
 
-use super::codec::{app_settings_record, content_digest, Record, SyncPayload, Tombstone};
+use super::codec::{
+    app_settings_record, content_digest, Record, ScopeRemoval, SyncPayload, Tombstone,
+};
 use super::dataset::SyncContentFlags;
+use super::scope::ResolvedScope;
 use super::SyncError;
 
 /// Counts a push reports back to the UI.
@@ -41,6 +50,8 @@ pub struct CollectStats {
     pub host_plugins: usize,
     pub app_settings: bool,
     pub tombstones: usize,
+    /// Hosts that left this dataset's scope on this push (Task 8).
+    pub scope_removals: usize,
     pub credentials_included: usize,
     /// Hosts (or S3 connections) whose secret could not be read.
     pub credentials_blocked: usize,
@@ -105,9 +116,18 @@ pub struct Collected {
     pub payload: SyncPayload,
     pub stats: CollectStats,
     pub bases: Vec<CollectedBase>,
+    /* Host ids that were in this dataset's base state but are out of its scope
+     * now, and still exist locally. The caller drops this dataset's base rows
+     * for them only after the remote accepted the bundle, and their local rows
+     * are never touched. */
+    pub scope_removals: Vec<String>,
 }
 
 /// Build the payload for `dataset_id` at `generation`.
+///
+/// `scope` is the resolved selection (Task 8): hosts, groups, port forwards,
+/// and plugin configs are limited to it, while every other content kind keeps
+/// its content-flag behaviour.
 ///
 /// `local_vault` is only touched for hosts stored in the App Vault, and only
 /// when credentials are enabled.
@@ -117,16 +137,23 @@ pub fn collect(
     dataset_id: &str,
     generation: u64,
     flags: SyncContentFlags,
+    scope: &ResolvedScope,
 ) -> Result<Collected, SyncError> {
     let flags = flags.normalized();
     let base = base_state(db, dataset_id)?;
     let mut payload = SyncPayload::new(dataset_id, generation);
     let mut stats = CollectStats::default();
     let mut bases: Vec<CollectedBase> = Vec::new();
+    /* One read of `saved_hosts` feeds the host section, the plugin section, the
+     * scope-removal comparison, and the host-tombstone filter. */
+    let hosts = db.list_hosts()?;
 
     if flags.hosts {
         let mut records = Vec::new();
-        for host in db.list_hosts()? {
+        for host in &hosts {
+            if !scope.includes_host(&host.id) {
+                continue;
+            }
             let credential = if flags.host_credentials {
                 match read_host_credential(db, local_vault, &host.id, host.credential_storage) {
                     Ok(Some(credential)) => {
@@ -163,8 +190,12 @@ pub fn collect(
     }
 
     if flags.groups {
+        let groups = db.list_groups()?;
         let mut records = Vec::new();
-        for group in db.list_groups()? {
+        for group in &groups {
+            if !scope.includes_group(&group.id) {
+                continue;
+            }
             let (record, hash) = wrap_record(
                 SyncEntityType::Group,
                 group.id.clone(),
@@ -234,6 +265,10 @@ pub fn collect(
     if flags.port_forwards {
         let mut records = Vec::new();
         for rule in db.list_pf_rules(None)? {
+            let in_scope = matches!(rule.host_id.as_deref(), Some(id) if scope.includes_host(id));
+            if !in_scope {
+                continue;
+            }
             let (record, hash) = wrap_record(
                 SyncEntityType::PortForward,
                 rule.id.clone(),
@@ -294,7 +329,10 @@ pub fn collect(
 
     if flags.host_plugins {
         let mut records = Vec::new();
-        for host in db.list_hosts()? {
+        for host in &hosts {
+            if !scope.includes_host(&host.id) {
+                continue;
+            }
             for config in db.list_plugin_configs(&host.id)? {
                 let id = format!("{}:{}", config.host_id, config.plugin_id);
                 let (record, hash) = wrap_record(
@@ -344,14 +382,25 @@ pub fn collect(
         payload.sections.app_settings = Some(record);
     }
 
+    let known_hosts = known_host_ids(&base);
+    let removed_at = chrono::Utc::now().to_rfc3339();
+
     /* Tombstones are published in full on every push rather than tracked per
      * dataset: applying a delete twice is a no-op, and a client that has been
      * offline for months still needs the whole delete set. The table only grows
-     * with real deletions. */
+     * with real deletions.
+     *
+     * A host tombstone is the exception, because the table is global while a
+     * dataset is not: publishing every host delete would let one dataset delete
+     * a host that belongs to another. Only the hosts this dataset has agreed on
+     * before are published. */
     payload.tombstones = db
         .list_sync_tombstones(None)?
         .into_iter()
-        .filter(|tombstone| tombstone_in_scope(tombstone.entity_type, flags))
+        .filter(|tombstone| match tombstone.entity_type {
+            SyncEntityType::Host => flags.hosts && known_hosts.contains(&tombstone.entity_id),
+            entity => tombstone_in_scope(entity, flags),
+        })
         .map(|tombstone| Tombstone {
             entity_type: tombstone.entity_type.as_str().to_string(),
             entity_id: tombstone.entity_id,
@@ -360,11 +409,47 @@ pub fn collect(
         .collect();
     stats.tombstones = payload.tombstones.len();
 
+    /* The other half of the same problem: a host this dataset used to carry and
+     * no longer does. It is still a host on this machine, so it is reported as a
+     * scope removal rather than a deletion, and the other side keeps its own
+     * copy. A host deleted outright is absent from `hosts` and travels as the
+     * tombstone above instead. */
+    if flags.hosts {
+        let live: BTreeSet<&str> = hosts.iter().map(|host| host.id.as_str()).collect();
+        payload.scope_removals = known_hosts
+            .into_iter()
+            .filter(|id| live.contains(id.as_str()) && !scope.host_ids.contains(id))
+            .map(|id| ScopeRemoval {
+                entity_type: SyncEntityType::Host.as_str().to_string(),
+                entity_id: id,
+                removed_at: removed_at.clone(),
+            })
+            .collect();
+    }
+    stats.scope_removals = payload.scope_removals.len();
+    let scope_removals: Vec<String> = payload
+        .scope_removals
+        .iter()
+        .map(|removal| removal.entity_id.clone())
+        .collect();
+
     Ok(Collected {
         payload,
         stats,
         bases,
+        scope_removals,
     })
+}
+
+/* The hosts this dataset has agreed on before: its base state of `host` rows.
+ * That set, not the current host table, is what decides whether a host delete
+ * belongs to this dataset — a delete for a host no dataset ever published is
+ * nothing this client needs to tell anyone about. */
+fn known_host_ids(base: &BaseState) -> BTreeSet<String> {
+    base.keys()
+        .filter(|(entity_type, _)| *entity_type == SyncEntityType::Host)
+        .map(|(_, id)| id.clone())
+        .collect()
 }
 
 /// A delete is only published for content kinds this dataset actually carries.
@@ -402,11 +487,19 @@ fn read_host_credential(
 pub fn credential_preflight(
     db: &HostDb,
     local_vault: &LocalVault,
+    scope: &ResolvedScope,
     flags: SyncContentFlags,
 ) -> Result<(usize, usize, usize), SyncError> {
     let flags = flags.normalized();
     let hosts = db.list_hosts()?;
-    let hosts_in_scope = if flags.hosts { hosts.len() } else { 0 };
+    let hosts_in_scope = if flags.hosts {
+        hosts
+            .iter()
+            .filter(|host| scope.includes_host(&host.id))
+            .count()
+    } else {
+        0
+    };
     if !flags.includes_credentials() {
         return Ok((hosts_in_scope, 0, 0));
     }
@@ -415,6 +508,9 @@ pub fn credential_preflight(
     let mut blocked = 0;
     if flags.host_credentials {
         for host in &hosts {
+            if !scope.includes_host(&host.id) {
+                continue;
+            }
             match read_host_credential(db, local_vault, &host.id, host.credential_storage) {
                 Ok(Some(_)) => readable += 1,
                 Ok(None) => {}

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Activity, Pencil, TerminalSquare, Copy, Trash2, FolderOpen, Waypoints, Columns2, Rows2 } from "lucide-react";
 import type { SavedHost } from "../../types";
 import { CardActionButton, CardActionStrip } from "./CardActionButton";
@@ -44,6 +44,55 @@ export function getHostColor(name: string): string {
     hash = (hash * 31 + name.charCodeAt(i)) | 0;
   }
   return HOST_COLORS[Math.abs(hash) % HOST_COLORS.length];
+}
+
+/* A host claimed read-only by a member dataset (Task 10). The badge names the
+ * dataset; the editor carries the detach affordance. Rendered null when no
+ * manager is known so both card layouts stay byte-identical for local hosts. */
+export function ManagedBadge({ hostId, managers }: {
+  hostId: string;
+  managers: { datasetId: string; name: string }[];
+}) {
+  if (managers.length === 0) return null;
+  const label = managers.length === 1
+    ? `Managed by ${managers[0].name}`
+    : `Managed by ${managers.length} datasets`;
+  return (
+    <span
+      data-testid={`host-card-${hostId}-managed`}
+      title={managers.map((m) => m.name).join(", ")}
+      className="inline-flex items-center px-1 py-px rounded text-[11px] font-semibold tracking-wide leading-none shrink-0 bg-status-warning/15 text-status-warning"
+    >
+      {label}
+    </span>
+  );
+}
+
+/* Per-host manager lookup with a module-level cache: cards mount in bulk and
+ * the claim rarely changes (pull/detach), so repeat mounts must not spam IPC.
+ * A failed probe resolves to unmanaged rather than breaking the card. */
+const managedCache = new Map<string, { datasetId: string; name: string }[]>();
+export function useManagedBy(hostId: string) {
+  const [managers, setManagers] = useState<{ datasetId: string; name: string }[]>(
+    () => managedCache.get(hostId) ?? [],
+  );
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { useSyncStore } = await import("../../stores/sync-store");
+        const rows = await useSyncStore.getState().managedBy(hostId);
+        managedCache.set(hostId, rows);
+        if (!cancelled) setManagers(rows);
+      } catch { /* unmanaged on failure */ }
+    })();
+    return () => { cancelled = true; };
+  }, [hostId]);
+  return managers;
+}
+export function invalidateManagedCache(hostId?: string) {
+  if (hostId) managedCache.delete(hostId);
+  else managedCache.clear();
 }
 
 // ─── Environment badge ────────────────────────────────────────────────────────
@@ -279,6 +328,7 @@ export function HostCard({ host, onConnect, onExplore, onEdit, onDelete, onDupli
                 {ENV_LABELS[env]}
               </span>
             )}
+            <ManagedBadge hostId={host.id} managers={useManagedBy(host.id)} />
           </div>
           {jumpLabel && (
             <div

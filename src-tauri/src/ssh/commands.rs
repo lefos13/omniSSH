@@ -500,16 +500,39 @@ async fn resolve_and_connect_tcp(
     // HEALTH_CHECK_TIMEOUT budget so address count can't multiply the wait.
     let tcp_deadline = started + HEALTH_CHECK_TIMEOUT;
     let mut tcp_error = None;
-    for socket_addr in resolved {
+    for socket_addr in &resolved {
         let remaining = tcp_deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             tcp_error = Some("TCP connection timed out".to_string());
             break;
         }
-        match timeout(remaining, TcpStream::connect(socket_addr)).await {
+        match timeout(remaining, TcpStream::connect(*socket_addr)).await {
             Ok(Ok(stream)) => return Ok(stream),
             Ok(Err(e)) => tcp_error = Some(e.to_string()),
             Err(_) => tcp_error = Some("TCP connection timed out".to_string()),
+        }
+    }
+
+    /* The probe reports what a connection would do, so it has to follow the
+     * same NAT64 fallback the connect path takes: on an IPv6-only network an
+     * IPv4 host is unreachable directly yet fine through the translated
+     * address, and a health dot that contradicts a working terminal is worse
+     * than no dot at all. */
+    if tcp_error
+        .as_deref()
+        .is_some_and(crate::ssh::resolve::is_family_unavailable)
+    {
+        for socket_addr in crate::ssh::resolve::nat64_fallbacks(&resolved).await {
+            let remaining = tcp_deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                tcp_error = Some("TCP connection timed out".to_string());
+                break;
+            }
+            match timeout(remaining, TcpStream::connect(socket_addr)).await {
+                Ok(Ok(stream)) => return Ok(stream),
+                Ok(Err(e)) => tcp_error = Some(e.to_string()),
+                Err(_) => tcp_error = Some("TCP connection timed out".to_string()),
+            }
         }
     }
 

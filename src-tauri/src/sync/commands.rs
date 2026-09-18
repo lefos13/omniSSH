@@ -11,6 +11,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use tracing::instrument;
+use zeroize::Zeroize;
 
 use crate::ssh::manager::SshManager;
 use crate::types::session::AuthMethod;
@@ -27,7 +28,9 @@ use super::dataset::{
 };
 use super::meta::{DatasetMeta, ExistingDataset};
 use super::pull::{pull, SyncPullOutcome};
-use super::push::{preflight, push, SyncPushOutcome, SyncPushPreflight};
+use super::push::{
+    preflight, push, rotate_passphrase, SyncPushOutcome, SyncPushPreflight, SyncRotateOutcome,
+};
 use super::scheduler::{SyncScheduler, SyncStatusSnapshot};
 use super::transport::{RemoteStore, SyncEndpoint};
 use super::SyncError;
@@ -182,21 +185,78 @@ pub async fn sync_delete_dataset(
         .await
         .map_err(|e| SyncError::Database(format!("task panicked: {e}")))?
 }
-
-/// Report how many in-scope credentials can be read right now. Touches no
-/// network and publishes nothing.
+/* Detach is the escape hatch for a member-managed host (AD-9): it clears the
+ * record's sync state, records the opt-out so the next pull neither applies
+ * nor re-manages it, and leaves the local row editable. Re-attach deletes the
+ * opt-out row; the record rejoins the dataset on the following pull. */
 #[tauri::command(rename_all = "camelCase")]
-#[instrument(skip(db, local_vault), fields(dataset_id = %dataset_id))]
+#[instrument(skip(db), fields(dataset_id = %dataset_id, host_id = %host_id))]
+pub async fn sync_detach_host(
+    dataset_id: String,
+    host_id: String,
+    db: State<'_, Arc<HostDb>>,
+) -> Result<(), SyncError> {
+    let db = Arc::clone(&db);
+    tokio::task::spawn_blocking(move || db.detach_sync_host(&dataset_id, &host_id))
+        .await
+        .map_err(|e| SyncError::Database(format!("task panicked: {e}")))??;
+    Ok(())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+#[instrument(skip(db), fields(dataset_id = %dataset_id, host_id = %host_id))]
+pub async fn sync_reattach_host(
+    dataset_id: String,
+    host_id: String,
+    db: State<'_, Arc<HostDb>>,
+) -> Result<(), SyncError> {
+    let db = Arc::clone(&db);
+    tokio::task::spawn_blocking(move || db.reattach_sync_host(&dataset_id, &host_id))
+        .await
+        .map_err(|e| SyncError::Database(format!("task panicked: {e}")))??;
+    Ok(())
+}
+
+/* Which member-role datasets manage a host, for the "managed by <dataset>"
+ * badge. Owner-role state is never reported — the owner stays editable. */
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncManagedBy {
+    pub dataset_id: String,
+    pub name: String,
+}
+#[tauri::command(rename_all = "camelCase")]
+#[instrument(skip(db), fields(host_id = %host_id))]
+pub async fn sync_managed_by(
+    host_id: String,
+    db: State<'_, Arc<HostDb>>,
+) -> Result<Vec<SyncManagedBy>, SyncError> {
+    let db = Arc::clone(&db);
+    tokio::task::spawn_blocking(move || -> Result<Vec<SyncManagedBy>, SyncError> {
+        Ok(db
+            .managed_by_datasets(&host_id)?
+            .into_iter()
+            .map(|(dataset_id, name)| SyncManagedBy { dataset_id, name })
+            .collect())
+    })
+    .await
+    .map_err(|e| SyncError::Database(format!("task panicked: {e}")))?
+}
+
+/// Report how many in-scope credentials can be read right now, and whether the
+/// dataset's account can write to the remote root (AD-8 write probe). Connects
+/// to the endpoint; publishes nothing.
+#[tauri::command(rename_all = "camelCase")]
+#[instrument(skip(ssh, db, local_vault), fields(dataset_id = %dataset_id))]
 pub async fn sync_push_preflight(
     dataset_id: String,
+    ssh: State<'_, SshManager>,
     db: State<'_, Arc<HostDb>>,
     local_vault: State<'_, Arc<LocalVault>>,
 ) -> Result<SyncPushPreflight, SyncError> {
     let db = Arc::clone(&db);
     let local_vault = Arc::clone(&local_vault);
-    tokio::task::spawn_blocking(move || preflight(&db, &local_vault, &dataset_id))
-        .await
-        .map_err(|e| SyncError::Database(format!("task panicked: {e}")))?
+    preflight(ssh.inner(), &db, &local_vault, &dataset_id).await
 }
 
 /// Publish the local dataset to its remote, bumping the generation.
@@ -225,6 +285,27 @@ pub async fn sync_pull(
     let db = Arc::clone(&db);
     let local_vault = Arc::clone(&local_vault);
     pull(ssh.inner(), &db, &local_vault, &dataset_id).await
+}
+
+/// Rotate a dataset's passphrase: rewrap the dataset key under the new
+/// passphrase and publish it as a fresh signed generation (Task 9). Owner
+/// only; members pulling afterwards with the old passphrase get the
+/// wrong-passphrase error, never a corrupt apply.
+#[tauri::command(rename_all = "camelCase")]
+#[instrument(skip(ssh, db, local_vault, new_passphrase), fields(dataset_id = %dataset_id))]
+pub async fn sync_rotate_passphrase(
+    dataset_id: String,
+    mut new_passphrase: String,
+    ssh: State<'_, SshManager>,
+    db: State<'_, Arc<HostDb>>,
+    local_vault: State<'_, Arc<LocalVault>>,
+) -> Result<SyncRotateOutcome, SyncError> {
+    let db = Arc::clone(&db);
+    let local_vault = Arc::clone(&local_vault);
+    let outcome =
+        rotate_passphrase(ssh.inner(), &db, &local_vault, &dataset_id, &new_passphrase).await;
+    new_passphrase.zeroize();
+    outcome
 }
 
 /* The conflict log's wire shape. `db::SyncConflict` is the persistence struct

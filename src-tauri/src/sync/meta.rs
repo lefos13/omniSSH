@@ -42,6 +42,14 @@ pub struct DatasetMeta {
     /// Owner's ed25519 public-key fingerprint, when the dataset is signed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_fingerprint: Option<String>,
+    /* The 32-byte owner public key (base64) the signature below was made
+     * with. Members verify against it after checking it hashes to the pinned
+     * fingerprint: a fingerprint alone cannot verify an ed25519 signature, so
+     * the key must travel in the plaintext metadata beside it. Optional like
+     * the other signing fields, so unsigned datasets serialize exactly as
+     * before. */
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_pubkey: Option<String>,
     /// base64 ed25519 signature over the signing preimage below.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
@@ -126,6 +134,7 @@ mod tests {
             updated_at: "2026-09-18T10:00:00Z".into(),
             writer_client_id: "client-7".into(),
             owner_fingerprint: None,
+            owner_pubkey: None,
             signature: None,
         }
     }

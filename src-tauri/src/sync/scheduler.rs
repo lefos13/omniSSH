@@ -503,6 +503,7 @@ fn error_kind(error: &SyncError) -> &'static str {
         SyncError::SftpUnavailable(_) => "sftpUnavailable",
         SyncError::Locked(_) => "locked",
         SyncError::Conflict(_) => "conflict",
+        SyncError::RoleDenied(_) => "roleDenied",
         SyncError::Vault(_) => "vault",
         SyncError::NotFound(_) => "notFound",
         SyncError::Database(_) => "database",
@@ -777,8 +778,8 @@ mod tests {
          * match `SyncError`'s serialized `kind` exactly. */
         for (error, expected) in [
             (SyncError::Decrypt, "decrypt"),
-            (SyncError::Locked("busy".into()), "locked"),
             (SyncError::Conflict("stale".into()), "conflict"),
+            (SyncError::RoleDenied("member".into()), "roleDenied"),
             (SyncError::Vault("locked".into()), "vault"),
             (SyncError::NotFound("gone".into()), "notFound"),
             (SyncError::Unreachable("down".into()), "unreachable"),

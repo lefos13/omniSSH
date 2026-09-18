@@ -7,6 +7,9 @@ import {
   DEFAULT_SYNC_ENDPOINT,
   useSyncStore,
 } from "../../stores/sync-store";
+import { useGroupsStore } from "../../stores/groups-store";
+import { useHostsStore } from "../../stores/hosts-store";
+import type { SavedHost, HostGroup } from "../../types";
 import type {
   SyncConflictEntry,
   SyncConnectionTest,
@@ -75,6 +78,61 @@ function fillDatasetForm(datasetName = "NOVA") {
   });
 }
 
+/** A host the scope pickers can list, with only the fields they read. */
+function makeHost(id: string, label: string, groupId: string | null): SavedHost {
+  return {
+    id,
+    label,
+    host: `${label}.example.com`,
+    port: 22,
+    username: "root",
+    auth_type: "password",
+    group_id: groupId,
+    created_at: "2026-09-01T00:00:00Z",
+    updated_at: "2026-09-01T00:00:00Z",
+    key_path: null,
+    color: null,
+    notes: null,
+    environment: null,
+    os_type: null,
+    startup_command: null,
+    proxy_jump: null,
+    proxy_jump_host_id: null,
+    start_directory: null,
+    keep_alive_interval: null,
+    default_shell: null,
+    font_size: null,
+    terminal_theme: null,
+    last_connected_at: null,
+    connection_count: null,
+  };
+}
+
+function makeGroup(id: string, name: string, sortOrder: number): HostGroup {
+  return {
+    id,
+    name,
+    color: "#6366f1",
+    icon: null,
+    sort_order: sortOrder,
+    default_username: null,
+    created_at: "2026-09-01T00:00:00Z",
+    updated_at: "2026-09-01T00:00:00Z",
+  };
+}
+
+/* Two groups, three hosts: g-nova holds two of them, g-bank one — enough for a
+ * count that changes with the selection rather than with the host list. */
+const scopeGroups: HostGroup[] = [
+  makeGroup("g-nova", "NOVA", 0),
+  makeGroup("g-bank", "Bank of Cyprus", 1),
+];
+const scopeHosts: SavedHost[] = [
+  makeHost("h-1", "nova-web", "g-nova"),
+  makeHost("h-2", "nova-db", "g-nova"),
+  makeHost("h-3", "bank-core", "g-bank"),
+];
+
 /** Mounts Settings ▸ Sync and waits for the on-mount dataset listing to settle. */
 async function openSyncSection() {
   render(<SettingsPage />);
@@ -103,6 +161,8 @@ const savedDataset: SyncDatasetSummary = {
   role: "owner",
   contentFlags: { ...DEFAULT_SYNC_CONTENT_FLAGS },
   scopeMode: "all",
+  scopeMemberIds: [],
+  scopeHostCount: 12,
   autoSync: false,
   pullIntervalSecs: 0,
   pushDebounceSecs: 0,
@@ -126,6 +186,7 @@ const preflight: SyncPushPreflight = {
   hostsInScope: 12,
   credentialsReadable: 3,
   credentialsBlocked: 0,
+  remoteWritable: true,
 };
 
 const outcome: SyncPushOutcome = {
@@ -140,6 +201,7 @@ const outcome: SyncPushOutcome = {
   hostPlugins: 5,
   appSettings: true,
   tombstones: 2,
+  scopeRemovals: 1,
   credentialsIncluded: 3,
 };
 
@@ -226,6 +288,10 @@ describe("SettingsPage dataset sync", () => {
     } as unknown as CanvasRenderingContext2D);
     invoke.mockReset();
     mockCommands({ sync_list_datasets: () => [] });
+    /* The scope pickers read the shared hosts and groups stores, so a test that
+     * populated them must not leak into the next one. */
+    useHostsStore.setState({ hosts: [], loading: false, error: null });
+    useGroupsStore.setState({ groups: [], loading: false, error: null });
     useSyncStore.setState({
       endpoint: { ...DEFAULT_SYNC_ENDPOINT },
       testing: false,
@@ -392,7 +458,11 @@ describe("SettingsPage dataset sync", () => {
         port: 2299,
         username: "testuser",
         remotePath: "/config/omnissh-sync",
+        role: "owner",
         contentFlags: { ...DEFAULT_SYNC_CONTENT_FLAGS, hostCredentials: true },
+        // A new dataset carries every host until the user narrows it.
+        scopeMode: "all",
+        scopeMemberIds: [],
         // Saving must never switch automatic sync on for the user.
         autoSync: false,
         pullIntervalSecs: 0,
@@ -512,6 +582,9 @@ describe("SettingsPage dataset sync", () => {
         username: "testuser",
         remotePath: "/tmp",
         contentFlags: { ...DEFAULT_SYNC_CONTENT_FLAGS },
+        // The scope the row was saved with travels back unchanged.
+        scopeMode: "all",
+        scopeMemberIds: [],
         // The fields the form does not collect travel back unchanged.
         role: "owner",
         autoSync: false,
@@ -679,6 +752,236 @@ describe("SettingsPage dataset sync", () => {
     expect(second).toHaveTextContent("Bank of Cyprus");
     expect(second).toHaveTextContent("Member — pull only");
     expect(second).toHaveTextContent("never synced");
+
+    // What the dataset carries, from the summary rather than from the form.
+    expect(within(row).getByTestId("settings-sync-scope-summary-ds-1")).toHaveTextContent(
+      "Scope: all hosts · 12 hosts in scope",
+    );
+  });
+
+  it("counts the hosts a selection resolves to and sends it with the dataset", async () => {
+    mockCommands({
+      sync_list_datasets: () => [],
+      list_groups: () => scopeGroups,
+      list_hosts: () => scopeHosts,
+      sync_save_dataset: () => saveOutcome,
+    });
+    await openSyncSection();
+
+    fillDatasetForm();
+    // `all` counts every host without asking for a selection.
+    await waitFor(() =>
+      expect(screen.getByTestId("settings-sync-scope-count")).toHaveTextContent("3 hosts in scope"),
+    );
+    expect(screen.queryByTestId("settings-sync-scope-picker-groups")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("settings-sync-scope-groups"));
+    const picker = await screen.findByTestId("settings-sync-scope-picker-groups");
+    // An empty selection is refused before the backend is asked.
+    expect(screen.getByTestId("settings-sync-scope-count")).toHaveTextContent(
+      "This dataset needs a scope.",
+    );
+    fireEvent.click(screen.getByTestId("settings-sync-save"));
+    expect(commandCalls("sync_save_dataset")).toHaveLength(0);
+
+    fireEvent.click(await within(picker).findByTestId("settings-sync-scope-groups-g-nova"));
+    await waitFor(() =>
+      expect(screen.getByTestId("settings-sync-scope-count")).toHaveTextContent("2 hosts in scope"),
+    );
+    fireEvent.click(screen.getByTestId("settings-sync-save"));
+    await waitFor(() => expect(commandCalls("sync_save_dataset")).toHaveLength(1));
+    expect(commandCalls("sync_save_dataset")[0][1]).toMatchObject({
+      dataset: { scopeMode: "groups", scopeMemberIds: ["g-nova"] },
+    });
+  });
+
+  it("narrows a dataset to explicit hosts and back to all of them", async () => {
+    mockCommands({
+      sync_list_datasets: () => [],
+      list_groups: () => scopeGroups,
+      list_hosts: () => scopeHosts,
+      sync_save_dataset: () => saveOutcome,
+    });
+    await openSyncSection();
+
+    fillDatasetForm();
+    fireEvent.click(screen.getByTestId("settings-sync-scope-hosts"));
+    const picker = await screen.findByTestId("settings-sync-scope-picker-hosts");
+    fireEvent.click(await within(picker).findByTestId("settings-sync-scope-hosts-h-3"));
+    expect(screen.getByTestId("settings-sync-scope-count")).toHaveTextContent("1 host in scope");
+
+    /* Switching back to `all` drops the selection: a stale host id must never
+     * be sent as the scope of a dataset that carries everything. */
+    fireEvent.click(screen.getByTestId("settings-sync-scope-all"));
+    expect(screen.queryByTestId("settings-sync-scope-picker-hosts")).not.toBeInTheDocument();
+    expect(screen.getByTestId("settings-sync-scope-count")).toHaveTextContent("3 hosts in scope");
+    fireEvent.click(screen.getByTestId("settings-sync-save"));
+    await waitFor(() => expect(commandCalls("sync_save_dataset")).toHaveLength(1));
+    expect(commandCalls("sync_save_dataset")[0][1]).toMatchObject({
+      dataset: { scopeMode: "all", scopeMemberIds: [] },
+    });
+  });
+
+  it("preloads the saved scope for editing and counts it against this machine's hosts", async () => {
+    const scopedDataset: SyncDatasetSummary = {
+      ...savedDataset,
+      scopeMode: "groups",
+      scopeMemberIds: ["g-nova"],
+      scopeHostCount: 2,
+    };
+    mockCommands({
+      sync_list_datasets: () => [scopedDataset],
+      list_groups: () => scopeGroups,
+      list_hosts: () => scopeHosts,
+      sync_save_dataset: () => saveOutcome,
+    });
+    await openSyncSection();
+
+    expect(
+      within(await screen.findByTestId("settings-sync-dataset-ds-1")).getByTestId(
+        "settings-sync-scope-summary-ds-1",
+      ),
+    ).toHaveTextContent("Scope: selected groups · 2 hosts in scope");
+
+    const row = screen.getByTestId("settings-sync-dataset-ds-1");
+    fireEvent.click(within(row).getByTestId("settings-sync-edit"));
+
+    expect(screen.getByTestId("settings-sync-scope-groups")).toBeChecked();
+    expect(screen.getByTestId("settings-sync-scope-all")).not.toBeChecked();
+    expect(screen.getByTestId("settings-sync-role-owner")).toBeChecked();
+    const picker = await screen.findByTestId("settings-sync-scope-picker-groups");
+    expect(await within(picker).findByTestId("settings-sync-scope-groups-g-nova")).toBeChecked();
+    expect(within(picker).getByTestId("settings-sync-scope-groups-g-bank")).not.toBeChecked();
+    await waitFor(() =>
+      expect(screen.getByTestId("settings-sync-scope-count")).toHaveTextContent("2 hosts in scope"),
+    );
+
+    // The edited selection travels with the update.
+    fireEvent.click(within(picker).getByTestId("settings-sync-scope-groups-g-bank"));
+    fireEvent.change(screen.getByTestId("settings-sync-passphrase"), {
+      target: { value: PASSPHRASE },
+    });
+    fireEvent.change(screen.getByTestId("settings-sync-password"), {
+      target: { value: "testpass" },
+    });
+    fireEvent.click(screen.getByTestId("settings-sync-save"));
+
+    await waitFor(() => expect(commandCalls("sync_save_dataset")).toHaveLength(1));
+    expect(commandCalls("sync_save_dataset")[0][1]).toMatchObject({
+      dataset: { id: "ds-1", scopeMode: "groups", scopeMemberIds: ["g-nova", "g-bank"] },
+    });
+  });
+
+  it("drops a selected record that no longer exists instead of saving a dead scope", async () => {
+    const stale: SyncDatasetSummary = {
+      ...savedDataset,
+      scopeMode: "hosts",
+      scopeMemberIds: ["h-1", "h-deleted"],
+      scopeHostCount: 1,
+    };
+    mockCommands({
+      sync_list_datasets: () => [stale],
+      list_groups: () => scopeGroups,
+      list_hosts: () => scopeHosts,
+      sync_save_dataset: () => saveOutcome,
+    });
+    await openSyncSection();
+
+    fireEvent.click(
+      within(await screen.findByTestId("settings-sync-dataset-ds-1")).getByTestId(
+        "settings-sync-edit",
+      ),
+    );
+    // Only the host that still exists is counted, so the save is allowed.
+    await waitFor(() =>
+      expect(screen.getByTestId("settings-sync-scope-count")).toHaveTextContent("1 host in scope"),
+    );
+
+    fireEvent.change(screen.getByTestId("settings-sync-passphrase"), {
+      target: { value: PASSPHRASE },
+    });
+    fireEvent.change(screen.getByTestId("settings-sync-password"), {
+      target: { value: "testpass" },
+    });
+    fireEvent.click(screen.getByTestId("settings-sync-save"));
+
+    await waitFor(() => expect(commandCalls("sync_save_dataset")).toHaveLength(1));
+    expect(commandCalls("sync_save_dataset")[0][1]).toMatchObject({
+      dataset: { scopeMode: "hosts", scopeMemberIds: ["h-1"] },
+    });
+  });
+  it("hides the scope section for a member and restores it for an owner", async () => {
+    mockCommands({ sync_list_datasets: () => [] });
+    await openSyncSection();
+    fillDatasetForm();
+    // The owner form carries the push-oriented scope section.
+    expect(screen.getByTestId("settings-sync-scope-all")).toBeInTheDocument();
+    expect(screen.getByTestId("settings-sync-scope-count")).toBeInTheDocument();
+    expect(screen.queryByTestId("settings-sync-member-note")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("settings-sync-role-member"));
+    // A member never pushes, so the scope section gives way to the explainer.
+    expect(screen.queryByTestId("settings-sync-scope-all")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("settings-sync-scope-count")).not.toBeInTheDocument();
+    expect(screen.getByTestId("settings-sync-member-note")).toHaveTextContent(
+      "are the owner's call",
+    );
+    // Content kinds stay: a pull applies only the kinds this machine enables.
+    expect(screen.getByTestId("settings-sync-content-hosts")).toBeInTheDocument();
+    // The role picker, endpoint, passphrase, and save stay on the form.
+    expect(screen.getByTestId("settings-sync-role-member")).toBeChecked();
+    expect(screen.getByTestId("settings-sync-name")).toBeInTheDocument();
+    expect(screen.getByTestId("settings-sync-passphrase")).toBeInTheDocument();
+    expect(screen.getByTestId("settings-sync-save")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("settings-sync-role-owner"));
+    // Switching back restores the scope section and drops the explainer.
+    expect(screen.getByTestId("settings-sync-scope-all")).toBeInTheDocument();
+    expect(screen.getByTestId("settings-sync-scope-count")).toBeInTheDocument();
+    expect(screen.queryByTestId("settings-sync-member-note")).not.toBeInTheDocument();
+  });
+
+  it("sends content flags and an all scope with a member save", async () => {
+    mockCommands({
+      sync_list_datasets: () => [],
+      sync_save_dataset: () => saveOutcome,
+    });
+    await openSyncSection();
+    fillDatasetForm();
+    fireEvent.click(screen.getByTestId("settings-sync-role-member"));
+    fireEvent.click(screen.getByTestId("settings-sync-save"));
+    await waitFor(() => expect(commandCalls("sync_save_dataset")).toHaveLength(1));
+    expect(commandCalls("sync_save_dataset")[0][1]).toMatchObject({
+      dataset: {
+        name: "NOVA",
+        role: "member",
+        scopeMode: "all",
+        scopeMemberIds: [],
+        contentFlags: { ...DEFAULT_SYNC_CONTENT_FLAGS },
+      },
+    });
+  });
+
+  it("never sends a hidden scope with a member save", async () => {
+    mockCommands({
+      sync_list_datasets: () => [],
+      list_groups: () => scopeGroups,
+      list_hosts: () => scopeHosts,
+      sync_save_dataset: () => saveOutcome,
+    });
+    await openSyncSection();
+    fillDatasetForm();
+    /* An empty group selection refuses an owner save — and the member switch
+     * then hides the picker the user can no longer fix. The member save must
+     * therefore travel as `all` instead of a stale, empty selection. */
+    fireEvent.click(screen.getByTestId("settings-sync-scope-groups"));
+    expect(screen.getByTestId("settings-sync-scope-count")).toHaveTextContent(
+      "This dataset needs a scope.",
+    );
+    fireEvent.click(screen.getByTestId("settings-sync-role-member"));
+    fireEvent.click(screen.getByTestId("settings-sync-save"));
+    await waitFor(() => expect(commandCalls("sync_save_dataset")).toHaveLength(1));
+    expect(commandCalls("sync_save_dataset")[0][1]).toMatchObject({
+      dataset: { role: "member", scopeMode: "all", scopeMemberIds: [] },
+    });
   });
 
   it("pushes a dataset and renders the outcome counts", async () => {
@@ -697,6 +1000,9 @@ describe("SettingsPage dataset sync", () => {
     expect(result).toHaveTextContent("12 hosts");
     expect(result).toHaveTextContent("3 credentials");
     expect(result).toHaveTextContent("2 deletions");
+    /* A host leaving the scope is named apart from a deletion, because nothing
+     * was deleted on the other machine. */
+    expect(result).toHaveTextContent("1 host left the scope");
     expect(result).toHaveTextContent("app settings");
     expect(commandCalls("sync_push")[0][1]).toEqual({ datasetId: "ds-1" });
   });
@@ -828,9 +1134,10 @@ describe("SettingsPage dataset sync", () => {
     await waitFor(() => expect(commandCalls("sync_list_datasets")).toHaveLength(2));
     expect(commandCalls("sync_list_conflicts")[0][1]).toEqual({ datasetId: "ds-1", limit: 20 });
     // A pull rewrites hosts and groups, so the stores the rest of the app reads
-    // must be reloaded without a restart.
-    await waitFor(() => expect(commandCalls("list_hosts")).toHaveLength(1));
-    expect(commandCalls("list_groups")).toHaveLength(1);
+    // must be reloaded without a restart. The scope pickers already loaded both
+    // stores once on mount, so the pull reload is the second read.
+    await waitFor(() => expect(commandCalls("list_hosts")).toHaveLength(2));
+    expect(commandCalls("list_groups")).toHaveLength(2);
   });
 
   it("renders each conflict with its resolution and both timestamps", async () => {
@@ -1054,5 +1361,95 @@ describe("SettingsPage dataset sync", () => {
     expect(within(row).getByTestId("settings-sync-phase-ds-1")).toHaveTextContent(
       "Pulling changes from the server",
     );
+  });
+
+  it("routes a push and its outcome to the selected dataset row", async () => {
+    const secondDataset: SyncDatasetSummary = {
+      ...savedDataset,
+      id: "ds-2",
+      name: "Bank of Cyprus",
+      remotePath: "/config/ds-b",
+    };
+    mockCommands({
+      sync_list_datasets: () => [savedDataset, secondDataset],
+      sync_push_preflight: () => ({ ...preflight, datasetId: "ds-2" }),
+      sync_push: () => ({ ...outcome, datasetId: "ds-2", generation: 5 }),
+    });
+    await openSyncSection();
+
+    const first = await screen.findByTestId("settings-sync-dataset-ds-1");
+    const second = screen.getByTestId("settings-sync-dataset-ds-2");
+    fireEvent.click(within(second).getByTestId("settings-sync-push"));
+
+    expect(await within(second).findByTestId("settings-sync-push-result")).toHaveTextContent(
+      "Pushed generation 5",
+    );
+    expect(commandCalls("sync_push")[0][1]).toEqual({ datasetId: "ds-2" });
+    expect(within(first).queryByTestId("settings-sync-push-result")).not.toBeInTheDocument();
+  });
+
+  it("offers no push affordance on a member row", async () => {
+    const memberDataset: SyncDatasetSummary = { ...savedDataset, role: "member" };
+    mockCommands({ sync_list_datasets: () => [memberDataset] });
+    await openSyncSection();
+
+    const row = await screen.findByTestId("settings-sync-dataset-ds-1");
+    expect(within(row).queryByTestId("settings-sync-push")).not.toBeInTheDocument();
+    expect(within(row).getByTestId("settings-sync-pull")).toBeInTheDocument();
+    expect(row).toHaveTextContent("Member — pull only");
+  });
+  it("warns when a member dataset's remote is still writable", async () => {
+    const memberDataset: SyncDatasetSummary = { ...savedDataset, role: "member" };
+    mockCommands({
+      sync_list_datasets: () => [memberDataset],
+      sync_pull: () => pullOutcome,
+      sync_list_conflicts: () => [],
+      list_hosts: () => [],
+      list_groups: () => [],
+      sync_push_preflight: () => preflight,
+    });
+    await openSyncSection();
+
+    const row = await screen.findByTestId("settings-sync-dataset-ds-1");
+    fireEvent.click(within(row).getByTestId("settings-sync-pull"));
+    await within(row).findByTestId("settings-sync-pull-result");
+
+    /* A pull on a member row probes writability, so the row can say when the
+     * server is not enforcing the pull-only role. */
+    const warning = await within(row).findByTestId("settings-sync-member-writable-warning");
+    expect(warning).toHaveTextContent("read-only SSH account");
+  });
+
+  it("removes only the selected dataset and exits stale edit mode", async () => {
+    const secondDataset: SyncDatasetSummary = {
+      ...savedDataset,
+      id: "ds-2",
+      name: "Bank of Cyprus",
+      remotePath: "/config/ds-b",
+    };
+    mockCommands({
+      sync_list_datasets: () => [savedDataset, secondDataset],
+      sync_delete_dataset: () => null,
+    });
+    await openSyncSection();
+
+    const first = await screen.findByTestId("settings-sync-dataset-ds-1");
+    fireEvent.click(within(first).getByTestId("settings-sync-edit"));
+    expect(screen.getByTestId("settings-sync-editing")).toHaveTextContent("Editing “NOVA”");
+    fireEvent.click(within(first).getByTestId("settings-sync-remove"));
+
+    const dialog = await screen.findByRole("dialog", { name: "Remove this dataset?" });
+    expect(dialog).toHaveTextContent("Your local hosts are kept");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("settings-sync-dataset-ds-1")).not.toBeInTheDocument();
+    });
+    expect(screen.getByTestId("settings-sync-dataset-ds-2")).toBeInTheDocument();
+    expect(screen.queryByTestId("settings-sync-editing")).not.toBeInTheDocument();
+    expect(screen.getByTestId("settings-sync-save")).toHaveTextContent("Save dataset");
+    expect(screen.getByTestId("settings-sync-name")).toHaveValue("");
+    expect(commandCalls("sync_delete_dataset")[0][1]).toEqual({ datasetId: "ds-1" });
+    expect(commandCalls("delete_host")).toHaveLength(0);
   });
 });

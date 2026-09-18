@@ -626,11 +626,52 @@ impl SshManager {
     ) -> EstablishFuture<'_> {
         Box::pin(async move {
             let Some(jump) = config.jump_host.as_deref() else {
-                // Direct connection — no tunnel.
-                let addr = format!("{}:{}", config.host, config.port);
-                let mut handle = client::connect(russh_config, &addr, SshClientHandler)
-                    .await
-                    .map_err(|e| SshError::ConnectionFailed(e.to_string()))?;
+                /* Direct connection — no tunnel. The address is resolved
+                 * through the platform resolver rather than handed to russh as
+                 * a string: a literal IPv4 host would otherwise be used
+                 * verbatim and fail outright on an IPv6-only/NAT64 network
+                 * (see `ssh::resolve`). Each candidate is tried in the order
+                 * the resolver returned, so a machine with a working family
+                 * still connects on the first attempt. */
+                let targets =
+                    crate::ssh::resolve::resolve_targets(&config.host, config.port).await?;
+                let mut last_error: Option<String> = None;
+                let mut connected = None;
+                for target in &targets {
+                    match client::connect(russh_config.clone(), *target, SshClientHandler).await {
+                        Ok(handle) => {
+                            connected = Some(handle);
+                            break;
+                        }
+                        Err(e) => last_error = Some(e.to_string()),
+                    }
+                }
+                /* Every candidate failed because its family has no route —
+                 * an IPv6-only network answering an IPv4 destination. The
+                 * host is still reachable through NAT64, so retry with the
+                 * translated address before reporting a failure the user can
+                 * do nothing about. */
+                if connected.is_none()
+                    && last_error
+                        .as_deref()
+                        .is_some_and(crate::ssh::resolve::is_family_unavailable)
+                {
+                    for target in crate::ssh::resolve::nat64_fallbacks(&targets).await {
+                        match client::connect(russh_config.clone(), target, SshClientHandler).await
+                        {
+                            Ok(handle) => {
+                                connected = Some(handle);
+                                break;
+                            }
+                            Err(e) => last_error = Some(e.to_string()),
+                        }
+                    }
+                }
+                let mut handle = connected.ok_or_else(|| {
+                    SshError::ConnectionFailed(
+                        last_error.unwrap_or_else(|| "could not reach the host".to_string()),
+                    )
+                })?;
                 Self::authenticate_handle(&mut handle, config).await?;
                 return Ok((handle, Vec::new()));
             };

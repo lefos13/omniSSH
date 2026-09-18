@@ -240,7 +240,12 @@ export function HostEditModal() {
   const { checkVault, renderVaultDialogs } = useVaultGuard();
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [revealDialogOpen, setRevealDialogOpen] = useState(false);
-
+  // Which member datasets claim this host as read-only (Task 10). Empty for
+  // new hosts and for hosts no member dataset manages; the editor locks while
+  // it is non-empty.
+  const [managedBy, setManagedBy] = useState<{ datasetId: string; name: string }[]>([]);
+  const [detachConfirm, setDetachConfirm] = useState<string | null>(null);
+  const [detaching, setDetaching] = useState(false);
   const firstInputRef = useRef<HTMLInputElement>(null);
 
   const isOpen = editingHostId !== null;
@@ -289,6 +294,9 @@ export function HostEditModal() {
     setTunnelEnabled(false);
     setShowNewPassword(false);
     setRevealDialogOpen(false);
+    setManagedBy([]);
+    setDetachConfirm(null);
+    setDetaching(false);
 
     // Load groups + hosts (for the tunnel dropdown) in parallel
     loadGroups().catch(() => {/* non-fatal */});
@@ -324,6 +332,13 @@ export function HostEditModal() {
         setHasSavedCred(hasCred);
         setCredentialStorage(host.credential_storage ?? "keychain");
         setTunnelEnabled(!!host.proxy_jump_host_id);
+        /* A member dataset's hosts are read-only here: the next pull would
+         * overwrite any local edit, so the editor locks and offers detach. */
+        const managers = await invoke<{ datasetId: string; name: string }[]>(
+          "sync_managed_by",
+          { hostId: editingHostId },
+        ).catch(() => []);
+        setManagedBy(managers);
       } catch (err) {
         setError(extractError(err, "Failed to load host data"));
       } finally {
@@ -484,20 +499,29 @@ export function HostEditModal() {
   };
 
   // ── Save ────────────────────────────────────────────────────────────────────
+  /* A managed host saves its credential and nothing else: the row belongs to
+   * the dataset (the backend refuses `save_host` for it), while the secret is
+   * machine-local and is exactly what a dataset published without credentials
+   * leaves missing. Detaching to type a password would drop the host out of
+   * sync, which is a much bigger hammer than the job needs. */
   const handleSave = async () => {
-    const validationError = validate();
-    if (validationError) { setError(validationError); return; }
+    if (!managed) {
+      const validationError = validate();
+      if (validationError) { setError(validationError); return; }
+    }
     if (!await prepareCredentialStorage(handleSave)) return;
 
     setSaving(true);
     setError(null);
     try {
-      const host = buildHost();
-      await saveHost(host);
-
       const { invoke } = await import("@tauri-apps/api/core");
-      await syncVaultCredential(host.id, invoke as (cmd: string, args?: Record<string, unknown>) => Promise<unknown>);
-      await applyCredentialStorage(host.id, invoke as (cmd: string, args?: Record<string, unknown>) => Promise<unknown>);
+      const typedInvoke = invoke as (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+      const hostId = managed ? (originalHost?.id ?? editingHostId ?? "") : buildHost().id;
+      if (!managed) {
+        await saveHost(buildHost());
+      }
+      await syncVaultCredential(hostId, typedInvoke);
+      await applyCredentialStorage(hostId, typedInvoke);
 
       close();
     } catch (err) {
@@ -507,17 +531,51 @@ export function HostEditModal() {
     }
   };
 
+  /* Detach drops one dataset's claim on this host: the row stays, its sync
+   * state for that dataset goes, and an opt-out keeps the next pull from
+   * re-managing it. The modal then unlocks for local editing. */
+  const handleDetachConfirmed = async () => {
+    const target = detachConfirm;
+    if (!target || !editingHostId) return;
+    setDetaching(true);
+    setError(null);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("sync_detach_host", { datasetId: target, hostId: editingHostId });
+      const managers = await invoke<{ datasetId: string; name: string }[]>(
+        "sync_managed_by",
+        { hostId: editingHostId },
+      ).catch(() => []);
+      setManagedBy(managers);
+      /* The dashboard cards cache this answer; a detach must clear it so the
+       * badge disappears without a reload. */
+      const { invalidateManagedCache } = await import("./HostCard");
+      invalidateManagedCache(editingHostId);
+      setDetachConfirm(null);
+    } catch (err) {
+      setError(extractError(err, "Failed to detach the host from the dataset"));
+    } finally {
+      setDetaching(false);
+    }
+  };
+
   // ── Connect (save → vault → connect_saved_host) ─────────────────────────────
   const handleConnect = async () => {
-    const validationError = validate();
-    if (validationError) { setError(validationError); return; }
+    if (!managed) {
+      const validationError = validate();
+      if (validationError) { setError(validationError); return; }
+    }
     if (!await prepareCredentialStorage(handleConnect)) return;
 
     setConnecting(true);
     setError(null);
     try {
-      const host = buildHost();
-      await saveHost(host);
+      /* A managed host connects with the row the dataset published: only the
+       * credential this machine supplies is written first. */
+      const host = managed && originalHost ? originalHost : buildHost();
+      if (!managed) {
+        await saveHost(host);
+      }
 
       const { invoke } = await import("@tauri-apps/api/core");
       const typedInvoke = invoke as (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
@@ -573,9 +631,13 @@ export function HostEditModal() {
   };
 
   if (!isOpen) return null;
-
   const isBusy = saving || connecting;
-
+  const managed = managedBy.length > 0;
+  /* A managed host's synced fields belong to the dataset — the next pull would
+   * overwrite a local edit — but its credential does not travel unless the
+   * owner enabled credential sync, so the password stays editable and saving a
+   * managed host writes only that. */
+  const fieldsLocked = isBusy || managed;
   // ── Shared input class ───────────────────────────────────────────────────────
   const inputClass =
     "w-full rounded-lg bg-bg-base border border-border px-3 py-2 text-[length:var(--text-sm)] text-text-primary placeholder:text-text-muted outline-none focus:border-border-focus focus:ring-2 focus:ring-ring transition-[border-color,box-shadow] duration-[var(--duration-fast)]";
@@ -621,10 +683,10 @@ export function HostEditModal() {
       footer={
         !deleteConfirm ? (
           <>
-            <button type="button" data-testid="host-modal-cancel" onClick={close} disabled={isBusy} className={BTN_GHOST}>
+            <button type="button" data-testid="host-modal-cancel" onClick={close} disabled={fieldsLocked} className={BTN_GHOST}>
               Cancel
             </button>
-            <button type="button" data-testid="host-modal-save" onClick={handleSave} disabled={isBusy || loadingHost} className={BTN_SECONDARY}>
+            <button type="button" data-testid="host-modal-save" onClick={handleSave} disabled={isBusy || loadingHost} title={managed ? "A managed host saves only its credential" : undefined} className={BTN_SECONDARY}>
               {saving ? "Saving…" : "Save"}
             </button>
             <button type="button" data-testid="host-modal-connect" onClick={handleConnect} disabled={isBusy || loadingHost} className={BTN_PRIMARY}>
@@ -639,10 +701,62 @@ export function HostEditModal() {
             <LoadingSkeleton />
           ) : (
             <div className="flex flex-col gap-3.5">
+              {managedBy.length > 0 && (
+                <div
+                  data-testid="host-modal-managed-banner"
+                  role="note"
+                  className="flex flex-col gap-2 rounded-lg border border-status-warning/30 bg-status-warning/10 px-3 py-2.5"
+                >
+                  <p className="text-[length:var(--text-xs)] text-text-secondary">
+                    Managed by {managedBy.map((m) => `“${m.name}”`).join(", ")} — its details are
+                    read-only because the next pull would overwrite local edits. The password is
+                    yours to set: it stays on this computer and Save writes only that. Detach to
+                    edit everything else.
+                  </p>
+                  {managedBy.map((m) => (
+                    <div key={m.datasetId} className="flex items-center gap-2">
+                      {detachConfirm === m.datasetId ? (
+                        <>
+                          <span className="text-[length:var(--text-xs)] text-text-primary">
+                            Detach from “{m.name}”? The host stays; future pulls leave it alone.
+                          </span>
+                          <button
+                            type="button"
+                            data-testid={`host-modal-detach-confirm-${m.datasetId}`}
+                            onClick={handleDetachConfirmed}
+                            disabled={detaching}
+                            className={BTN_SECONDARY}
+                          >
+                            {detaching ? "Detaching…" : "Detach"}
+                          </button>
+                          <button
+                            type="button"
+                            data-testid={`host-modal-detach-cancel-${m.datasetId}`}
+                            onClick={() => setDetachConfirm(null)}
+                            disabled={detaching}
+                            className={BTN_GHOST}
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          data-testid={`host-modal-detach-${m.datasetId}`}
+                          onClick={() => setDetachConfirm(m.datasetId)}
+                          disabled={detaching}
+                          className={BTN_SECONDARY}
+                        >
+                          Detach from “{m.name}”
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {/* ════════════════ CONNECTION ════════════════ */}
               <SectionHeader>Connection</SectionHeader>
-
               {/* Label */}
               <div>
                 <label htmlFor="hem-label" className={labelClass}>
@@ -657,7 +771,7 @@ export function HostEditModal() {
                   value={form.label}
                   onChange={(e) => setField("label", e.target.value)}
                   placeholder="e.g., Production Server"
-                  disabled={isBusy}
+                  disabled={fieldsLocked}
                   className={inputClass}
                 />
               </div>
@@ -675,7 +789,7 @@ export function HostEditModal() {
                     value={form.host}
                     onChange={(e) => setField("host", e.target.value)}
                     placeholder="192.168.1.1 or hostname"
-                    disabled={isBusy}
+                    disabled={fieldsLocked}
                     className={`${inputClass} font-mono`}
                   />
                 </div>
@@ -691,7 +805,7 @@ export function HostEditModal() {
                     max={65535}
                     value={form.port}
                     onChange={(e) => setField("port", e.target.value)}
-                    disabled={isBusy}
+                    disabled={fieldsLocked}
                     className={`${inputClass} font-mono`}
                   />
                 </div>
@@ -709,7 +823,7 @@ export function HostEditModal() {
                   value={form.username}
                   onChange={(e) => setField("username", e.target.value)}
                   placeholder="root"
-                  disabled={isBusy}
+                  disabled={fieldsLocked}
                   className={`${inputClass} font-mono`}
                 />
               </div>
@@ -725,7 +839,7 @@ export function HostEditModal() {
                     data-testid="host-modal-auth"
                     value={form.authType}
                     onChange={(v) => setField("authType", v as AuthType)}
-                    disabled={isBusy}
+                    disabled={fieldsLocked}
                     options={[
                       { value: "password", label: "Password" },
                       { value: "privateKey", label: "Private Key" },
@@ -742,7 +856,7 @@ export function HostEditModal() {
                     value={form.groupId}
                     onChange={(val) => setField("groupId", val)}
                     groups={groups}
-                    disabled={isBusy}
+                    disabled={fieldsLocked}
                     inputClass={inputClass}
                   />
                 </div>
@@ -827,7 +941,7 @@ export function HostEditModal() {
                             data-testid="host-modal-keypath-select"
                             value={form.keyPath}
                             onChange={(v) => setField("keyPath", v)}
-                            disabled={isBusy}
+                            disabled={fieldsLocked}
                             placeholder="Select a key..."
                             options={sshKeys.map((key) => ({
                               value: key.path,
@@ -842,14 +956,14 @@ export function HostEditModal() {
                             value={form.keyPath}
                             onChange={(e) => setField("keyPath", e.target.value)}
                             placeholder="~/.ssh/id_ed25519"
-                            disabled={isBusy}
+                            disabled={fieldsLocked}
                             className={`${inputClass} font-mono`}
                           />
                         )}
                       </div>
                       <button
                         type="button"
-                        disabled={isBusy}
+                        disabled={fieldsLocked}
                         onClick={() => {
                           void (async () => {
                             try {
@@ -912,7 +1026,7 @@ export function HostEditModal() {
                           ? "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
                           : "Leave empty if none"
                       }
-                      disabled={isBusy}
+                      disabled={fieldsLocked}
                       className={inputClass}
                     />
                     <CredentialStatus
@@ -938,7 +1052,7 @@ export function HostEditModal() {
                 onChange={(v) => setField("proxyJumpHostId", v)}
                 hosts={hosts}
                 currentHostId={originalHost?.id ?? null}
-                disabled={isBusy}
+                disabled={fieldsLocked}
                 labelClass={labelClass}
               />
 
@@ -956,7 +1070,7 @@ export function HostEditModal() {
                     value={form.keepAliveInterval}
                     onChange={(e) => setField("keepAliveInterval", e.target.value)}
                     placeholder="60"
-                    disabled={isBusy}
+                    disabled={fieldsLocked}
                     className={`${inputClass} font-mono`}
                   />
                 </div>
@@ -970,7 +1084,7 @@ export function HostEditModal() {
                     value={form.defaultShell}
                     onChange={(e) => setField("defaultShell", e.target.value)}
                     placeholder="/bin/zsh"
-                    disabled={isBusy}
+                    disabled={fieldsLocked}
                     className={`${inputClass} font-mono`}
                   />
                 </div>
@@ -989,7 +1103,7 @@ export function HostEditModal() {
                   value={form.startupCommand}
                   onChange={(e) => setField("startupCommand", e.target.value)}
                   placeholder="cd /app && tail -f logs"
-                  disabled={isBusy}
+                  disabled={fieldsLocked}
                   className={`${inputClass} font-mono`}
                 />
                 {/* TODO: startup_command execution should be handled in the Rust backend
@@ -1009,7 +1123,7 @@ export function HostEditModal() {
                   value={form.startDirectory}
                   onChange={(e) => setField("startDirectory", e.target.value)}
                   placeholder="~/projects or /var/www"
-                  disabled={isBusy}
+                  disabled={fieldsLocked}
                   className={`${inputClass} font-mono`}
                 />
                 <p className="mt-1 text-[length:var(--text-xs)] text-text-muted">
@@ -1028,7 +1142,7 @@ export function HostEditModal() {
                   <button
                     type="button"
                     onClick={() => setField("color", "")}
-                    disabled={isBusy}
+                    disabled={fieldsLocked}
                     title="Auto (hash-based)"
                     aria-label="Auto color"
                     className={[
@@ -1050,7 +1164,7 @@ export function HostEditModal() {
                       key={c}
                       type="button"
                       onClick={() => setField("color", c)}
-                      disabled={isBusy}
+                      disabled={fieldsLocked}
                       title={c}
                       aria-label={`Color ${c}`}
                       aria-pressed={form.color === c}
@@ -1074,7 +1188,7 @@ export function HostEditModal() {
                 <TerminalThemePicker
                   value={form.terminalTheme}
                   onChange={(v) => setField("terminalTheme", v)}
-                  disabled={isBusy}
+                  disabled={fieldsLocked}
                 />
                 <p className="mt-1 text-[length:var(--text-xs)] text-text-muted">
                   Colors this host&apos;s terminal uses. Hosts without a theme follow the
@@ -1092,7 +1206,7 @@ export function HostEditModal() {
                     id="hem-env"
                     value={form.environment}
                     onChange={(v) => setField("environment", v)}
-                    disabled={isBusy}
+                    disabled={fieldsLocked}
                     placeholder="None"
                     options={[
                       { value: "", label: "None" },
@@ -1112,7 +1226,7 @@ export function HostEditModal() {
                     id="hem-os"
                     value={form.osType}
                     onChange={(v) => setField("osType", v)}
-                    disabled={isBusy}
+                    disabled={fieldsLocked}
                     placeholder="Auto"
                     options={[
                       { value: "", label: "Auto" },
@@ -1139,7 +1253,7 @@ export function HostEditModal() {
                   value={form.notes}
                   onChange={(e) => setField("notes", e.target.value)}
                   placeholder="Notes about this server..."
-                  disabled={isBusy}
+                  disabled={fieldsLocked}
                   className={`${inputClass} resize-none`}
                 />
               </div>

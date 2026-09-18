@@ -18,12 +18,19 @@ pub mod codec;
 pub mod collect;
 pub mod commands;
 pub mod dataset;
+/* Task 7 checks that span the dataset *list* — two rows on one server, and what
+ * removing one of them leaves behind. Kept apart from `dataset` so the filter
+ * `sync::datasets` selects exactly these. */
+#[cfg(test)]
+mod datasets;
 pub mod merge;
 pub mod meta;
 pub mod pull;
 pub mod push;
 pub mod scheduler;
+pub mod scope;
 pub mod secrets;
+pub mod signing;
 pub mod transport;
 
 use serde::ser::{Serialize, SerializeStruct, Serializer};
@@ -67,6 +74,10 @@ pub enum SyncError {
     /// pull and re-merge before it may publish.
     #[error("{0}")]
     Conflict(String),
+    /// The dataset is pull-only for this role: members cannot publish, and a
+    /// row cannot become an owner without the owner signing key on this machine.
+    #[error("{0}")]
+    RoleDenied(String),
     /// A credential could not be read — typically a locked App Vault.
     #[error("{0}")]
     Vault(String),
@@ -91,6 +102,7 @@ impl SyncError {
             Self::SftpUnavailable(_) => "sftpUnavailable",
             Self::Locked(_) => "locked",
             Self::Conflict(_) => "conflict",
+            Self::RoleDenied(_) => "roleDenied",
             Self::Vault(_) => "vault",
             Self::NotFound(_) => "notFound",
             Self::Database(_) => "database",

@@ -949,6 +949,25 @@ impl HostDb {
             )?;
             tracing::info!("migration 21→22 applied: added sync auto-pull and auto-push cadences");
         }
+        if version < 23 {
+            /* Opt-out list for detached records (AD-9): a row here means the
+             * user took the record back, so a later pull neither applies nor
+             * re-manages it. Deleting the row re-adds the record to the
+             * dataset on the next pull. Cascades with the dataset. */
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS sync_detached (
+                    dataset_id  TEXT NOT NULL REFERENCES sync_datasets(id) ON DELETE CASCADE,
+                    entity_type TEXT NOT NULL,
+                    entity_id   TEXT NOT NULL,
+                    detached_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (dataset_id, entity_type, entity_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_sync_detached_dataset
+                    ON sync_detached(dataset_id);
+                INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', '23');",
+            )?;
+            tracing::info!("migration 22→23 applied: added sync detached opt-out table");
+        }
 
         Ok(())
     }
@@ -977,6 +996,34 @@ impl HostDb {
         Ok(())
     }
 
+    /* A host a member-role dataset manages is read-only until detached (AD-9):
+     * the gate names the dataset so the editor can say who owns the record.
+     * Pull applies through `save_host`, never this gate, so marking a record
+     * managed can never wedge the next pull. */
+    fn check_managed_host(conn: &Connection, host_id: &str) -> Result<(), DbError> {
+        let mut stmt = conn.prepare(
+            "SELECT s.dataset_id, d.name
+             FROM sync_record_state s
+             JOIN sync_datasets d ON d.id = s.dataset_id
+             WHERE s.entity_type = 'host' AND s.entity_id = ?1
+               AND s.managed != 0 AND d.role = 'member'
+             ORDER BY s.dataset_id ASC
+             LIMIT 1",
+        )?;
+        let owner: Option<(String, String)> = stmt
+            .query_map(params![host_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .next()
+            .transpose()?;
+        if let Some((dataset_id, name)) = owner {
+            return Err(DbError::Validation(format!(
+                "host is managed by dataset \"{name}\" ({dataset_id}); detach it before editing"
+            )));
+        }
+        Ok(())
+    }
+
     /// Upsert a host, atomically rejecting ProxyJump configurations that would
     /// form a cycle (`A → B → A`), a self-reference (`A → A`), or point at a
     /// non-existent tunnel host. The chain walk and the write share a single
@@ -989,6 +1036,7 @@ impl HostDb {
             .lock()
             .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        Self::check_managed_host(&tx, &host.id)?;
         Self::check_proxy_jump_chain(&tx, &host.id, host.proxy_jump_host_id.as_deref())?;
         Self::upsert_host(&tx, host)?;
         tx.commit()?;
@@ -2867,6 +2915,7 @@ impl HostDb {
              DELETE FROM vault_cleanup_queue;
              DELETE FROM app_settings;
              DELETE FROM sync_conflicts;
+             DELETE FROM sync_detached;
              DELETE FROM sync_record_state;
              DELETE FROM sync_dataset_members;
              DELETE FROM sync_datasets;
@@ -2913,8 +2962,6 @@ impl HostDb {
                     .conn
                     .lock()
                     .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
-                // VACUUM INTO doesn't accept bound parameters; the path is our own
-                // uuid temp path, single-quote-escaped defensively.
                 let escaped = tmp.to_string_lossy().replace('\'', "''");
                 conn.execute_batch(&format!("VACUUM INTO '{escaped}'"))?;
             }
@@ -3083,6 +3130,10 @@ impl HostDb {
             .conn
             .lock()
             .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        Self::write_sync_dataset(&conn, dataset)
+    }
+
+    fn write_sync_dataset(conn: &Connection, dataset: &SyncDataset) -> Result<(), DbError> {
         conn.execute(
             "INSERT INTO sync_datasets (
                  id, name, host, port, username, auth_type, remote_path, role,
@@ -3241,12 +3292,22 @@ impl HostDb {
             .lock()
             .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
         let tx = conn.transaction()?;
-        tx.execute(
+        Self::write_sync_dataset_members(&tx, dataset_id, members)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn write_sync_dataset_members(
+        conn: &Connection,
+        dataset_id: &str,
+        members: &[(SyncEntityType, String)],
+    ) -> Result<(), DbError> {
+        conn.execute(
             "DELETE FROM sync_dataset_members WHERE dataset_id = ?1",
             params![dataset_id],
         )?;
         {
-            let mut stmt = tx.prepare(
+            let mut stmt = conn.prepare(
                 "INSERT OR REPLACE INTO sync_dataset_members (dataset_id, entity_type, entity_id)
                  VALUES (?1, ?2, ?3)",
             )?;
@@ -3254,6 +3315,25 @@ impl HostDb {
                 stmt.execute(params![dataset_id, entity_type.as_str(), entity_id])?;
             }
         }
+        Ok(())
+    }
+
+    /// Write a dataset row and its scope membership together, so a reader never
+    /// sees the new mode beside the previous selection — which would resolve to
+    /// a scope the user never saved.
+    #[instrument(skip(self, members), fields(id = %dataset.id, count = members.len()))]
+    pub fn save_sync_dataset_with_members(
+        &self,
+        dataset: &SyncDataset,
+        members: &[(SyncEntityType, String)],
+    ) -> Result<(), DbError> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let tx = conn.transaction()?;
+        Self::write_sync_dataset(&tx, dataset)?;
+        Self::write_sync_dataset_members(&tx, &dataset.id, members)?;
         tx.commit()?;
         Ok(())
     }
@@ -3373,6 +3453,91 @@ impl HostDb {
             )?,
         };
         Ok(affected)
+    }
+    /* Opt-out list for detached records (AD-9). A row means the user took the
+     * record back: pull neither applies nor re-manages it. Deleting the row
+     * ("Re-attach" in the host UI) puts the record back in the dataset on the
+     * next pull. */
+    #[instrument(skip(self), fields(dataset_id = %dataset_id, host_id = %host_id))]
+    pub fn detach_sync_host(&self, dataset_id: &str, host_id: &str) -> Result<(), DbError> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT OR IGNORE INTO sync_detached (dataset_id, entity_type, entity_id)
+             VALUES (?1, 'host', ?2)",
+            params![dataset_id, host_id],
+        )?;
+        tx.execute(
+            "DELETE FROM sync_record_state
+             WHERE dataset_id = ?1 AND entity_type = 'host' AND entity_id = ?2",
+            params![dataset_id, host_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    #[instrument(skip(self), fields(dataset_id = %dataset_id, host_id = %host_id))]
+    pub fn reattach_sync_host(&self, dataset_id: &str, host_id: &str) -> Result<(), DbError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        conn.execute(
+            "DELETE FROM sync_detached
+             WHERE dataset_id = ?1 AND entity_type = 'host' AND entity_id = ?2",
+            params![dataset_id, host_id],
+        )?;
+        Ok(())
+    }
+
+    #[instrument(skip(self), fields(dataset_id = %dataset_id))]
+    pub fn is_sync_detached(
+        &self,
+        dataset_id: &str,
+        entity_type: SyncEntityType,
+        entity_id: &str,
+    ) -> Result<bool, DbError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        Ok(conn
+            .query_row(
+                "SELECT 1 FROM sync_detached
+             WHERE dataset_id = ?1 AND entity_type = ?2 AND entity_id = ?3",
+                params![dataset_id, entity_type.as_str(), entity_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    /* Every dataset flagging a host as managed, newest dataset first. The host
+     * UI reads this to draw the "managed by <dataset>" badge and to offer
+     * Detach / Re-attach per dataset. */
+    #[instrument(skip(self), fields(host_id = %host_id))]
+    pub fn managed_by_datasets(&self, host_id: &str) -> Result<Vec<(String, String)>, DbError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let mut stmt = conn.prepare(
+            "SELECT s.dataset_id, d.name
+             FROM sync_record_state s
+             JOIN sync_datasets d ON d.id = s.dataset_id
+             WHERE s.entity_type = 'host' AND s.entity_id = ?1
+               AND s.managed != 0 AND d.role = 'member'
+             ORDER BY s.dataset_id ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![host_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, rusqlite::Error>>()?;
+        Ok(rows)
     }
 
     /// Append merge resolutions to the conflict log. `id` on each input is
@@ -3618,7 +3783,7 @@ mod tests {
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert_eq!(version, "22");
+            assert_eq!(version, "23");
             assert!(conn
                 .prepare(
                     "SELECT host_id, plugin_id, enabled, config FROM host_plugin_config LIMIT 0"
@@ -3706,7 +3871,7 @@ mod tests {
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert_eq!(version, "22");
+            assert_eq!(version, "23");
             assert!(conn
                 .prepare("SELECT terminal_theme FROM saved_hosts LIMIT 0")
                 .is_ok());
@@ -3824,7 +3989,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(version, "22");
+        assert_eq!(version, "23");
         for table in [
             "local_vault_metadata",
             "local_vault_credentials",
@@ -4961,7 +5126,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("anyscp_sync_mig_{}", uuid::Uuid::new_v4()));
         {
             let db = HostDb::new(&dir).expect("first open");
-            assert_eq!(schema_version(&db), "22");
+            assert_eq!(schema_version(&db), "23");
             {
                 let conn = db.conn.lock().unwrap();
                 for table in [
@@ -4970,6 +5135,7 @@ mod tests {
                     "sync_record_state",
                     "sync_conflicts",
                     "sync_tombstones",
+                    "sync_detached",
                 ] {
                     assert!(
                         conn.prepare(&format!("SELECT * FROM {table} LIMIT 0"))
@@ -4990,7 +5156,7 @@ mod tests {
         // Re-opening the same directory re-runs the ladder from version 21: the
         // migration is a no-op and the data written before the close survives.
         let db = HostDb::new(&dir).expect("second open");
-        assert_eq!(schema_version(&db), "22");
+        assert_eq!(schema_version(&db), "23");
         let reopened = db.get_sync_dataset("ds-mig").expect("get").expect("Some");
         assert_eq!(reopened.name, "Dataset ds-mig");
         assert_eq!(reopened.port, 2222);
@@ -5155,6 +5321,113 @@ mod tests {
             db.delete_sync_dataset("ds-1").expect_err("already gone"),
             DbError::NotFound(_)
         ));
+    }
+    /* A member-role dataset marks its hosts read-only: the validated save path
+     * rejects the write and names the dataset, while owner-role state never
+     * blocks. Detaching clears the claim and records the opt-out, so the gate
+     * opens and the host stays locally editable. */
+    #[test]
+    fn validated_save_rejects_member_managed_host() {
+        let (db, _dir) = test_db();
+        db.save_host(&sample_host("managed-1")).expect("save host");
+        let mut dataset = sample_sync_dataset("ds-member");
+        dataset.name = "Team Hosts".to_string();
+        dataset.role = "member".to_string();
+        db.upsert_sync_dataset(&dataset).expect("dataset");
+        db.upsert_sync_record_state(&[SyncRecordState {
+            dataset_id: "ds-member".to_string(),
+            entity_type: SyncEntityType::Host,
+            entity_id: "managed-1".to_string(),
+            remote_revision: 2,
+            base_hash: "hash".to_string(),
+            managed: true,
+            synced_at: String::new(),
+        }])
+        .expect("managed state");
+
+        let err = db
+            .save_host_validated(&sample_host("managed-1"))
+            .expect_err("managed save must be rejected");
+        match err {
+            DbError::Validation(message) => {
+                assert!(
+                    message.contains("Team Hosts") && message.contains("ds-member"),
+                    "gate names the dataset: {message}"
+                );
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+        assert_eq!(
+            db.managed_by_datasets("managed-1").expect("managed-by"),
+            vec![("ds-member".to_string(), "Team Hosts".to_string())],
+        );
+
+        db.detach_sync_host("ds-member", "managed-1")
+            .expect("detach");
+        assert!(
+            db.list_sync_record_state("ds-member")
+                .expect("state")
+                .is_empty(),
+            "detach clears the record's sync state"
+        );
+        assert!(
+            db.is_sync_detached("ds-member", SyncEntityType::Host, "managed-1")
+                .expect("opt-out"),
+            "detach records the opt-out row"
+        );
+        db.save_host_validated(&sample_host("managed-1"))
+            .expect("save works after detach");
+
+        db.reattach_sync_host("ds-member", "managed-1")
+            .expect("re-attach");
+        assert!(
+            !db.is_sync_detached("ds-member", SyncEntityType::Host, "managed-1")
+                .expect("opt-out"),
+            "re-attach deletes the opt-out row"
+        );
+    }
+
+    #[test]
+    fn owner_managed_state_never_blocks_validated_save() {
+        let (db, _dir) = test_db();
+        db.save_host(&sample_host("owner-1")).expect("save host");
+        db.upsert_sync_dataset(&sample_sync_dataset("ds-owner"))
+            .expect("dataset");
+        db.upsert_sync_record_state(&[SyncRecordState {
+            dataset_id: "ds-owner".to_string(),
+            entity_type: SyncEntityType::Host,
+            entity_id: "owner-1".to_string(),
+            remote_revision: 1,
+            base_hash: "hash".to_string(),
+            managed: true,
+            synced_at: String::new(),
+        }])
+        .expect("managed state");
+        db.save_host_validated(&sample_host("owner-1"))
+            .expect("owner-role state never blocks");
+        assert!(
+            db.managed_by_datasets("owner-1")
+                .expect("managed-by")
+                .is_empty(),
+            "owner datasets never badge or lock"
+        );
+    }
+
+    #[test]
+    fn deleting_dataset_clears_detached_opt_outs() {
+        let (db, _dir) = test_db();
+        db.upsert_sync_dataset(&sample_sync_dataset("ds-gone"))
+            .expect("dataset");
+        db.detach_sync_host("ds-gone", "h-gone").expect("detach");
+        assert!(db
+            .is_sync_detached("ds-gone", SyncEntityType::Host, "h-gone")
+            .expect("opt-out"),);
+        db.delete_sync_dataset("ds-gone").expect("delete");
+        assert!(
+            !db.is_sync_detached("ds-gone", SyncEntityType::Host, "h-gone")
+                .expect("opt-out"),
+            "opt-out rows cascade with their dataset"
+        );
     }
 
     #[test]

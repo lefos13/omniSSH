@@ -326,6 +326,20 @@ pub struct Tombstone {
     pub deleted_at: String,
 }
 
+/* A record that left a dataset's scope (Task 8) — a host the writer stopped
+ * carrying, not one that was deleted. The reader forgets what this dataset
+ * agreed about the host and its children but keeps its own local row, which is
+ * why this is a separate list rather than a tombstone with a flag: a client
+ * that has been offline must never read "no longer in this dataset" as "delete
+ * this host". */
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScopeRemoval {
+    pub entity_type: String,
+    pub entity_id: String,
+    pub removed_at: String,
+}
+
 /// The decrypted dataset document.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -337,6 +351,11 @@ pub struct SyncPayload {
     pub sections: SyncSections,
     #[serde(default)]
     pub tombstones: Vec<Tombstone>,
+    /* Absent in payloads written before Task 8, which is why it is defaulted:
+     * an older document parses with no scope removals and an older reader
+     * ignores the field entirely. */
+    #[serde(default)]
+    pub scope_removals: Vec<ScopeRemoval>,
 }
 
 impl SyncPayload {
@@ -349,6 +368,7 @@ impl SyncPayload {
             generation,
             sections: SyncSections::default(),
             tombstones: Vec::new(),
+            scope_removals: Vec::new(),
         }
     }
 

@@ -13,6 +13,8 @@ import {
   ENV_BADGE_CLASSES,
   ENV_LABELS,
   isEnvironmentValue,
+  ManagedBadge,
+  useManagedBy,
   type HostCardProps,
 } from "./HostCard";
 
@@ -200,6 +202,7 @@ export function HostListRow({
                   {ENV_LABELS[env]}
                 </span>
               )}
+              <ManagedBadge hostId={host.id} managers={useManagedBy(host.id)} />
               {jumpLabel && (
                 <span
                   data-testid={`host-card-${host.id}-tunnel`}

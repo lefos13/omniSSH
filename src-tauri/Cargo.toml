@@ -94,6 +94,10 @@ zeroize = "1"
 # concurrency on push) and per-record merge base hashes. Already in the tree as
 # a transitive dependency of argon2/rust-s3, so this adds no bundle weight.
 sha2 = "0.10"
+# Owner signing for dataset metadata (Task 9): pure-Rust ed25519, no OS deps,
+# a few hundred KB. Already in the tree as a transitive dependency, so this
+# adds no bundle weight.
+ed25519-dalek = "2"
 # Compress the backup payload before encrypting — a raw SQLite snapshot is
 # mostly zero-filled pages, so this shrinks the file ~10-50x. Pure-Rust backend.
 flate2 = "1"

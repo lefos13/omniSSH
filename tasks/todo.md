@@ -519,13 +519,12 @@ one integration owner).
 
 ## Checkpoint B: Phase 2 complete (after Tasks 7-10)
 
-- [ ] Two datasets sync independently; no cross-contamination of records or remotes
-- [ ] Member cannot push; unsigned/foreign-signed metadata rejected with a clear error
-- [ ] Managed hosts not editable; detach works
-- [ ] Full Rust gates + `pnpm test` + `pnpm build` clean
-- [ ] E2E: `96-sync-multi-dataset.spec.ts` (two scoped datasets) and
-      `97-sync-member-pull-only.spec.ts` (read-only account, push denied) green
-- [ ] **Stop for human review before Phase 3**
+ - [x] Two datasets sync independently; no cross-contamination of records or remotes
+ - [x] Member cannot push; unsigned/foreign-signed metadata rejected with a clear error
+ - [x] Managed hosts not editable; detach works
+ - [x] Full Rust gates + `pnpm test` + `pnpm build` clean
+ - [ ] E2E: `96-sync-scopes-members.spec.ts` (scoped + full datasets, member pull-only, detach banner) typechecks but is NOT run — no Docker daemon here; needs `make e2e` approval per the disk incident
+ - [ ] **Stop for human review before Phase 3**
 
 ---
 

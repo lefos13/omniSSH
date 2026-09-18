@@ -24,22 +24,25 @@ use std::sync::Arc;
 use serde::Serialize;
 use tracing::instrument;
 
-use crate::db::{HostDb, SyncRecordState};
+use crate::db::{HostDb, SyncEntityType, SyncRecordState};
 use crate::ssh::manager::SshManager;
 use crate::vault::LocalVault;
 
 use super::codec::{payload_digest, seal_payload, unwrap_dataset_key};
 use super::collect::{collect, credential_preflight, CollectStats};
-use super::dataset::{endpoint_for, row_wrap, SyncContentFlags};
+use super::dataset::{endpoint_for, pack_wrapped_key, row_wrap, SyncContentFlags};
 use super::meta::{DatasetMeta, META_FORMAT_VERSION};
+use super::scope::{self, ResolvedScope};
 use super::secrets;
+use super::signing;
 use super::transport::{RemoteStore, DATASET_FILE, HISTORY_KEEP, LOCK_STALE_AFTER, META_FILE};
 use super::SyncError;
 
 /// What a push published.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncPushOutcome {
+    pub dataset_id: String,
     pub generation: u64,
     pub hosts: usize,
     pub groups: usize,
@@ -50,12 +53,15 @@ pub struct SyncPushOutcome {
     pub host_plugins: usize,
     pub app_settings: bool,
     pub tombstones: usize,
+    /// Hosts that left this dataset's scope with this push (Task 8).
+    pub scope_removals: usize,
     pub credentials_included: usize,
 }
 
 impl SyncPushOutcome {
-    fn new(generation: u64, stats: CollectStats) -> Self {
+    fn new(dataset_id: &str, generation: u64, stats: CollectStats) -> Self {
         Self {
+            dataset_id: dataset_id.to_string(),
             generation,
             hosts: stats.hosts,
             groups: stats.groups,
@@ -66,6 +72,7 @@ impl SyncPushOutcome {
             host_plugins: stats.host_plugins,
             app_settings: stats.app_settings,
             tombstones: stats.tombstones,
+            scope_removals: stats.scope_removals,
             credentials_included: stats.credentials_included,
         }
     }
@@ -81,9 +88,15 @@ pub struct SyncPushPreflight {
     pub hosts_in_scope: usize,
     pub credentials_readable: usize,
     pub credentials_blocked: usize,
+    /* Whether the account for this dataset can create files at the remote
+     * root, probed with a create+remove round-trip (AD-8). A member row that
+     * reports writable here is the server not enforcing read-only, and the UI
+     * says so with the remote-side fix. */
+    pub remote_writable: bool,
 }
 
-pub fn preflight(
+pub async fn preflight(
+    ssh: &SshManager,
     db: &HostDb,
     local_vault: &LocalVault,
     dataset_id: &str,
@@ -92,7 +105,17 @@ pub fn preflight(
         .get_sync_dataset(dataset_id)?
         .ok_or_else(|| SyncError::NotFound(format!("no such sync dataset: {dataset_id}")))?;
     let flags = SyncContentFlags::from_json(&row.content_flags);
-    let (hosts_in_scope, readable, blocked) = credential_preflight(db, local_vault, flags)?;
+    let scope = scope::resolve_row(db, &row)?;
+    let (hosts_in_scope, readable, blocked) = credential_preflight(db, local_vault, &scope, flags)?;
+
+    /* The write probe connects: a real create+remove at the dataset root says
+     * whether this account could publish, which is exactly what a member row
+     * must warn about. The session is released before returning either way. */
+    let endpoint = endpoint_for(&row)?;
+    let store = RemoteStore::connect(ssh, &endpoint).await?;
+    let probe = store.probe().await;
+    store.close(ssh).await;
+    let remote_writable = probe?.writable;
 
     Ok(SyncPushPreflight {
         dataset_id: row.id,
@@ -103,6 +126,7 @@ pub fn preflight(
         hosts_in_scope,
         credentials_readable: readable,
         credentials_blocked: blocked,
+        remote_writable,
     })
 }
 
@@ -117,17 +141,18 @@ pub async fn push(
         .get_sync_dataset(dataset_id)?
         .ok_or_else(|| SyncError::NotFound(format!("no such sync dataset: {dataset_id}")))?;
     if row.role != "owner" {
-        return Err(SyncError::Conflict(
-            "this dataset is joined as a member, which can pull but not publish".into(),
+        return Err(SyncError::RoleDenied(
+            "this dataset is joined as a member, which can pull but not publish — publishing needs the owner role and the owner signing key on this machine".into(),
         ));
     }
 
     let flags = SyncContentFlags::from_json(&row.content_flags);
+    let scope = scope::resolve_row(db, &row)?;
     if flags.includes_credentials() && !local_vault.is_unlocked() {
         /* Fail before connecting: publishing a dataset that claims to carry
          * credentials while silently omitting the App Vault ones would leave
          * the other machine with unusable hosts. */
-        let counts = credential_preflight(db, local_vault, flags)?;
+        let counts = credential_preflight(db, local_vault, &scope, flags)?;
         if counts.2 > 0 {
             return Err(SyncError::Vault(
                 "unlock the App Vault to include credentials in this dataset".into(),
@@ -146,6 +171,7 @@ pub async fn push(
         &row.id,
         row.last_generation,
         flags,
+        scope,
         &passphrase,
         row_wrap(&row),
         secrets::client_id(db)?,
@@ -155,12 +181,13 @@ pub async fn push(
     // The lock is released on every path, including a failed publish.
     let _ = store.release_lock().await;
     store.close(ssh).await;
-    let (outcome, bases) = published?;
+    let published = published?;
 
     /* Local bookkeeping happens only after the remote accepted the bundle, so
      * a failed publish leaves the base state describing what is actually on the
      * server. */
-    let states: Vec<SyncRecordState> = bases
+    let states: Vec<SyncRecordState> = published
+        .bases
         .into_iter()
         .map(|base| SyncRecordState {
             dataset_id: row.id.clone(),
@@ -176,17 +203,221 @@ pub async fn push(
         .collect();
     db.upsert_sync_record_state(&states)?;
 
+    /* The hosts that left the scope keep their local rows and credentials; this
+     * dataset only stops claiming them, which is exactly what the `scopeRemovals`
+     * records just published told every other client to do. */
+    for host_id in &published.scope_removals {
+        db.clear_sync_record_state(&row.id, Some((SyncEntityType::Host, host_id.as_str())))?;
+    }
+
     let mut updated = row.clone();
-    updated.last_generation = outcome.generation as i64;
+    updated.last_generation = published.outcome.generation as i64;
+    updated.owner_fingerprint = Some(published.owner_fingerprint.clone());
     updated.last_synced_at = Some(chrono::Utc::now().to_rfc3339());
-    updated.updated_at = chrono::Utc::now().to_rfc3339();
     db.upsert_sync_dataset(&updated)?;
 
-    Ok(outcome)
+    Ok(published.outcome)
 }
 
-type Published = (SyncPushOutcome, Vec<super::collect::CollectedBase>);
+/// What a passphrase rotation published: the dataset and its new generation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncRotateOutcome {
+    pub dataset_id: String,
+    pub generation: u64,
+}
 
+/* Owner-only passphrase rotation (Task 9). The dataset key is rewrapped — the
+ * payload bytes are untouched — and the new wrap is published as a fresh
+ * signed generation with the previous one archived to `history/`. Members
+ * still holding the old passphrase fail the wrap afterwards on the existing
+ * `Decrypt` ("wrong dataset passphrase") path, never with a corrupt apply. */
+#[instrument(skip(ssh, db, local_vault, new_passphrase), fields(dataset_id = %dataset_id))]
+pub async fn rotate_passphrase(
+    ssh: &SshManager,
+    db: &Arc<HostDb>,
+    local_vault: &Arc<LocalVault>,
+    dataset_id: &str,
+    new_passphrase: &str,
+) -> Result<SyncRotateOutcome, SyncError> {
+    let row = db
+        .get_sync_dataset(dataset_id)?
+        .ok_or_else(|| SyncError::NotFound(format!("no such sync dataset: {dataset_id}")))?;
+    if row.role != "owner" {
+        return Err(SyncError::RoleDenied(
+            "only the dataset owner can rotate the passphrase — members pull but never publish"
+                .into(),
+        ));
+    }
+    secrets::validate_passphrase(new_passphrase)?;
+    let current_passphrase = secrets::load_passphrase(&row.id)?;
+    let flags = SyncContentFlags::from_json(&row.content_flags);
+    if flags.includes_credentials() && !local_vault.is_unlocked() {
+        return Err(SyncError::Vault(
+            "unlock the App Vault to rotate a dataset that carries credentials".into(),
+        ));
+    }
+
+    let endpoint = endpoint_for(&row)?;
+    let store = RemoteStore::connect(ssh, &endpoint).await?;
+    let rotated = rotate(
+        &store,
+        &row.id,
+        row.last_generation,
+        &current_passphrase,
+        new_passphrase,
+        secrets::client_id(db)?,
+    )
+    .await;
+    let _ = store.release_lock().await;
+    store.close(ssh).await;
+    let (generation, key_wrap, owner_fingerprint) = rotated?;
+
+    /* The row and the stored passphrase move together only after the remote
+     * accepted the new wrap: a failed rotation must leave the old passphrase
+     * opening the published generation. */
+    let mut updated = row.clone();
+    updated.last_generation = generation as i64;
+    updated.owner_fingerprint = Some(owner_fingerprint);
+    updated.kdf_salt = Some(key_wrap.salt.clone());
+    updated.kdf_m_kib = Some(key_wrap.m_kib);
+    updated.kdf_t = Some(key_wrap.t);
+    updated.kdf_p = Some(key_wrap.p);
+    updated.wrapped_key = Some(pack_wrapped_key(&key_wrap));
+    updated.updated_at = chrono::Utc::now().to_rfc3339();
+    db.upsert_sync_dataset(&updated)?;
+    secrets::save_passphrase(&row.id, new_passphrase)?;
+
+    Ok(SyncRotateOutcome {
+        dataset_id: row.id,
+        generation,
+    })
+}
+
+/* Split out so the caller releases the lock and disconnects on every path,
+ * like `publish`. Returns the new generation, wrap, and fingerprint. */
+async fn rotate(
+    store: &RemoteStore,
+    dataset_id: &str,
+    base_generation: i64,
+    current_passphrase: &str,
+    new_passphrase: &str,
+    writer_client_id: String,
+) -> Result<(u64, super::codec::KeyWrap, String), SyncError> {
+    store.ensure_root().await?;
+    store.acquire_lock(LOCK_STALE_AFTER).await?;
+
+    let remote_meta = match store.read(META_FILE).await? {
+        Some(bytes) => Some(DatasetMeta::parse(&bytes)?),
+        None => None,
+    };
+    let remote_meta = remote_meta.ok_or_else(|| {
+        SyncError::NotFound(
+            "nothing has been published to this dataset yet — push before rotating".into(),
+        )
+    })?;
+    if remote_meta.dataset_id != dataset_id {
+        return Err(SyncError::Conflict(format!(
+            "a different dataset ({}) is published at this path; point this dataset at another directory",
+            remote_meta.dataset_id
+        )));
+    }
+    if remote_meta.generation as i64 != base_generation {
+        return Err(SyncError::Conflict(format!(
+            "the server is at generation {} and this machine last saw {base_generation} — pull before rotating",
+            remote_meta.generation
+        )));
+    }
+
+    /* Unwrapping with the current passphrase proves it opens the published
+     * wrap; a wrong one fails here on `Decrypt`, before anything is written. */
+    let dataset_key = unwrap_dataset_key(current_passphrase, &remote_meta.key_wrap)?;
+    let key_wrap = super::codec::wrap_dataset_key(new_passphrase, &dataset_key)?;
+
+    let generation = remote_meta.generation.saturating_add(1);
+    /* The payload is untouched, so the digest carries over — and with it the
+     * proviso that the signature stays valid across the rotation. */
+    let mut meta = DatasetMeta {
+        format_version: META_FORMAT_VERSION,
+        dataset_id: dataset_id.to_string(),
+        generation,
+        payload_sha256: remote_meta.payload_sha256.clone(),
+        key_wrap: key_wrap.clone(),
+        updated_at: chrono::Utc::now().to_rfc3339(),
+        writer_client_id,
+        owner_fingerprint: None,
+        owner_pubkey: None,
+        signature: None,
+    };
+    let owner_key = owner_signing_key(dataset_id, Some(&remote_meta))?;
+    let (owner_fingerprint, signature) = signing::sign(&meta, &owner_key)?;
+    meta.owner_fingerprint = Some(owner_fingerprint.clone());
+    meta.owner_pubkey = Some(signing::public_key_b64(&owner_key));
+    meta.signature = Some(signature);
+    let meta_bytes = meta.to_bytes()?;
+
+    if let Some(previous_bundle) = store.read(DATASET_FILE).await? {
+        let previous_meta_bytes = remote_meta.to_bytes()?;
+        store
+            .archive_generation(
+                remote_meta.generation,
+                &previous_bundle,
+                &previous_meta_bytes,
+            )
+            .await?;
+    }
+    store.write_atomic(META_FILE, &meta_bytes).await?;
+    store.prune_history(HISTORY_KEEP).await?;
+
+    Ok((generation, key_wrap, owner_fingerprint))
+}
+
+/// What one publish produced: the report, the base state to record, and the
+/// hosts this dataset dropped from its scope.
+struct Published {
+    outcome: SyncPushOutcome,
+    bases: Vec<super::collect::CollectedBase>,
+    scope_removals: Vec<String>,
+    /* The owner fingerprint the published generation is signed with, so the
+     * row keeps the pin it advertises to joining members. */
+    owner_fingerprint: String,
+}
+
+/* The owner key for one publish (Task 9, AD-8). A signed remote demands the
+ * matching local key — publishing unsigned over it, or silently re-keying,
+ * would break every member's pin. An unsigned remote takes the local key,
+ * generated on first use, so the first owner push is the first signed one. */
+fn owner_signing_key(
+    dataset_id: &str,
+    remote_meta: Option<&DatasetMeta>,
+) -> Result<ed25519_dalek::SigningKey, SyncError> {
+    if let Some(remote_fingerprint) = remote_meta
+        .as_ref()
+        .and_then(|meta| meta.owner_fingerprint.as_deref())
+    {
+        let seed = secrets::load_signing_seed(dataset_id).map_err(|_| {
+            SyncError::Crypto(
+                "this dataset is signed on the server but this machine does not hold the owner signing key — publish from the machine that created it".into(),
+            )
+        })?;
+        let key = signing::signing_key_from_seed(seed.as_slice())?;
+        if signing::fingerprint(&key.verifying_key()) != remote_fingerprint {
+            return Err(SyncError::Crypto(
+                "this machine's owner signing key does not match the published dataset — publish from the machine that created it".into(),
+            ));
+        }
+        return Ok(key);
+    }
+    match secrets::load_signing_seed(dataset_id) {
+        Ok(seed) => signing::signing_key_from_seed(seed.as_slice()),
+        Err(SyncError::NotFound(_)) => {
+            let (seed, _) = signing::generate_keypair()?;
+            secrets::save_signing_seed(dataset_id, seed.as_slice())?;
+            signing::signing_key_from_seed(seed.as_slice())
+        }
+        Err(error) => Err(error),
+    }
+}
 /* Split out so the caller can guarantee lock release and disconnect with a
  * single `?`-free tail: everything in here may fail, and the caller's cleanup
  * must run regardless. */
@@ -198,6 +429,7 @@ async fn publish(
     dataset_id: &str,
     base_generation: i64,
     flags: SyncContentFlags,
+    scope: ResolvedScope,
     passphrase: &str,
     row_key_wrap: Option<super::codec::KeyWrap>,
     writer_client_id: String,
@@ -253,13 +485,14 @@ async fn publish(
             &dataset_id_owned,
             generation,
             flags,
+            &scope,
         )
     })
     .await
     .map_err(|e| SyncError::Database(format!("collect task panicked: {e}")))??;
 
     let bundle = seal_payload(&dataset_key, &collected.payload)?;
-    let meta = DatasetMeta {
+    let mut meta = DatasetMeta {
         format_version: META_FORMAT_VERSION,
         dataset_id: dataset_id.to_string(),
         generation,
@@ -267,11 +500,17 @@ async fn publish(
         key_wrap,
         updated_at: chrono::Utc::now().to_rfc3339(),
         writer_client_id,
-        owner_fingerprint: remote_meta
-            .as_ref()
-            .and_then(|meta| meta.owner_fingerprint.clone()),
+        owner_fingerprint: None,
+        owner_pubkey: None,
         signature: None,
     };
+    /* Every owner-published generation is signed; single-user unsigned
+     * datasets stay readable on the pull path, which pins nothing for them. */
+    let owner_key = owner_signing_key(dataset_id, remote_meta.as_ref())?;
+    let (owner_fingerprint, signature) = signing::sign(&meta, &owner_key)?;
+    meta.owner_fingerprint = Some(owner_fingerprint.clone());
+    meta.owner_pubkey = Some(signing::public_key_b64(&owner_key));
+    meta.signature = Some(signature);
     let meta_bytes = meta.to_bytes()?;
 
     /* Archive the generation being replaced before overwriting it, so a bad
@@ -293,10 +532,12 @@ async fn publish(
     store.write_atomic(META_FILE, &meta_bytes).await?;
     store.prune_history(HISTORY_KEEP).await?;
 
-    Ok((
-        SyncPushOutcome::new(generation, collected.stats),
-        collected.bases,
-    ))
+    Ok(Published {
+        outcome: SyncPushOutcome::new(dataset_id, generation, collected.stats),
+        bases: collected.bases,
+        scope_removals: collected.scope_removals,
+        owner_fingerprint,
+    })
 }
 
 #[cfg(test)]
@@ -315,17 +556,23 @@ mod tests {
             host_plugins: 5,
             app_settings: true,
             tombstones: 2,
+            scope_removals: 1,
             credentials_included: 4,
             credentials_blocked: 0,
         };
-        let outcome = SyncPushOutcome::new(9, stats);
+        let outcome = SyncPushOutcome::new("ds-nova", 9, stats);
         let json = serde_json::to_string(&outcome).unwrap();
 
+        assert!(json.contains("\"datasetId\":\"ds-nova\""));
         assert!(json.contains("\"generation\":9"));
         assert!(json.contains("\"hosts\":4"));
         assert!(json.contains("\"snippetFolders\":1"));
         assert!(json.contains("\"appSettings\":true"));
         assert!(json.contains("\"credentialsIncluded\":4"));
+        /* A host leaving the scope is reported apart from a deletion: the two
+         * mean opposite things on the receiving machine. */
+        assert!(json.contains("\"scopeRemovals\":1"));
+        assert!(json.contains("\"tombstones\":2"));
         // A blocked-credential count belongs to the preflight, not the outcome.
         assert!(!json.contains("credentialsBlocked"));
     }
@@ -339,14 +586,15 @@ mod tests {
             hosts_in_scope: 12,
             credentials_readable: 8,
             credentials_blocked: 4,
+            remote_writable: true,
         };
         let json = serde_json::to_string(&preflight).unwrap();
         assert!(json.contains("\"datasetId\":\"ds-nova\""));
         assert!(json.contains("\"includeCredentials\":true"));
         assert!(json.contains("\"vaultLocked\":true"));
         assert!(json.contains("\"hostsInScope\":12"));
-        assert!(json.contains("\"credentialsReadable\":8"));
         assert!(json.contains("\"credentialsBlocked\":4"));
+        assert!(json.contains("\"remoteWritable\":true"));
     }
 }
 

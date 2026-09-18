@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { ModalShell, BTN_GHOST, BTN_PRIMARY, BTN_DANGER } from "../shared/ModalShell";
 import { ModalBackdrop } from "../shared/ModalBackdrop";
 import { useSettingsStore } from "../../stores/settings-store";
@@ -8,10 +8,11 @@ import { toast } from "../../stores/toast-store";
 import { RefreshCw, CheckCircle2, AlertCircle, Palette, SquareTerminal, ArrowUpDown, Info, ExternalLink, Check, FileCode, Plus, Trash2, FolderOpen, Star, Search, Database, Download, Upload, ShieldCheck, KeyRound, Puzzle, Pencil, Globe, Server, Save, AlertTriangle } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { CursorStyle, ThemeMode, EditorConfig, PasteButton, DoubleClickAction } from "../../stores/settings-store";
-import type { BackupPreflightSummary, BulkMigrationResult, CredentialStorage, MigrationPreflightSummary, TerminalHighlightRule, SyncConflictEntry, SyncContentFlags, SyncContentKind, SyncDatasetInput, SyncDatasetSecrets, SyncDatasetSummary, SyncErrorKind, SyncPhase, SyncPullOutcome, SyncPushOutcome, SyncSaveOutcome, SyncStatusSnapshot } from "../../types";
+import type { BackupPreflightSummary, BulkMigrationResult, CredentialStorage, MigrationPreflightSummary, TerminalHighlightRule, SyncConflictEntry, SyncContentFlags, SyncContentKind, SyncDatasetInput, SyncDatasetSecrets, SyncDatasetSummary, SyncErrorKind, SyncPhase, SyncPullOutcome, SyncPushOutcome, SyncRole, SyncSaveOutcome, SyncScopeMode, SyncStatusSnapshot } from "../../types";
 import { useLocalVaultStore } from "../../stores/local-vault-store";
 import { useHostsStore } from "../../stores/hosts-store";
-import { DEFAULT_SYNC_CONTENT_FLAGS, DEFAULT_SYNC_ENDPOINT, useSyncStore } from "../../stores/sync-store";
+import { useGroupsStore } from "../../stores/groups-store";
+import { DEFAULT_SYNC_CONTENT_FLAGS, DEFAULT_SYNC_ENDPOINT, DEFAULT_SYNC_SCOPE_MODE, useSyncStore } from "../../stores/sync-store";
 import type { SyncScheduleInput } from "../../stores/sync-store";
 import { ConfirmDangerDialog } from "../shared/ConfirmDangerDialog";
 import { ChangeVaultPasswordDialog, UnlockVaultDialog } from "../vault";
@@ -1022,6 +1023,57 @@ const CONTENT_CHILDREN: Partial<Record<SyncContentKind, SyncContentKind[]>> = {
   s3Connections: ["s3Credentials"],
 };
 
+/* How a dataset picks the hosts it carries (Task 8). `all` is the default; the
+ * other two need a selection, and the count rendered below the radios says how
+ * many hosts that selection resolves to before anything is saved. */
+const SCOPE_MODES: { mode: SyncScopeMode; label: string; hint: string }[] = [
+  { mode: "all", label: "All hosts", hint: "Every host on this computer." },
+  { mode: "groups", label: "Groups", hint: "Every host in the groups you pick." },
+  { mode: "hosts", label: "Specific hosts", hint: "Only the hosts you pick." },
+];
+
+/* One checkbox list, used by both selection modes: a group picker and a host
+ * picker differ only in the records they list, so they must not differ in
+ * behaviour or accessibility. */
+function ScopePicker({ legend, items, selected, testidPrefix, onToggle }: {
+  legend: string;
+  items: { id: string; name: string }[];
+  selected: string[];
+  testidPrefix: string;
+  onToggle: (id: string, checked: boolean) => void;
+}) {
+  return (
+    <fieldset
+      data-testid={`settings-sync-scope-picker-${testidPrefix}`}
+      className="mt-2 max-h-40 overflow-y-auto rounded-lg border border-border/60 bg-bg-base px-3 py-2"
+    >
+      <legend className={`${LABEL_CLASS} px-1`}>{legend}</legend>
+      {items.length === 0 ? (
+        <p className={DESC_CLASS}>
+          Nothing to pick yet — create it first, then come back to this dataset.
+        </p>
+      ) : (
+        <div className="space-y-1.5">
+          {items.map((item) => (
+            <label key={item.id} className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                data-testid={`settings-sync-scope-${testidPrefix}-${item.id}`}
+                className="w-3.5 h-3.5 shrink-0 rounded border-border text-accent focus:ring-ring cursor-pointer"
+                checked={selected.includes(item.id)}
+                onChange={(e) => onToggle(item.id, e.target.checked)}
+              />
+              <span className="text-[length:var(--text-xs)] text-text-secondary truncate">
+                {item.name}
+              </span>
+            </label>
+          ))}
+        </div>
+      )}
+    </fieldset>
+  );
+}
+
 /* Count line for a push summary; zeros are dropped so it reports what actually
  * travelled. */
 function describePush(outcome: SyncPushOutcome): string {
@@ -1038,6 +1090,12 @@ function describePush(outcome: SyncPushOutcome): string {
   ];
   const parts = counts.filter(([count]) => count > 0).map(([count, label]) => `${count} ${label}`);
   if (outcome.appSettings) parts.push("app settings");
+  /* A host leaving the scope is counted apart from the deletions above: nothing
+   * was deleted anywhere, this dataset just stopped carrying it. */
+  if (outcome.scopeRemovals > 0) {
+    const noun = outcome.scopeRemovals === 1 ? "host" : "hosts";
+    parts.push(`${outcome.scopeRemovals} ${noun} left the scope`);
+  }
   return parts.length > 0 ? parts.join(" · ") : "Nothing had changed since the last push.";
 }
 
@@ -1220,6 +1278,7 @@ function pushDebounceError(raw: string): string | null {
  */
 const SYNC_ERROR_HINTS: Partial<Record<SyncErrorKind, string>> = {
   conflict: "Another machine published first — pull before pushing.",
+  roleDenied: "This dataset is pull-only for your role — only its owner can publish.",
   vault: "Unlock the App Vault and try again.",
   decrypt: "Wrong dataset passphrase — re-save the dataset with the correct passphrase.",
   sftpUnavailable: "Dataset sync needs a server with the SFTP subsystem enabled.",
@@ -1479,8 +1538,8 @@ function SyncSettings() {
     datasets, datasetsLoading, saving, saveOutcome, pushing, pushResult, preflight,
     pulling, pullResult, conflicts, statuses,
     datasetError, datasetErrorKind,
-    loadDatasets, saveDataset, clearSaveOutcome, deleteDataset, loadPreflight, push, pull,
-    loadStatus, subscribeSyncStatus,
+    loadDatasets, saveDataset, clearSaveOutcome, clearDatasetError, deleteDataset, loadPreflight, push, pull,
+    probeWritability, loadStatus, subscribeSyncStatus,
   } = useSyncStore();
   const [password, setPassword] = useState("");
   const [keyPassphrase, setKeyPassphrase] = useState("");
@@ -1491,6 +1550,14 @@ function SyncSettings() {
   const [contentFlags, setContentFlags] = useState<SyncContentFlags>({
     ...DEFAULT_SYNC_CONTENT_FLAGS,
   });
+  const [scopeMode, setScopeMode] = useState<SyncScopeMode>(DEFAULT_SYNC_SCOPE_MODE);
+  const [scopeMemberIds, setScopeMemberIds] = useState<string[]>([]);
+  /* Owners publish; members only pull. A new dataset starts as its owner's —
+   * joining someone else's means switching this to member before saving. */
+  const [role, setRole] = useState<SyncRole>("owner");
+  /* The lists the scope pickers offer, and the source of the live host count. */
+  const groups = useGroupsStore((s) => s.groups);
+  const hosts = useHostsStore((s) => s.hosts);
   const [confirmRemove, setConfirmRemove] = useState<SyncDatasetSummary | null>(null);
   /* The saved row the form is currently updating; null means the form is
    * composing a new dataset. The whole row is kept because everything the form
@@ -1503,6 +1570,17 @@ function SyncSettings() {
   useEffect(() => {
     void loadDatasets().catch(() => { /* the dataset card renders the failure */ });
   }, [loadDatasets]);
+
+  /*
+   * The scope pickers list this machine's groups and hosts. Both stores are
+   * shared with the dashboard and reload themselves on failure inside the
+   * store, so a failed read leaves an empty picker rather than a broken
+   * section — and selecting nothing is exactly what those modes then refuse.
+   */
+  useEffect(() => {
+    void useGroupsStore.getState().loadGroups();
+    void useHostsStore.getState().loadHosts();
+  }, []);
 
   /*
    * The rows show the scheduler's phase, not just this window's button clicks,
@@ -1543,6 +1621,47 @@ function SyncSettings() {
     });
   }, [clearSaveOutcome]);
 
+  /* Switching mode drops the previous selection: a host id left over from a
+   * `hosts` scope must never be stored as a group member, and the next save
+   * would refuse it anyway. */
+  const chooseScopeMode = useCallback((mode: SyncScopeMode) => {
+    clearSaveOutcome();
+    setScopeMode(mode);
+    setScopeMemberIds((prev) => (mode === "all" ? [] : prev));
+  }, [clearSaveOutcome]);
+
+  const toggleScopeMember = useCallback((id: string, checked: boolean) => {
+    clearSaveOutcome();
+    setScopeMemberIds((prev) => (checked ? [...prev, id] : prev.filter((member) => member !== id)));
+  }, [clearSaveOutcome]);
+
+  /* The live count: what the current mode would resolve to against the hosts
+   * and groups this computer has right now, before anything is saved. */
+  const scopeCount = useMemo(() => {
+    if (scopeMode === "all") return hosts.length;
+    if (scopeMode === "groups") {
+      return hosts.filter((host) => {
+        const groupId = host.group_id;
+        return groupId !== null && scopeMemberIds.includes(groupId);
+      }).length;
+    }
+    return hosts.filter((host) => scopeMemberIds.includes(host.id)).length;
+  }, [scopeMode, scopeMemberIds, hosts]);
+
+  /* Both selection modes need at least one real record, and the ids are
+   * filtered against the current lists so a deleted group cannot be saved as a
+   * member that resolves to nothing. */
+  const scopeSelection = useMemo(() => {
+    const valid = scopeMode === "groups" ? groups.map((g) => g.id) : hosts.map((h) => h.id);
+    return scopeMemberIds.filter((id) => valid.includes(id));
+  }, [scopeMode, scopeMemberIds, groups, hosts]);
+
+  const scopeError = scopeMode !== "all" && scopeSelection.length === 0
+    ? scopeMode === "groups"
+      ? "Choose at least one group, or switch the scope back to all hosts."
+      : "Choose at least one host, or switch the scope back to all hosts."
+    : null;
+
   /*
    * Load a saved row into the form so a typo in the remote path — or any other
    * field — can be corrected in place instead of deleting the dataset and
@@ -1554,9 +1673,11 @@ function SyncSettings() {
     setEditing(dataset);
     setName(dataset.name);
     setContentFlags({ ...dataset.contentFlags });
+    setScopeMode(dataset.scopeMode);
+    setScopeMemberIds([...dataset.scopeMemberIds]);
     setUseKey(dataset.authType === "privateKey");
+    setRole(dataset.role);
     setPassword("");
-    setKeyPassphrase("");
     setPassphrase("");
     setFormError(null);
     clearSaveOutcome();
@@ -1581,7 +1702,10 @@ function SyncSettings() {
     setPassword("");
     setKeyPassphrase("");
     setFormError(null);
+    setRole("owner");
     setContentFlags({ ...DEFAULT_SYNC_CONTENT_FLAGS });
+    setScopeMode(DEFAULT_SYNC_SCOPE_MODE);
+    setScopeMemberIds([]);
   }, []);
 
   const cancelEdit = useCallback(() => {
@@ -1606,28 +1730,42 @@ function SyncSettings() {
       setFormError("Enter the path to the private key this dataset connects with.");
       return;
     }
+    /* A member never publishes, so the scope section is hidden for them and the
+     * backend stores `all` regardless. Send `all` explicitly rather than a
+     * selection the user can no longer see or fix: a stale `hosts` scope with
+     * an empty list would otherwise travel as a meaningless subset. The scope
+     * guard applies to owners only, for the same reason. */
+    if (role !== "member" && scopeError) return;
     setFormError(null);
+    const effectiveScopeMode: SyncScopeMode = role === "member" ? "all" : scopeMode;
     const input: SyncDatasetInput = {
       name: name.trim(),
       host: endpoint.host,
       port: endpoint.port,
       username: endpoint.username,
       remotePath: endpoint.remotePath,
+      /* Content kinds are not push-only: a pull applies only the kinds this
+       * machine enables, so a member's choice travels like an owner's. */
       contentFlags,
+      scopeMode: effectiveScopeMode,
+      /* Only ids that still exist are sent: a group deleted since the editor was
+       * opened would otherwise be refused by the save instead of being dropped. */
+      scopeMemberIds: effectiveScopeMode === "all" ? [] : scopeSelection,
       ...(endpoint.keyPath ? { keyPath: endpoint.keyPath } : {}),
       /* An update keeps everything the form does not collect: its id (so the
-       * row is replaced, never duplicated), its role, and its automatic-sync
-       * schedule — sending the new-dataset defaults would silently demote a
-       * member to owner and turn a configured cadence back to manual. */
+       * row is replaced, never duplicated) and its automatic-sync schedule —
+       * sending the defaults would silently turn a configured cadence back to
+       * manual. The role rides along because flipping it is a real change. */
       ...(editing
         ? {
             id: editing.id,
-            role: editing.role,
+            role,
             autoSync: editing.autoSync,
             pullIntervalSecs: editing.pullIntervalSecs,
             pushDebounceSecs: editing.pushDebounceSecs,
           }
         : {
+            role,
             /* A new dataset never syncs on its own: the switch starts off and
              * both cadences start at 0, so saving a dataset cannot start
              * background network activity the user did not ask for. */
@@ -1651,7 +1789,8 @@ function SyncSettings() {
     } catch { /* the dataset card renders the failure */ }
   }, [
     name, passphrase, endpoint, useKey, contentFlags, password, keyPassphrase,
-    editing, saveDataset, loadDatasets, resetDatasetFields,
+    editing, saveDataset, loadDatasets, resetDatasetFields, role,
+    scopeMode, scopeSelection, scopeError,
   ]);
 
   const runPush = useCallback(async (datasetId: string) => {
@@ -1664,22 +1803,32 @@ function SyncSettings() {
 
   /* A pull needs no preflight: it only reads the remote bundle and writes
    * locally, so a locked vault costs the credentials it cannot store and
-   * nothing else. The store reloads hosts/groups itself afterwards. */
+   * nothing else. The store reloads hosts/groups itself afterwards. For a
+   * member row the pull additionally probes whether the remote is writable,
+   * so the row can warn when the server is not enforcing the pull-only role.
+   * The probe failure is silent: the pull itself already succeeded. */
   const runPull = useCallback(async (datasetId: string) => {
     try {
       await pull(datasetId);
+      const row = useSyncStore.getState().datasets.find((d) => d.id === datasetId);
+      if (row?.role === "member") {
+        await probeWritability(datasetId);
+      }
     } catch { /* the dataset card renders the failure */ }
-  }, [pull]);
+  }, [pull, probeWritability]);
 
   const handleRemove = useCallback(async () => {
     const dataset = confirmRemove;
     setConfirmRemove(null);
     if (!dataset) return;
+    /* Removing the row currently in the form must also leave edit mode.
+     * Otherwise the next save silently recreates the deleted dataset id. */
+    if (editing?.id === dataset.id) resetDatasetFields();
     try {
       await deleteDataset(dataset.id);
       toast.success(`Removed “${dataset.name}”. Your local hosts are untouched.`);
     } catch { /* the dataset card renders the failure */ }
-  }, [confirmRemove, deleteDataset]);
+  }, [confirmRemove, deleteDataset, editing, resetDatasetFields]);
 
   const passphraseTooShort = passphrase.length > 0 && passphrase.length < MIN_DATASET_PASSPHRASE;
 
@@ -1952,7 +2101,91 @@ function SyncSettings() {
             </p>
           )}
 
-          <p className={`${LABEL_CLASS} mt-5`}>What this dataset publishes</p>
+          <p className={`${LABEL_CLASS} mt-5`}>Your role in this dataset</p>
+          <div className="mt-2 space-y-1" role="radiogroup" aria-label="Dataset role">
+            {([
+              { value: "owner" as const, label: "Owner — can publish", hint: "First machine to publish; signs each generation." },
+              { value: "member" as const, label: "Member — pull only", hint: "Join someone else's dataset; publishing is refused." },
+            ]).map(({ value, label, hint }) => (
+              <label key={value} className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="sync-role"
+                  data-testid={`settings-sync-role-${value}`}
+                  className="mt-0.5 w-3.5 h-3.5 shrink-0 border-border text-accent focus:ring-ring cursor-pointer"
+                  checked={role === value}
+                  onChange={() => { setRole(value); clearSaveOutcome(); clearDatasetError(); }}
+                />
+                <span className="text-[length:var(--text-xs)] text-text-secondary">
+                  {label}
+                  <span className="block mt-0.5 text-text-muted">{hint}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+
+          {role === "member" ? (
+            <p data-testid="settings-sync-member-note" className={`${DESC_CLASS} mt-4`}>
+              Members pull what the owner published. Which hosts that is, and which content
+              kinds are published, are the owner&apos;s call — so this form does not ask.
+            </p>
+          ) : (
+          <>
+          <p className={`${LABEL_CLASS} mt-5`}>Which hosts this dataset carries</p>
+          <div className="mt-2 space-y-1" role="radiogroup" aria-label="Dataset scope">
+            {SCOPE_MODES.map(({ mode, label, hint }) => (
+              <label key={mode} className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="sync-scope"
+                  data-testid={`settings-sync-scope-${mode}`}
+                  className="mt-0.5 w-3.5 h-3.5 shrink-0 border-border text-accent focus:ring-ring cursor-pointer"
+                  checked={scopeMode === mode}
+                  onChange={() => chooseScopeMode(mode)}
+                />
+                <span className="text-[length:var(--text-xs)] text-text-secondary">
+                  {label}
+                  <span className="block mt-0.5 text-text-muted">{hint}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+          {scopeMode === "groups" && (
+            <ScopePicker
+              legend="Groups in this dataset"
+              items={groups.map((group) => ({ id: group.id, name: group.name }))}
+              selected={scopeMemberIds}
+              testidPrefix="groups"
+              onToggle={toggleScopeMember}
+            />
+          )}
+          {scopeMode === "hosts" && (
+            <ScopePicker
+              legend="Hosts in this dataset"
+              items={hosts.map((host) => ({ id: host.id, name: host.label || host.host }))}
+              selected={scopeMemberIds}
+              testidPrefix="hosts"
+              onToggle={toggleScopeMember}
+            />
+          )}
+          <p
+            data-testid="settings-sync-scope-count"
+            aria-live="polite"
+            className={`mt-2 text-[length:var(--text-xs)] ${scopeError ? "text-status-error" : "text-text-muted"}`}
+          >
+            {scopeError
+              ? `This dataset needs a scope. ${scopeError}`
+              : `${scopeCount} host${scopeCount === 1 ? "" : "s"} in scope`}
+          </p>
+          </>
+          )}
+
+          {/* Content kinds are not push-only: a pull applies only the kinds
+              this machine enables, so a member keeps this control even though
+              the owner decides what is published. */}
+          <p className={`${LABEL_CLASS} mt-5`}>
+            {role === "member" ? "What this machine pulls" : "What this dataset publishes"}
+          </p>
           <div className="mt-2 space-y-2">
             {CONTENT_TOGGLES.map(({ kind, label, parent, hint }) => {
               const disabled = parent ? !contentFlags[parent] : false;
@@ -2078,16 +2311,18 @@ function SyncSettings() {
                     >
                       <Pencil size={13} strokeWidth={2} /> Edit
                     </button>
-                    <button
-                      type="button"
-                      data-testid="settings-sync-push"
-                      onClick={() => void runPush(dataset.id)}
-                      disabled={busy}
-                      className={BTN_SECONDARY}
-                    >
-                      <Upload size={13} strokeWidth={2} />
-                      {pushing === dataset.id ? "Pushing…" : "Push now"}
-                    </button>
+                    {dataset.role === "owner" && (
+                      <button
+                        type="button"
+                        data-testid="settings-sync-push"
+                        onClick={() => void runPush(dataset.id)}
+                        disabled={busy}
+                        className={BTN_SECONDARY}
+                      >
+                        <Upload size={13} strokeWidth={2} />
+                        {pushing === dataset.id ? "Pushing…" : "Push now"}
+                      </button>
+                    )}
                     <button
                       type="button"
                       data-testid="settings-sync-pull"
@@ -2119,6 +2354,30 @@ function SyncSettings() {
                     : "never synced"}
                 </p>
 
+                {/* What the dataset actually carries, not what its form last
+                    said: a group that gained a host since the save is counted
+                    here without touching the dataset. */}
+                <p
+                  data-testid={`settings-sync-scope-summary-${dataset.id}`}
+                  className="mt-1 text-[length:var(--text-xs)] text-text-muted"
+                >
+                  {/* A member stores no scope of its own — the row shows who
+                      decides instead of a count it does not use. */}
+                  {dataset.role === "member"
+                    ? "Scope: set by the dataset owner"
+                    : dataset.scopeMode === "all"
+                      ? "Scope: all hosts"
+                      : dataset.scopeMode === "groups"
+                        ? "Scope: selected groups"
+                        : "Scope: selected hosts"}
+                  {dataset.role === "owner" && (
+                    <>
+                      {" · "}
+                      {dataset.scopeHostCount} host{dataset.scopeHostCount === 1 ? "" : "s"} in scope
+                    </>
+                  )}
+                </p>
+
                 {/* Generation 0 is not a number to read past: it says this
                     dataset holds nothing on the server yet, which is the state
                     a mistyped remote path leaves behind. */}
@@ -2137,6 +2396,25 @@ function SyncSettings() {
                   status={statuses[dataset.id]}
                   busy={pushing === dataset.id ? "pushing" : pulling === dataset.id ? "pulling" : null}
                 />
+                {dataset.role === "member" && preflight?.datasetId === dataset.id && preflight.remoteWritable && (
+                  <div
+                    data-testid="settings-sync-member-writable-warning"
+                    className="flex items-start gap-2 mt-2 px-3 py-2.5 rounded-lg bg-status-warning/10 border border-status-warning/30"
+                  >
+                    <AlertTriangle
+                      size={13}
+                      strokeWidth={2}
+                      className="text-status-warning shrink-0 mt-0.5"
+                    />
+                    <span className="text-[length:var(--text-xs)] text-text-secondary">
+                      This account can still write to {dataset.remotePath}, so the server is not
+                      enforcing this dataset's pull-only role. Use a read-only SSH account for
+                      members, or make the dataset directory read-only on the server
+                      (for example with chmod), so a member can never publish over the owner's
+                      dataset by accident.
+                    </span>
+                  </div>
+                )}
 
                 {blocked && preflight && (
                   <div

@@ -23,10 +23,13 @@ import type {
   SyncDatasetSummary,
   SyncEndpointInput,
   SyncErrorPayload,
+  SyncManagedBy,
   SyncPullOutcome,
   SyncPushOutcome,
   SyncPushPreflight,
+  SyncRotateOutcome,
   SyncSaveOutcome,
+  SyncScopeMode,
   SyncStatusSnapshot,
 } from "../types/sync";
 
@@ -61,6 +64,11 @@ export const DEFAULT_SYNC_CONTENT_FLAGS: SyncContentFlags = {
   hostPlugins: true,
   appSettings: true,
 };
+
+/* A new dataset carries every host on this machine until the user narrows it
+ * (Task 8). `all` is also what a row saved before scopes existed means, so the
+ * editor can round-trip such a row without inventing a selection. */
+export const DEFAULT_SYNC_SCOPE_MODE: SyncScopeMode = "all";
 
 /** Credential material for one call. Never stored. */
 export interface SyncEndpointSecret {
@@ -156,6 +164,8 @@ interface SyncState {
   ) => Promise<SyncSaveOutcome>;
   /** Retires the save report, e.g. once its form has been edited. */
   clearSaveOutcome: () => void;
+  /** Retires the dataset error, e.g. once the form changed so the failure may no longer apply. */
+  clearDatasetError: () => void;
   /** Persists the automatic-sync switch and both cadences for one dataset. */
   updateDatasetSchedule: (datasetId: string, schedule: SyncScheduleInput) => Promise<void>;
   /** Reads the current phase of every dataset; never rejects. */
@@ -167,6 +177,18 @@ interface SyncState {
   push: (datasetId: string) => Promise<SyncPushOutcome>;
   pull: (datasetId: string) => Promise<SyncPullOutcome>;
   loadConflicts: (datasetId: string, limit?: number) => Promise<SyncConflictEntry[]>;
+  /* Same probe without touching push state: a member row that can never push
+   * still needs `remoteWritable` for the server-enforcement warning. */
+  probeWritability: (datasetId: string) => Promise<void>;
+  /* Republishes a dataset under a new passphrase (owner only); the row's stored
+   * passphrase is replaced, so members on the old one get `decrypt` next pull. */
+  rotatePassphrase: (datasetId: string, newPassphrase: string) => Promise<SyncRotateOutcome>;
+  /* Which member datasets claim a host as managed (Task 10 badge/lock source). */
+  managedBy: (hostId: string) => Promise<SyncManagedBy[]>;
+  /* Drops one dataset's claim on a host, leaving it locally editable. */
+  detachHost: (datasetId: string, hostId: string) => Promise<void>;
+  /* Removes a detach opt-out so the next pull may manage the host again. */
+  reattachHost: (datasetId: string, hostId: string) => Promise<void>;
 }
 
 export const useSyncStore = create<SyncState>((set, get) => ({
@@ -277,6 +299,7 @@ export const useSyncStore = create<SyncState>((set, get) => ({
   },
 
   clearSaveOutcome: () => set({ saveOutcome: null }),
+  clearDatasetError: () => set({ ...CLEAR_DATASET_ERROR }),
 
   /*
    * The automatic-sync switch and both cadences persist through their own
@@ -421,6 +444,20 @@ export const useSyncStore = create<SyncState>((set, get) => ({
     }
   },
 
+  probeWritability: async (datasetId) => {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const preflight = await invoke<SyncPushPreflight>("sync_push_preflight", { datasetId });
+      /* Keep only the writability answer: the full preflight belongs to a push
+       * this row will never run, and caching it would arm the push warning. */
+      set((state) => ({
+        preflight: state.preflight?.datasetId === datasetId
+          ? { ...state.preflight, remoteWritable: preflight.remoteWritable }
+          : { ...preflight, includeCredentials: false, vaultLocked: false, credentialsBlocked: 0 },
+      }));
+    } catch { /* the pull already succeeded; a failed probe only hides the warning */ }
+  },
+
   /* The conflict log of one dataset. A failure here is reported on the dataset
    * card but never masks a successful pull, so callers may swallow it. */
   loadConflicts: async (datasetId, limit = CONFLICT_LIMIT) => {
@@ -474,6 +511,53 @@ export const useSyncStore = create<SyncState>((set, get) => ({
     } catch (error) {
       const failure = syncFailure(error, "Could not pull the dataset");
       set({ pulling: null, datasetError: failure.message, datasetErrorKind: failure.kind });
+      throw error;
+    }
+  },
+
+  /* Rotation republishes under a new passphrase, so the dataset row (new
+   * generation) is re-read afterwards like after a pull. */
+  rotatePassphrase: async (datasetId, newPassphrase) => {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const outcome = await invoke<SyncRotateOutcome>("sync_rotate_passphrase", {
+        datasetId,
+        newPassphrase,
+      });
+      await get().loadDatasets().catch(() => {});
+      return outcome;
+    } catch (error) {
+      const failure = syncFailure(error, "Could not rotate the dataset passphrase");
+      set({ datasetError: failure.message, datasetErrorKind: failure.kind });
+      throw error;
+    }
+  },
+
+  /* Detach bookkeeping touches one host, so there is no store slice to keep:
+   * the modal re-reads `managedBy` for the host it shows. */
+  managedBy: async (hostId) => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<SyncManagedBy[]>("sync_managed_by", { hostId });
+  },
+
+  detachHost: async (datasetId, hostId) => {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("sync_detach_host", { datasetId, hostId });
+    } catch (error) {
+      const failure = syncFailure(error, "Could not detach the host from the dataset");
+      set({ datasetError: failure.message, datasetErrorKind: failure.kind });
+      throw error;
+    }
+  },
+
+  reattachHost: async (datasetId, hostId) => {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("sync_reattach_host", { datasetId, hostId });
+    } catch (error) {
+      const failure = syncFailure(error, "Could not re-attach the host to the dataset");
+      set({ datasetError: failure.message, datasetErrorKind: failure.kind });
       throw error;
     }
   },

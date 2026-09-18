@@ -15,7 +15,6 @@
  * produce two different dataset keys for one dataset.
  */
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -29,6 +28,7 @@ use super::codec::{
     generate_dataset_key, unwrap_dataset_key, wrap_dataset_key, DatasetKey, KeyWrap, NONCE_LEN,
 };
 use super::meta::DatasetMeta;
+use super::scope::{self, SyncScopeMode};
 use super::secrets;
 use super::transport::{RemoteStore, SyncEndpoint};
 use super::SyncError;
@@ -145,6 +145,13 @@ pub struct SyncDatasetInput {
     pub role: Option<String>,
     #[serde(default)]
     pub content_flags: SyncContentFlags,
+    /* Scope (Task 8). `all` is the default a form that collects no selection
+     * means, and a mode that selects groups or hosts requires the ids that go
+     * with it — see `scope::validate_selection`. */
+    #[serde(default)]
+    pub scope_mode: SyncScopeMode,
+    #[serde(default)]
+    pub scope_member_ids: Vec<String>,
     /* Automatic sync is opt-in and each cadence is opt-in separately: an
      * absent field means "off", never "use a default interval". */
     #[serde(default)]
@@ -203,7 +210,14 @@ pub struct SyncDatasetSummary {
     pub remote_path: String,
     pub role: String,
     pub content_flags: SyncContentFlags,
-    pub scope_mode: String,
+    /// Typed scope mode, decoded from the row's `scope_mode` JSON.
+    pub scope_mode: SyncScopeMode,
+    /// The ids `scope_mode` selects; empty for `all`.
+    pub scope_member_ids: Vec<String>,
+    /* How many of this machine's hosts the dataset currently carries. Computed
+     * from the current hosts, groups, and membership, so a group that gained a
+     * host since the last save is counted without re-saving the dataset. */
+    pub scope_host_count: usize,
     /* Key-auth datasets keep their key path in `scope_mode`. It is reported
      * here so the settings form can prefill it when a dataset is edited —
      * without it, editing a key-auth dataset would silently drop the key and
@@ -219,9 +233,13 @@ pub struct SyncDatasetSummary {
     pub has_passphrase: bool,
 }
 
-impl From<&SyncDataset> for SyncDatasetSummary {
-    fn from(row: &SyncDataset) -> Self {
-        Self {
+/* The summary is built from the row *and* the database: the scope count and the
+ * selected ids live outside `sync_datasets`, and a caller that assembled the
+ * struct without them would report a dataset as unscoped. */
+impl SyncDatasetSummary {
+    pub fn build(db: &HostDb, row: &SyncDataset) -> Result<Self, SyncError> {
+        let scope_mode = scope::scope_mode_of(row);
+        Ok(Self {
             id: row.id.clone(),
             name: row.name.clone(),
             host: row.host.clone(),
@@ -231,8 +249,10 @@ impl From<&SyncDataset> for SyncDatasetSummary {
             remote_path: row.remote_path.clone(),
             role: row.role.clone(),
             content_flags: SyncContentFlags::from_json(&row.content_flags),
-            scope_mode: row.scope_mode.clone(),
-            key_path: key_path_of(row).ok(),
+            scope_mode,
+            scope_member_ids: scope::member_ids(db, &row.id, scope_mode)?,
+            scope_host_count: scope::resolve_row(db, row)?.host_ids.len(),
+            key_path: scope::key_path_of(row).ok(),
             auto_sync: row.auto_sync,
             pull_interval_secs: row.pull_interval_secs,
             push_debounce_secs: row.push_debounce_secs,
@@ -240,7 +260,7 @@ impl From<&SyncDataset> for SyncDatasetSummary {
             last_synced_at: row.last_synced_at.clone(),
             has_server_secret: secrets::has_server_secret(&row.id),
             has_passphrase: secrets::has_passphrase(&row.id),
-        }
+        })
     }
 }
 
@@ -255,14 +275,14 @@ pub fn endpoint_for(row: &SyncDataset) -> Result<SyncEndpoint, SyncError> {
             password: password.clone(),
         },
         ("privateKey", StoredCredential::KeyPassphrase { passphrase }) => AuthMethod::PrivateKey {
-            key_path: key_path_of(row)?,
+            key_path: scope::key_path_of(row)?,
             passphrase: Some(passphrase.clone()),
         },
         /* A key-auth dataset whose key has no passphrase stores a `Password`
          * record with an empty value, so the two shapes stay distinguishable
          * without a second keychain entry. */
         ("privateKey", StoredCredential::Password { password }) => AuthMethod::PrivateKey {
-            key_path: key_path_of(row)?,
+            key_path: scope::key_path_of(row)?,
             passphrase: Some(password.clone()).filter(|value| !value.is_empty()),
         },
         (auth_type, stored) => {
@@ -279,23 +299,6 @@ pub fn endpoint_for(row: &SyncDataset) -> Result<SyncEndpoint, SyncError> {
         auth,
         root: row.remote_path.clone(),
     })
-}
-
-/* The key path is persisted inside the endpoint's `scope_mode`-adjacent
- * columns only for host rows, so a key-auth dataset keeps it in `username`'s
- * sibling column `key_path`, encoded in the row's `owner_fingerprint`-free
- * JSON field. Datasets created by this build always carry it. */
-fn key_path_of(row: &SyncDataset) -> Result<String, SyncError> {
-    let map: BTreeMap<String, String> = serde_json::from_str(&row.scope_mode).unwrap_or_default();
-    map.get("keyPath")
-        .cloned()
-        .filter(|path| !path.is_empty())
-        .ok_or_else(|| {
-            SyncError::NotFound(
-                "this dataset uses key authentication but has no key path — re-save it in Settings"
-                    .into(),
-            )
-        })
 }
 
 // ─── Save / list / remove ────────────────────────────────────────────────────
@@ -327,7 +330,21 @@ pub async fn save_dataset(
     if input.name.trim().is_empty() {
         return Err(SyncError::Format("give the dataset a name".into()));
     }
-
+    /* The role decides whether the selection means anything. A member never
+     * publishes — pull applies whatever the payload carries and never consults
+     * the local scope — so its selection is unused, and the member form no
+     * longer offers one to fix. Validating a scope the user cannot see would
+     * refuse a join over a field nothing reads. */
+    let new_role = input.role.clone().unwrap_or_else(|| "owner".to_string());
+    let scoped = new_role != "member";
+    /* Still checked before the network probe for an owner: a selection naming a
+     * group that was deleted while this form was open must fail where the user
+     * can see it, not after a connection and a local row write. */
+    let members = if scoped {
+        scope::validate_selection(db, input.scope_mode, &input.scope_member_ids)?
+    } else {
+        Vec::new()
+    };
     let uses_key = input
         .key_path
         .as_deref()
@@ -415,6 +432,28 @@ pub async fn save_dataset(
         secrets::delete_dataset_secrets(&previous.id)?;
     }
 
+    /* A row that becomes an owner must hold the owner signing key on this
+     * machine: without it the next push would either fail or, worse, publish
+     * under a fresh key that breaks every member's pin. Flipping owner back
+     * to member is allowed and keeps the key. Joining a signed remote as an
+     * owner needs the same proof — adopting someone else's pin is not joining. */
+    check_owner_transition(
+        existing_row.as_ref().map(|row| row.role.as_str()),
+        &new_role,
+        secrets::has_signing_key(&dataset_id),
+    )?;
+    if new_role == "owner"
+        && remote_meta
+            .as_ref()
+            .and_then(|meta| meta.owner_fingerprint.as_deref())
+            .is_some()
+        && !secrets::has_signing_key(&dataset_id)
+    {
+        return Err(SyncError::RoleDenied(
+            "this dataset is signed by an owner key this machine does not hold — join it as a member, or publish from the machine that created it".into(),
+        ));
+    }
+
     let now = chrono::Utc::now().to_rfc3339();
     let row = SyncDataset {
         id: dataset_id.clone(),
@@ -424,12 +463,19 @@ pub async fn save_dataset(
         username: endpoint.username.clone(),
         auth_type: if uses_key { "privateKey" } else { "password" }.to_string(),
         remote_path: endpoint.root.clone(),
-        role: input.role.clone().unwrap_or_else(|| "owner".to_string()),
+        role: new_role.clone(),
         content_flags: input.content_flags.normalized().to_json()?,
-        /* The key path rides in `scope_mode` as a small JSON object so a
-         * key-auth endpoint is reconstructible without another migration; the
-         * scope selector (AD-11, Task 8) extends the same object. */
-        scope_mode: scope_json(&existing_row, input.key_path.as_deref())?,
+        /* The key path and the scope mode ride in `scope_mode` as a small JSON
+         * object so a key-auth endpoint is reconstructible without another
+         * migration; the selection itself is the membership rows written beside
+         * the row below. A member's row stores `all` — the dataset's real scope
+         * belongs to its owner, and a selection no code reads must not sit in
+         * the row describing a subset this machine cannot act on. */
+        scope_mode: scope::scope_json(
+            &existing_row,
+            stored_scope(&new_role, input.scope_mode),
+            input.key_path.as_deref(),
+        )?,
         auto_sync: input.auto_sync.unwrap_or(false),
         pull_interval_secs: input.pull_interval_secs.unwrap_or(0).clamp(0, 86_400),
         push_debounce_secs: input.push_debounce_secs.unwrap_or(0).clamp(0, 3_600),
@@ -454,7 +500,10 @@ pub async fn save_dataset(
         updated_at: now,
     };
 
-    db.upsert_sync_dataset(&row)?;
+    /* The row and its scope land in one transaction: a reader that saw the new
+     * mode beside the previous selection would resolve a scope the user never
+     * saved. */
+    db.save_sync_dataset_with_members(&row, &members)?;
 
     /* Secrets are written after the row so a failed keychain write leaves a
      * dataset the UI shows as "needs its secret re-entered" rather than an
@@ -473,7 +522,7 @@ pub async fn save_dataset(
     secrets_input.passphrase.clear();
 
     Ok(SyncSaveOutcome {
-        dataset: SyncDatasetSummary::from(&row),
+        dataset: SyncDatasetSummary::build(db, &row)?,
         joined: remote_meta.is_some(),
         remote_generation: remote_meta
             .as_ref()
@@ -523,6 +572,38 @@ fn resolve_key_material(
     Ok((id, wrap, None))
 }
 
+/* The scope a save stores. A member never publishes, so its row keeps `all`:
+ * the dataset's real scope belongs to its owner, and a selection no code reads
+ * would otherwise sit in the row describing a subset this machine cannot act
+ * on — and, worse, an empty one would refuse the join. Pure so the rule is
+ * unit-testable without a server. */
+fn stored_scope(role: &str, requested: SyncScopeMode) -> SyncScopeMode {
+    if role == "member" {
+        SyncScopeMode::All
+    } else {
+        requested
+    }
+}
+
+/* Whether a row may take the owner role. A fresh owner row needs no key — the
+ * first push generates it — and staying an owner or stepping down to member
+ * never needs one. Only a row that *becomes* an owner must already hold the
+ * key, so the next push signs with the pinned identity instead of minting a
+ * new one. Pure over its inputs so the rule is unit-testable without a server. */
+fn check_owner_transition(
+    previous_role: Option<&str>,
+    new_role: &str,
+    has_signing_key: bool,
+) -> Result<(), SyncError> {
+    let becomes_owner = new_role == "owner" && previous_role != Some("owner");
+    if becomes_owner && previous_role.is_some() && !has_signing_key {
+        return Err(SyncError::RoleDenied(
+            "this dataset cannot become an owner without its signing key on this machine — it lives in the credential store of the machine that first published it".into(),
+        ));
+    }
+    Ok(())
+}
+
 /* The row has one blob column for the wrapped key, so the wrap's nonce is
  * stored in front of the ciphertext (`nonce || ciphertext`) instead of adding
  * a column. `KeyWrap` keeps them separate in the remote metadata file, where
@@ -552,28 +633,11 @@ pub fn row_wrap(row: &SyncDataset) -> Option<KeyWrap> {
     })
 }
 
-fn scope_json(
-    existing_row: &Option<SyncDataset>,
-    key_path: Option<&str>,
-) -> Result<String, SyncError> {
-    let mut map: BTreeMap<String, String> = existing_row
-        .as_ref()
-        .and_then(|row| serde_json::from_str(&row.scope_mode).ok())
-        .unwrap_or_default();
-    map.insert("mode".to_string(), "all".to_string());
-    match key_path.map(str::trim).filter(|path| !path.is_empty()) {
-        Some(path) => map.insert("keyPath".to_string(), path.to_string()),
-        None => map.remove("keyPath"),
-    };
-    serde_json::to_string(&map).map_err(|e| SyncError::Serialization(e.to_string()))
-}
-
 pub fn list_datasets(db: &HostDb) -> Result<Vec<SyncDatasetSummary>, SyncError> {
-    Ok(db
-        .list_sync_datasets()?
+    db.list_sync_datasets()?
         .iter()
-        .map(SyncDatasetSummary::from)
-        .collect())
+        .map(|row| SyncDatasetSummary::build(db, row))
+        .collect()
 }
 
 /// Shortest automatic pull interval and debounce the UI may set. Below these a
@@ -620,7 +684,7 @@ pub fn update_schedule(
     row.push_debounce_secs = push_debounce_secs;
     row.updated_at = chrono::Utc::now().to_rfc3339();
     db.upsert_sync_dataset(&row)?;
-    Ok(SyncDatasetSummary::from(&row))
+    SyncDatasetSummary::build(db, &row)
 }
 
 /// Remove a dataset's row, sync state, and secrets. Local hosts are untouched:
@@ -680,10 +744,60 @@ mod tests {
             remote_path: "/srv/omnissh/nova".into(),
             role: None,
             content_flags: SyncContentFlags::default(),
+            scope_mode: SyncScopeMode::All,
+            scope_member_ids: Vec::new(),
             auto_sync: None,
             pull_interval_secs: None,
             push_debounce_secs: None,
         }
+    }
+
+    /* Becoming an owner without the signing key is refused; every other
+     * transition — fresh owner rows, staying, stepping down — passes. */
+    #[test]
+    fn becoming_an_owner_without_the_signing_key_is_refused() {
+        assert!(check_owner_transition(None, "owner", false).is_ok());
+        assert!(check_owner_transition(None, "member", false).is_ok());
+        assert!(check_owner_transition(Some("owner"), "owner", false).is_ok());
+        assert!(check_owner_transition(Some("owner"), "member", false).is_ok());
+        assert!(check_owner_transition(Some("member"), "member", true).is_ok());
+        assert!(check_owner_transition(Some("member"), "owner", true).is_ok());
+        match check_owner_transition(Some("member"), "owner", false)
+            .expect_err("member-to-owner without the key must be refused")
+        {
+            SyncError::RoleDenied(message) => assert!(
+                message.contains("signing key"),
+                "the refusal must name the missing key, got {message}"
+            ),
+            other => panic!("expected RoleDenied, got {other:?}"),
+        }
+    }
+
+    /* A member's row stores `all` no matter what the form sent: it never
+     * publishes, so a stale or empty selection must not describe a subset this
+     * machine cannot act on — nor refuse the join. Owners keep their choice. */
+    #[test]
+    fn a_member_row_stores_an_all_scope_whatever_the_form_sent() {
+        assert_eq!(
+            stored_scope("member", SyncScopeMode::Groups),
+            SyncScopeMode::All
+        );
+        assert_eq!(
+            stored_scope("member", SyncScopeMode::Hosts),
+            SyncScopeMode::All
+        );
+        assert_eq!(
+            stored_scope("member", SyncScopeMode::All),
+            SyncScopeMode::All
+        );
+        assert_eq!(
+            stored_scope("owner", SyncScopeMode::Groups),
+            SyncScopeMode::Groups
+        );
+        assert_eq!(
+            stored_scope("owner", SyncScopeMode::Hosts),
+            SyncScopeMode::Hosts
+        );
     }
 
     /* The user's rule: automatic sync is off until switched on, and each
@@ -742,6 +856,7 @@ mod tests {
             updated_at: "2026-09-18T09:00:00Z".into(),
             writer_client_id: "other-client".into(),
             owner_fingerprint: Some("SHA256:owner".into()),
+            owner_pubkey: None,
             signature: Some("c2ln".into()),
         }
     }
@@ -889,7 +1004,9 @@ mod tests {
 
     #[test]
     fn summaries_expose_secret_presence_but_never_values() {
-        let summary = SyncDatasetSummary::from(&row("ds-1"));
+        let directory = tempfile::tempdir().expect("tempdir");
+        let db = HostDb::new(directory.path()).expect("db");
+        let summary = SyncDatasetSummary::build(&db, &row("ds-1")).expect("summary");
         let json = serde_json::to_string(&summary).unwrap();
 
         assert!(json.contains("\"lastGeneration\":3"));
@@ -932,17 +1049,21 @@ mod tests {
 
     #[test]
     fn key_path_survives_a_round_trip_through_the_scope_column() {
-        let json = scope_json(&None, Some(" /home/me/.ssh/id_ed25519 ")).unwrap();
+        let path = " /home/me/.ssh/id_ed25519 ";
+        let json = scope::scope_json(&None, SyncScopeMode::All, Some(path)).unwrap();
         let mut keyed = row("ds-1");
         keyed.scope_mode = json;
-        assert_eq!(key_path_of(&keyed).unwrap(), "/home/me/.ssh/id_ed25519");
+        assert_eq!(
+            scope::key_path_of(&keyed).unwrap(),
+            "/home/me/.ssh/id_ed25519"
+        );
 
         // Switching back to password auth drops the stored path.
-        let cleared = scope_json(&Some(keyed.clone()), None).unwrap();
+        let cleared = scope::scope_json(&Some(keyed.clone()), SyncScopeMode::All, None).unwrap();
         let mut passworded = row("ds-1");
         passworded.scope_mode = cleared;
         assert!(matches!(
-            key_path_of(&passworded),
+            scope::key_path_of(&passworded),
             Err(SyncError::NotFound(_))
         ));
     }
@@ -951,14 +1072,21 @@ mod tests {
      * the form would silently fall back to password authentication. */
     #[test]
     fn a_summary_reports_the_key_path_for_editing_but_never_a_secret() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let db = HostDb::new(directory.path()).expect("db");
+        let path = "/home/me/.ssh/id_ed25519";
+
         let mut password_row = row("ds-1");
-        password_row.scope_mode = scope_json(&None, None).unwrap();
-        assert!(SyncDatasetSummary::from(&password_row).key_path.is_none());
+        password_row.scope_mode = scope::scope_json(&None, SyncScopeMode::All, None).unwrap();
+        assert!(SyncDatasetSummary::build(&db, &password_row)
+            .expect("summary")
+            .key_path
+            .is_none());
 
         let mut key_row = row("ds-2");
         key_row.auth_type = "privateKey".into();
-        key_row.scope_mode = scope_json(&None, Some("/home/me/.ssh/id_ed25519")).unwrap();
-        let summary = SyncDatasetSummary::from(&key_row);
+        key_row.scope_mode = scope::scope_json(&None, SyncScopeMode::All, Some(path)).unwrap();
+        let summary = SyncDatasetSummary::build(&db, &key_row).expect("summary");
         assert_eq!(
             summary.key_path.as_deref(),
             Some("/home/me/.ssh/id_ed25519")
@@ -1038,6 +1166,8 @@ mod live {
             remote_path: remote_path.to_string(),
             role: None,
             content_flags: SyncContentFlags::default(),
+            scope_mode: SyncScopeMode::All,
+            scope_member_ids: Vec::new(),
             auto_sync: None,
             pull_interval_secs: None,
             push_debounce_secs: None,

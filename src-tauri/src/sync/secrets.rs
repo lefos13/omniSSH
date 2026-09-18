@@ -1,10 +1,10 @@
 /*
- * Where a dataset's secrets live.
- *
- * Two secrets per dataset, both in the OS keychain under a namespaced key:
+ * Where a dataset's secrets live: three entries in the OS keychain under a
+ * namespaced key —
  *
  *   sync:{dataset_id}:server      SSH password, or the private key's passphrase
  *   sync:{dataset_id}:passphrase  dataset passphrase that unwraps the dataset key
+ *   sync:{dataset_id}:signing     base64 owner ed25519 seed (owner role only)
  *
  * The OS keychain rather than the App Vault, deliberately: App Vault records
  * are keyed per host and readable only while the vault is unlocked, but sync
@@ -56,10 +56,18 @@ pub fn passphrase_key(dataset_id: &str) -> String {
     format!("sync:{dataset_id}:passphrase")
 }
 
+pub fn signing_key(dataset_id: &str) -> String {
+    format!("sync:{dataset_id}:signing")
+}
+
 /// Every keychain key a dataset owns. Used when a dataset is removed and by the
 /// backup / factory-reset sweeps.
-pub fn dataset_secret_keys(dataset_id: &str) -> [String; 2] {
-    [server_secret_key(dataset_id), passphrase_key(dataset_id)]
+pub fn dataset_secret_keys(dataset_id: &str) -> [String; 3] {
+    [
+        server_secret_key(dataset_id),
+        passphrase_key(dataset_id),
+        signing_key(dataset_id),
+    ]
 }
 
 pub fn validate_passphrase(passphrase: &str) -> Result<(), SyncError> {
@@ -125,8 +133,51 @@ pub fn has_passphrase(dataset_id: &str) -> bool {
     vault::has_credential(&passphrase_key(dataset_id))
 }
 
-/// Remove both secrets. A missing entry is success, so removing a dataset twice
-/// is not an error.
+/* The owner signing seed is stored base64 in a `Password`-shaped blob, like
+ * the passphrase: the credential store holds opaque values, and a tagged blob
+ * keeps the variant round-trippable without a new credential kind. The seed
+ * bytes are zeroized on the way through. */
+pub fn save_signing_seed(dataset_id: &str, seed: &[u8]) -> Result<(), SyncError> {
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use base64::Engine as _;
+    use zeroize::Zeroizing;
+    let encoded = Zeroizing::new(BASE64.encode(seed));
+    vault::save_credential(
+        &signing_key(dataset_id),
+        &StoredCredential::Password {
+            password: encoded.to_string(),
+        },
+    )?;
+    Ok(())
+}
+
+/// The stored owner seed. `NotFound` means this machine never generated (or
+/// joined with) the owner key — a member row, or an owner restored from backup.
+pub fn load_signing_seed(dataset_id: &str) -> Result<zeroize::Zeroizing<Vec<u8>>, SyncError> {
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use base64::Engine as _;
+    use zeroize::Zeroizing;
+    match vault::get_credential(&signing_key(dataset_id)) {
+        Ok(StoredCredential::Password { ref password }) => BASE64
+            .decode(password.as_bytes())
+            .map(Zeroizing::new)
+            .map_err(|_| SyncError::Vault("the stored owner signing key is not readable".into())),
+        Ok(other) => Err(SyncError::Vault(format!(
+            "the stored owner signing key has an unexpected form ({other:?})"
+        ))),
+        Err(VaultError::NotFound(_)) => Err(SyncError::NotFound(
+            "this machine does not hold the owner signing key for this dataset".into(),
+        )),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub fn has_signing_key(dataset_id: &str) -> bool {
+    vault::has_credential(&signing_key(dataset_id))
+}
+
+/// Remove every secret a dataset owns. A missing entry is success, so removing
+/// a dataset twice is not an error.
 pub fn delete_dataset_secrets(dataset_id: &str) -> Result<(), SyncError> {
     for key in dataset_secret_keys(dataset_id) {
         vault::delete_credential(&key)?;
@@ -142,11 +193,13 @@ mod tests {
     fn keys_are_namespaced_per_dataset_and_purpose() {
         assert_eq!(server_secret_key("ds-1"), "sync:ds-1:server");
         assert_eq!(passphrase_key("ds-1"), "sync:ds-1:passphrase");
+        assert_eq!(signing_key("ds-1"), "sync:ds-1:signing");
         assert_eq!(
             dataset_secret_keys("ds-1"),
             [
                 "sync:ds-1:server".to_string(),
-                "sync:ds-1:passphrase".to_string()
+                "sync:ds-1:passphrase".to_string(),
+                "sync:ds-1:signing".to_string()
             ]
         );
         // Two datasets never collide, and neither collides with a host id or an

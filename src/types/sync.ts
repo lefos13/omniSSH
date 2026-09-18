@@ -52,6 +52,8 @@ export type SyncErrorKind =
   | "locked"
   /** The remote generation moved on: another client published first. */
   | "conflict"
+  /** A member-role dataset attempted a publish, which only owners may do. */
+  | "roleDenied"
   /** A secret could not be read because the App Vault is locked. */
   | "vault"
   | "notFound"
@@ -104,6 +106,16 @@ export interface SyncDatasetSummary {
   role: SyncRole;
   contentFlags: SyncContentFlags;
   scopeMode: SyncScopeMode;
+  /**
+   * The group ids (`groups` mode) or host ids (`hosts` mode) the dataset
+   * selects; empty for `all`. Prefills the editor.
+   */
+  scopeMemberIds: string[];
+  /**
+   * How many of this machine's hosts the dataset carries right now, computed
+   * from the current hosts, groups, and selection.
+   */
+  scopeHostCount: number;
   /** Master switch. Off unless the user turned automatic sync on for this dataset. */
   autoSync: boolean;
   /** How often automatic sync pulls, in seconds. `0` = never on its own. */
@@ -128,6 +140,13 @@ export interface SyncDatasetInput {
   remotePath: string;
   role?: SyncRole;
   contentFlags: SyncContentFlags;
+  /** `all` unless the dataset is limited to groups or to explicit hosts. */
+  scopeMode: SyncScopeMode;
+  /**
+   * Group ids when `scopeMode` is `groups`, host ids when it is `hosts`. Must
+   * name at least one existing record for those modes; `all` ignores it.
+   */
+  scopeMemberIds: string[];
   /** Omitted cadences keep the stored values; a new dataset starts at `0` (manual only). */
   autoSync?: boolean;
   pullIntervalSecs?: number;
@@ -158,7 +177,6 @@ export interface SyncSaveOutcome {
   /** Generation found on the server at save time; 0 when nothing is published there. */
   remoteGeneration: number;
 }
-
 /** What a push would publish, answered before anything is written remotely. */
 export interface SyncPushPreflight {
   datasetId: string;
@@ -168,6 +186,16 @@ export interface SyncPushPreflight {
   hostsInScope: number;
   credentialsReadable: number;
   credentialsBlocked: number;
+  /* Whether this account can create and remove files at the remote path. A
+   * member dataset on a writable remote means the server is not enforcing the
+   * read-only role, so the row warns with the server-side fix. */
+  remoteWritable: boolean;
+}
+
+/** Result of republishing a dataset under a new passphrase (owner only). */
+export interface SyncRotateOutcome {
+  datasetId: string;
+  generation: number;
 }
 
 /** Counts from one successful push, mirrored into `sync_record_state`. */
@@ -183,6 +211,8 @@ export interface SyncPushOutcome {
   hostPlugins: number;
   appSettings: boolean;
   tombstones: number;
+  /** Hosts that left this dataset's scope with this push. Not deletions. */
+  scopeRemovals: number;
   credentialsIncluded: number;
 }
 
@@ -217,6 +247,11 @@ export interface SyncPullOutcome {
   keptLocal: number;
   conflicts: number;
   credentialsApplied: number;
+}
+/** One member dataset claiming a host as read-only (Task 10). */
+export interface SyncManagedBy {
+  datasetId: string;
+  name: string;
 }
 
 /** One both-changed record resolved by last-writer-wins (AD-5). */

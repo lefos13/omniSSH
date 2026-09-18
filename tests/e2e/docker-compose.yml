@@ -104,6 +104,56 @@ services:
     container_name: anyscp-e2e-sshd-scp-busybox-nostat
     networks: [e2e]
 
+  # ─── Sync endpoint ──────────────────────────────────────────────────────────
+  # Dataset-sync target (spec 95-sync-push-pull). Full SFTP — the sync
+  # transport refuses an SCP-only remote — with password auth for the app and
+  # the shared e2e key for the runner, which wipes the dataset directory between
+  # tests. The dataset sits on its own named volume: it must survive a run (it
+  # is the thing a human inspects over plain `sftp` afterwards), so specs clean
+  # it explicitly instead of relying on a fresh container.
+  sshd-sync:
+    image: lscr.io/linuxserver/openssh-server:latest
+    container_name: anyscp-e2e-sshd-sync
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: Etc/UTC
+      USER_NAME: testuser
+      USER_PASSWORD: testpass
+      PASSWORD_ACCESS: "true"
+      PUBLIC_KEY_FILE: /keys/id_ed25519.pub
+    volumes:
+      - test-ssh-keys:/keys:ro
+      - sync-dataset:/dataset
+    networks: [e2e]
+    depends_on:
+      keygen:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "ss -ltn 2>/dev/null | grep -q :2222 || netstat -lnt 2>/dev/null | grep -q :2222"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
+      start_period: 5s
+
+  # One-shot ownership fix for the dataset volume. Docker hands named volumes to
+  # the container as root, and the linuxserver image runs the SSH account as
+  # PUID/PGID 1000 — without this the sync account cannot create its directory
+  # inside the mount. The runner waits for it to complete before starting WDIO.
+  sync-dataset-init:
+    image: alpine:3.20
+    container_name: anyscp-e2e-sync-dataset-init
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        mkdir -p /dataset/data
+        chown -R 1000:1000 /dataset
+        echo "sync dataset directory ready"
+    volumes:
+      - sync-dataset:/dataset
+
   # ─── ProxyJump / tunnel pair ────────────────────────────────────────────────
   # Proves a connection is genuinely tunnelled. `sshd-bastion` bridges the
   # runner-reachable `e2e` network and an isolated `e2e-internal` network.
@@ -289,6 +339,12 @@ services:
         condition: service_started
       sshd-scp-busybox-nostat:
         condition: service_started
+      # Sync endpoint: healthy sshd (the spec's cleanup connects before WDIO's
+      # own probe would) and the one-shot that made the dataset volume writable.
+      sshd-sync:
+        condition: service_healthy
+      sync-dataset-init:
+        condition: service_completed_successfully
       sshd-bastion:
         condition: service_started
       sshd-tunnel-target:
@@ -312,6 +368,12 @@ services:
       SSHD_SCP_BUSYBOX_PORT: "2222"
       SSHD_SCP_BUSYBOX_NOSTAT_HOST: sshd-scp-busybox-nostat
       SSHD_SCP_BUSYBOX_NOSTAT_PORT: "2222"
+      # Sync endpoint (spec 95-sync-push-pull): the app reaches it over SFTP
+      # with the password below; the runner wipes SYNC_REMOTE_PATH over the
+      # shared key using the same testuser account.
+      SSHD_SYNC_HOST: sshd-sync
+      SSHD_SYNC_PORT: "2222"
+      SYNC_REMOTE_PATH: /dataset/data
       # ProxyJump pair: bastion is runner-reachable; the tunnel target is not.
       SSHD_BASTION_HOST: sshd-bastion
       SSHD_BASTION_PORT: "2222"
@@ -380,3 +442,6 @@ volumes:
   rust-target:
   node-modules:
   test-ssh-keys:
+  # Published dataset + history, kept between runs so the remote can be
+  # inspected (or a run resumed) after the stack is torn down.
+  sync-dataset:
