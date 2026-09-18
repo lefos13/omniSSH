@@ -1,0 +1,3 @@
+[submodule "omnissh-web"]
+	path = omnissh-web
+	url = https://github.com/lefos13/omnissh-web.git
