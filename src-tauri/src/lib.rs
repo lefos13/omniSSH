@@ -1,6 +1,6 @@
 mod ai;
 mod backup;
-mod db;
+pub mod db;
 mod editors;
 mod import;
 mod local_fs;
@@ -11,6 +11,7 @@ mod scp;
 mod sftp;
 mod snippets;
 mod ssh;
+pub mod sync;
 pub mod telemetry;
 pub mod transfer_common;
 mod types;
@@ -43,6 +44,42 @@ fn is_release_build() -> bool {
     !cfg!(debug_assertions)
 }
 
+/* Where persisted state lives.
+ *
+ * A debug build (`pnpm tauri dev`, the E2E binary) must never share a database
+ * with an installed release on the same machine: development runs create hosts,
+ * flip settings, publish datasets, and factory-reset at will, and every one of
+ * those would otherwise hit the user's real data. Debug builds therefore get a
+ * sibling directory (`…/com.omnissh.desktop-dev`), matched by a separate
+ * keychain namespace in `vault::service_name`.
+ *
+ * `OMNISSH_DATA_DIR` overrides the choice outright — an escape hatch for
+ * pointing a dev build at a copied dataset, or for pinning the directory in
+ * automation. Release builds ignore the suffix entirely, so an installed app
+ * always reads exactly the directory Tauri assigns it.
+ */
+fn resolve_data_dir(app_data_dir: std::path::PathBuf) -> std::path::PathBuf {
+    if let Some(override_dir) = std::env::var_os("OMNISSH_DATA_DIR") {
+        let path = std::path::PathBuf::from(override_dir);
+        if !path.as_os_str().is_empty() {
+            return path;
+        }
+    }
+    if !cfg!(debug_assertions) {
+        return app_data_dir;
+    }
+    match app_data_dir.file_name() {
+        Some(name) => {
+            let mut dev_name = name.to_os_string();
+            dev_name.push("-dev");
+            app_data_dir.with_file_name(dev_name)
+        }
+        // A path with no final component (a filesystem root) cannot be suffixed;
+        // keep it rather than inventing a location.
+        None => app_data_dir,
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
@@ -56,10 +93,12 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
-            let app_data_dir = app
-                .path()
-                .app_data_dir()
-                .map_err(|e| format!("could not resolve app data dir: {e}"))?;
+            let app_data_dir = resolve_data_dir(
+                app.path()
+                    .app_data_dir()
+                    .map_err(|e| format!("could not resolve app data dir: {e}"))?,
+            );
+            tracing::info!(dir = %app_data_dir.display(), release = !cfg!(debug_assertions), "resolved app data directory");
 
             let host_db = HostDb::new(&app_data_dir)
                 .map_err(|e| format!("failed to initialise database: {e}"))?;
@@ -150,12 +189,27 @@ pub fn run() {
                 .build()
                 .map_err(|e| format!("failed to create main window: {e}"))?;
 
-            app.manage(Arc::new(host_db));
+            let host_db = Arc::new(host_db);
+            app.manage(Arc::clone(&host_db));
             /* Keep the derived local-vault key in backend-managed memory only;
              * constructing this state during setup guarantees every launch
              * starts with the vault locked. */
-            app.manage(Arc::new(vault::LocalVault::new()));
+            let local_vault = Arc::new(vault::LocalVault::new());
+            app.manage(Arc::clone(&local_vault));
             app.manage(Arc::new(TermiusImportState::new()));
+
+            /* Background auto-sync. The scheduler is always running but does
+             * nothing until a dataset has `auto_sync` enabled with a non-zero
+             * cadence: automatic sync is opt-in per dataset, and the loop only
+             * reads the database until the user asks for it. */
+            let sync_scheduler = Arc::new(sync::scheduler::SyncScheduler::new());
+            app.manage(Arc::clone(&sync_scheduler));
+            sync::scheduler::spawn(
+                app.handle().clone(),
+                Arc::clone(&host_db),
+                local_vault,
+                sync_scheduler,
+            );
 
             // SftpManager must be created inside setup so it can be shared with
             // TransferManager, which also needs the AppHandle.
@@ -313,6 +367,17 @@ pub fn run() {
             backup::commands::backup_export,
             backup::commands::backup_import,
             backup::commands::backup_preflight,
+            // Encrypted dataset sync (self-hosted remote host datasets)
+            sync::commands::sync_test_connection,
+            sync::commands::sync_save_dataset,
+            sync::commands::sync_list_datasets,
+            sync::commands::sync_delete_dataset,
+            sync::commands::sync_push_preflight,
+            sync::commands::sync_push,
+            sync::commands::sync_pull,
+            sync::commands::sync_list_conflicts,
+            sync::commands::sync_update_schedule,
+            sync::commands::sync_status,
             // External editors
             editors::detect_editors,
             // Credential vault
@@ -393,4 +458,45 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_data_dir;
+    use std::path::PathBuf;
+
+    #[test]
+    fn a_debug_build_gets_its_own_directory() {
+        let resolved = resolve_data_dir(PathBuf::from(
+            "/Users/me/Library/Application Support/com.omnissh.desktop",
+        ));
+        let expected = if cfg!(debug_assertions) {
+            "/Users/me/Library/Application Support/com.omnissh.desktop-dev"
+        } else {
+            "/Users/me/Library/Application Support/com.omnissh.desktop"
+        };
+        assert_eq!(resolved, PathBuf::from(expected));
+    }
+
+    #[test]
+    fn the_env_override_wins_and_an_empty_value_is_ignored() {
+        /* Serialised by construction: both assertions manipulate the same
+         * process-wide variable, so they live in one test rather than racing
+         * each other across threads. */
+        let base = PathBuf::from("/data/com.omnissh.desktop");
+        std::env::set_var("OMNISSH_DATA_DIR", "/tmp/omnissh-scratch");
+        assert_eq!(
+            resolve_data_dir(base.clone()),
+            PathBuf::from("/tmp/omnissh-scratch")
+        );
+
+        std::env::set_var("OMNISSH_DATA_DIR", "");
+        let resolved = resolve_data_dir(base.clone());
+        assert_ne!(
+            resolved,
+            PathBuf::from(""),
+            "an empty override must not redirect state to the current directory"
+        );
+        std::env::remove_var("OMNISSH_DATA_DIR");
+    }
 }

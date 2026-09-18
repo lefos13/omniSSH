@@ -128,6 +128,8 @@ pub struct S3Connection {
     pub environment: Option<String>,
     pub notes: Option<String>,
     pub created_at: String,
+    /// Last edit timestamp — the last-writer-wins clock for dataset sync.
+    pub updated_at: String,
 }
 
 // ─── Manager ─────────────────────────────────────────────────────────────────

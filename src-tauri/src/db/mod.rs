@@ -224,6 +224,151 @@ pub struct ImportTransactionResult {
     pub skipped_host_ids: Vec<String>,
 }
 
+/* The content kinds a sync dataset can carry (AD-11). The string values are
+ * both the persisted `entity_type` column and the payload section name, so they
+ * are written out per variant instead of derived: renaming a Rust variant must
+ * never silently change the on-disk contract. A `hostPlugin` id is the
+ * `"{host_id}:{plugin_id}"` pair, matching `delete_plugin_config`'s NotFound key. */
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SyncEntityType {
+    #[serde(rename = "host")]
+    Host,
+    #[serde(rename = "group")]
+    Group,
+    #[serde(rename = "snippet")]
+    Snippet,
+    #[serde(rename = "snippetFolder")]
+    SnippetFolder,
+    #[serde(rename = "portForward")]
+    PortForward,
+    #[serde(rename = "s3Connection")]
+    S3Connection,
+    #[serde(rename = "hostPlugin")]
+    HostPlugin,
+    #[serde(rename = "appSettings")]
+    AppSettings,
+}
+
+impl SyncEntityType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Host => "host",
+            Self::Group => "group",
+            Self::Snippet => "snippet",
+            Self::SnippetFolder => "snippetFolder",
+            Self::PortForward => "portForward",
+            Self::S3Connection => "s3Connection",
+            Self::HostPlugin => "hostPlugin",
+            Self::AppSettings => "appSettings",
+        }
+    }
+
+    pub fn from_db(value: String) -> Result<Self, rusqlite::Error> {
+        match value.as_str() {
+            "host" => Ok(Self::Host),
+            "group" => Ok(Self::Group),
+            "snippet" => Ok(Self::Snippet),
+            "snippetFolder" => Ok(Self::SnippetFolder),
+            "portForward" => Ok(Self::PortForward),
+            "s3Connection" => Ok(Self::S3Connection),
+            "hostPlugin" => Ok(Self::HostPlugin),
+            "appSettings" => Ok(Self::AppSettings),
+            _ => Err(rusqlite::Error::InvalidColumnType(
+                0,
+                "entity_type".to_string(),
+                rusqlite::types::Type::Text,
+            )),
+        }
+    }
+}
+
+/* A remote sync endpoint plus this machine's role in it (AD-10, plural from day
+ * one). The struct deliberately holds no credential: the server password, the
+ * dataset passphrase, and the owner signing key live in the keychain / App
+ * Vault, and only KDF parameters plus the wrapped dataset key are persisted
+ * here, so a SQLite dump never yields a way to decrypt a dataset. */
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncDataset {
+    pub id: String,
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    /// One of: "password", "privateKey".
+    pub auth_type: String,
+    pub remote_path: String,
+    /// "owner" (may push) or "member" (pull-only).
+    pub role: String,
+    /// JSON object of enabled content kinds (AD-11), opaque to the backend.
+    pub content_flags: String,
+    /// "all" or an explicit selection, resolved by the sync layer.
+    pub scope_mode: String,
+    /// Master switch for background sync. Always starts disabled: automatic
+    /// sync only runs after the user turns it on.
+    pub auto_sync: bool,
+    /// Seconds between automatic pulls; 0 disables automatic pulling.
+    pub pull_interval_secs: i64,
+    /// Seconds of local quiet before an automatic push; 0 disables it.
+    pub push_debounce_secs: i64,
+    pub owner_fingerprint: Option<String>,
+    pub kdf_salt: Option<Vec<u8>>,
+    pub kdf_m_kib: Option<u32>,
+    pub kdf_t: Option<u32>,
+    pub kdf_p: Option<u32>,
+    pub wrapped_key: Option<Vec<u8>>,
+    pub last_generation: i64,
+    pub last_synced_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// The last state a record and its dataset agreed on (AD-5). A pull classifies
+/// each record by comparing the current row against this base, which is what
+/// separates "locally edited" from "remotely edited".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncRecordState {
+    pub dataset_id: String,
+    pub entity_type: SyncEntityType,
+    pub entity_id: String,
+    pub remote_revision: i64,
+    pub base_hash: String,
+    /// True when the record belongs to the dataset and is therefore read-only
+    /// locally until the user detaches it (AD-9).
+    pub managed: bool,
+    /// Empty string stamps `datetime('now')` on write.
+    #[serde(default)]
+    pub synced_at: String,
+}
+
+/// One resolution of a both-changed record (AD-5). The log is append-only and
+/// user-visible, so a losing copy is never discarded silently.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncConflict {
+    /// Assigned by SQLite on insert; a value passed to
+    /// [`HostDb::record_sync_conflicts`] is ignored.
+    #[serde(default)]
+    pub id: i64,
+    pub dataset_id: String,
+    pub entity_type: SyncEntityType,
+    pub entity_id: String,
+    /// Human-readable rule outcome, e.g. "kept newer local copy".
+    pub resolution: String,
+    pub winner_updated_at: Option<String>,
+    pub loser_updated_at: Option<String>,
+    /// Empty string stamps `datetime('now')` on write.
+    #[serde(default)]
+    pub detected_at: String,
+}
+
+/// A delete of a syncable entity, kept after the row is gone so a pull can tell
+/// "deleted remotely" apart from "not yet created locally".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncTombstone {
+    pub entity_type: SyncEntityType,
+    pub entity_id: String,
+    pub deleted_at: String,
+}
+
 // ---------------------------------------------------------------------------
 // Database handle
 // ---------------------------------------------------------------------------
@@ -716,6 +861,95 @@ impl HostDb {
             tracing::info!("migration 19→20 applied: added host_plugin_config");
         }
 
+        if version < 21 {
+            /* Sync dataset foundation (AD-10): plural tables from day one so
+             * phase 2 adds rows and UI, never another migration. `sync_datasets`
+             * holds endpoint metadata, the role, the per-dataset content toggles
+             * (AD-11), and the wrapped dataset key — never a secret: the server
+             * password, dataset passphrase, and owner signing key live in the
+             * keychain / App Vault. `sync_dataset_members` records scope,
+             * `sync_record_state` the last agreed per-record base a merge needs
+             * (AD-5), `sync_conflicts` the append-only resolution log, and
+             * `sync_tombstones` the delete log that survives the deleted row.
+             * Members, record state, and conflicts cascade with their dataset. */
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS sync_datasets (
+                    id                TEXT PRIMARY KEY,
+                    name              TEXT NOT NULL,
+                    host              TEXT NOT NULL,
+                    port              INTEGER NOT NULL DEFAULT 22,
+                    username          TEXT NOT NULL,
+                    auth_type         TEXT NOT NULL DEFAULT 'password',
+                    remote_path       TEXT NOT NULL,
+                    role              TEXT NOT NULL DEFAULT 'owner',
+                    content_flags     TEXT NOT NULL DEFAULT '{}',
+                    scope_mode        TEXT NOT NULL DEFAULT 'all',
+                    auto_sync         INTEGER NOT NULL DEFAULT 0,
+                    owner_fingerprint TEXT,
+                    kdf_salt          BLOB,
+                    kdf_m_kib         INTEGER,
+                    kdf_t             INTEGER,
+                    kdf_p             INTEGER,
+                    wrapped_key       BLOB,
+                    last_generation   INTEGER NOT NULL DEFAULT 0,
+                    last_synced_at    TEXT,
+                    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE TABLE IF NOT EXISTS sync_dataset_members (
+                    dataset_id  TEXT NOT NULL REFERENCES sync_datasets(id) ON DELETE CASCADE,
+                    entity_type TEXT NOT NULL,
+                    entity_id   TEXT NOT NULL,
+                    PRIMARY KEY (dataset_id, entity_type, entity_id)
+                );
+                CREATE TABLE IF NOT EXISTS sync_record_state (
+                    dataset_id      TEXT NOT NULL REFERENCES sync_datasets(id) ON DELETE CASCADE,
+                    entity_type     TEXT NOT NULL,
+                    entity_id       TEXT NOT NULL,
+                    remote_revision INTEGER NOT NULL DEFAULT 0,
+                    base_hash       TEXT NOT NULL,
+                    managed         INTEGER NOT NULL DEFAULT 0,
+                    synced_at       TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (dataset_id, entity_type, entity_id)
+                );
+                CREATE TABLE IF NOT EXISTS sync_conflicts (
+                    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                    dataset_id        TEXT NOT NULL REFERENCES sync_datasets(id) ON DELETE CASCADE,
+                    entity_type       TEXT NOT NULL,
+                    entity_id         TEXT NOT NULL,
+                    resolution        TEXT NOT NULL,
+                    winner_updated_at TEXT,
+                    loser_updated_at  TEXT,
+                    detected_at       TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE TABLE IF NOT EXISTS sync_tombstones (
+                    entity_type TEXT NOT NULL,
+                    entity_id   TEXT NOT NULL,
+                    deleted_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (entity_type, entity_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_sync_record_state_dataset
+                    ON sync_record_state(dataset_id);
+                INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', '21');",
+            )?;
+            tracing::info!("migration 20→21 applied: added sync dataset tables and tombstones");
+        }
+
+        if version < 22 {
+            /* Auto-sync cadences, per dataset. Both default to 0 = "never on
+             * its own", and `auto_sync` already defaults to 0, so an existing
+             * dataset stays fully manual until the user opts in — automatic
+             * sync is never switched on by a migration. `pull_interval_secs` is
+             * how often to fetch; `push_debounce_secs` is how long local edits
+             * must be quiet before publishing. */
+            conn.execute_batch(
+                "ALTER TABLE sync_datasets ADD COLUMN pull_interval_secs INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE sync_datasets ADD COLUMN push_debounce_secs INTEGER NOT NULL DEFAULT 0;
+                 INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', '22');",
+            )?;
+            tracing::info!("migration 21→22 applied: added sync auto-pull and auto-push cadences");
+        }
+
         Ok(())
     }
 
@@ -733,11 +967,13 @@ impl HostDb {
     /// validate separately.
     #[instrument(skip(self), fields(id = %host.id))]
     pub fn save_host(&self, host: &SavedHost) -> Result<(), DbError> {
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
-        Self::upsert_host(&conn, host)?;
+        let tx = conn.transaction()?;
+        Self::upsert_host(&tx, host)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -1255,6 +1491,7 @@ impl HostDb {
                AND (SELECT credential_storage FROM saved_hosts WHERE id = ?1) = 'keychain'",
             params![host.id],
         )?;
+        Self::clear_tombstone(conn, SyncEntityType::Host, &host.id)?;
         Ok(())
     }
 
@@ -1312,22 +1549,28 @@ impl HostDb {
 
     /// Delete a host by its UUID string.  Returns `DbError::NotFound` when no
     /// row matched so callers can surface a meaningful error to the frontend.
+    ///
+    /// The host tombstone is written in the same transaction as the delete, and
+    /// it also covers the rows removed by cascade (port forwards, plugin
+    /// config); recent paths are keyed by identity rather than a foreign key,
+    /// so they are removed explicitly here.
     #[instrument(skip(self), fields(id = %id))]
     pub fn delete_host(&self, id: &str) -> Result<(), DbError> {
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
-        let affected = conn.execute("DELETE FROM saved_hosts WHERE id = ?1", params![id])?;
+        let tx = conn.transaction()?;
+        let affected = tx.execute("DELETE FROM saved_hosts WHERE id = ?1", params![id])?;
         if affected == 0 {
             return Err(DbError::NotFound(id.to_string()));
         }
-        // Recent paths are keyed by identity rather than a foreign key, so
-        // remove the host's history explicitly alongside the host row.
-        conn.execute(
+        Self::record_tombstone(&tx, SyncEntityType::Host, id)?;
+        tx.execute(
             "DELETE FROM recent_paths WHERE host_key = ?1",
             params![format!("host:{id}")],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -1631,11 +1874,12 @@ impl HostDb {
                 "config must be a JSON object".to_string(),
             ));
         }
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
-        let affected = conn.execute(
+        let tx = conn.transaction()?;
+        let written = tx.execute(
             "INSERT INTO host_plugin_config (host_id, plugin_id, enabled, config, updated_at)
              VALUES (?1, ?2, ?3, ?4, datetime('now'))
              ON CONFLICT(host_id, plugin_id) DO UPDATE SET
@@ -1644,8 +1888,16 @@ impl HostDb {
                  updated_at = datetime('now')",
             params![host_id, plugin_id, enabled as i32, config],
         );
-        match affected {
-            Ok(_) => Ok(()),
+        match written {
+            Ok(_) => {
+                Self::clear_tombstone(
+                    &tx,
+                    SyncEntityType::HostPlugin,
+                    &plugin_entity_id(host_id, plugin_id),
+                )?;
+                tx.commit()?;
+                Ok(())
+            }
             Err(rusqlite::Error::SqliteFailure(error, _))
                 if error.code == rusqlite::ErrorCode::ConstraintViolation =>
             {
@@ -1680,17 +1932,24 @@ impl HostDb {
     /// Delete one plugin row. Returns `NotFound` when the row never existed.
     #[instrument(skip(self))]
     pub fn delete_plugin_config(&self, host_id: &str, plugin_id: &str) -> Result<(), DbError> {
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
-        let affected = conn.execute(
+        let tx = conn.transaction()?;
+        let affected = tx.execute(
             "DELETE FROM host_plugin_config WHERE host_id = ?1 AND plugin_id = ?2",
             params![host_id, plugin_id],
         )?;
         if affected == 0 {
             return Err(DbError::NotFound(format!("{host_id}:{plugin_id}")));
         }
+        Self::record_tombstone(
+            &tx,
+            SyncEntityType::HostPlugin,
+            &plugin_entity_id(host_id, plugin_id),
+        )?;
+        tx.commit()?;
         Ok(())
     }
     pub fn list_connection_history(
@@ -1761,11 +2020,14 @@ impl HostDb {
     /// Insert a new group record.
     #[instrument(skip(self), fields(id = %group.id))]
     pub fn create_group(&self, group: &HostGroup) -> Result<(), DbError> {
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
-        Self::insert_group(&conn, group)
+        let tx = conn.transaction()?;
+        Self::insert_group(&tx, group)?;
+        tx.commit()?;
+        Ok(())
     }
 
     fn insert_group(conn: &Connection, group: &HostGroup) -> Result<(), DbError> {
@@ -1783,17 +2045,19 @@ impl HostDb {
                 group.updated_at,
             ],
         )?;
+        Self::clear_tombstone(conn, SyncEntityType::Group, &group.id)?;
         Ok(())
     }
 
     /// Update an existing group record.  All mutable fields are replaced.
     #[instrument(skip(self), fields(id = %group.id))]
     pub fn update_group(&self, group: &HostGroup) -> Result<(), DbError> {
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
-        let affected = conn.execute(
+        let tx = conn.transaction()?;
+        let affected = tx.execute(
             "UPDATE host_groups
              SET name             = ?2,
                  color            = ?3,
@@ -1815,6 +2079,8 @@ impl HostDb {
         if affected == 0 {
             return Err(DbError::NotFound(group.id.clone()));
         }
+        Self::clear_tombstone(&tx, SyncEntityType::Group, &group.id)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -1876,33 +2142,49 @@ impl HostDb {
 
     /// Delete a group by id.  Due to the `ON DELETE SET NULL` foreign-key
     /// constraint, any hosts that belonged to this group are orphaned (their
-    /// `group_id` is set to NULL) rather than deleted.
+    /// `group_id` is set to NULL) rather than deleted, so only the group itself
+    /// is tombstoned.
     #[instrument(skip(self), fields(id = %id))]
     pub fn delete_group(&self, id: &str) -> Result<(), DbError> {
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
-        let affected = conn.execute("DELETE FROM host_groups WHERE id = ?1", params![id])?;
+        let tx = conn.transaction()?;
+        let affected = tx.execute("DELETE FROM host_groups WHERE id = ?1", params![id])?;
         if affected == 0 {
             return Err(DbError::NotFound(id.to_string()));
         }
+        Self::record_tombstone(&tx, SyncEntityType::Group, id)?;
+        tx.commit()?;
         Ok(())
     }
 
-    /// Delete a group and ALL hosts that belong to it.
+    /// Delete a group and ALL hosts that belong to it. One tombstone is written
+    /// per removed host so a pull deletes each of them remotely — the group
+    /// tombstone alone would not say which hosts disappeared.
     #[instrument(skip(self), fields(id = %id))]
     pub fn delete_group_with_hosts(&self, id: &str) -> Result<(), DbError> {
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
-        // Delete hosts first (before the group, since FK is ON DELETE SET NULL)
-        conn.execute("DELETE FROM saved_hosts WHERE group_id = ?1", params![id])?;
-        let affected = conn.execute("DELETE FROM host_groups WHERE id = ?1", params![id])?;
+        let tx = conn.transaction()?;
+        let host_ids = tx
+            .prepare("SELECT id FROM saved_hosts WHERE group_id = ?1")?
+            .query_map(params![id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        // Delete hosts first (before the group, since FK is ON DELETE SET NULL).
+        tx.execute("DELETE FROM saved_hosts WHERE group_id = ?1", params![id])?;
+        let affected = tx.execute("DELETE FROM host_groups WHERE id = ?1", params![id])?;
         if affected == 0 {
             return Err(DbError::NotFound(id.to_string()));
         }
+        for host_id in &host_ids {
+            Self::record_tombstone(&tx, SyncEntityType::Host, host_id)?;
+        }
+        Self::record_tombstone(&tx, SyncEntityType::Group, id)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -1914,11 +2196,12 @@ impl HostDb {
     /// fully replaced; `created_at` is preserved by the caller-supplied value.
     #[instrument(skip(self), fields(id = %snippet.id))]
     pub fn save_snippet(&self, snippet: &Snippet) -> Result<(), DbError> {
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
-        conn.execute(
+        let tx = conn.transaction()?;
+        tx.execute(
             "INSERT INTO snippets (
                  id, name, command, description, folder_id, tags, variables,
                  is_dangerous, use_count, last_used_at, sort_order, created_at, updated_at
@@ -1952,6 +2235,8 @@ impl HostDb {
                 snippet.updated_at,
             ],
         )?;
+        Self::clear_tombstone(&tx, SyncEntityType::Snippet, &snippet.id)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -2051,14 +2336,17 @@ impl HostDb {
     /// no row matched.
     #[instrument(skip(self), fields(id = %id))]
     pub fn delete_snippet(&self, id: &str) -> Result<(), DbError> {
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
-        let affected = conn.execute("DELETE FROM snippets WHERE id = ?1", params![id])?;
+        let tx = conn.transaction()?;
+        let affected = tx.execute("DELETE FROM snippets WHERE id = ?1", params![id])?;
         if affected == 0 {
             return Err(DbError::NotFound(id.to_string()));
         }
+        Self::record_tombstone(&tx, SyncEntityType::Snippet, id)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -2147,11 +2435,12 @@ impl HostDb {
     /// it is fully replaced.
     #[instrument(skip(self), fields(id = %folder.id))]
     pub fn save_snippet_folder(&self, folder: &SnippetFolder) -> Result<(), DbError> {
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
-        conn.execute(
+        let tx = conn.transaction()?;
+        tx.execute(
             "INSERT INTO snippet_folders (id, name, parent_id, color, icon, sort_order, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(id) DO UPDATE SET
@@ -2172,6 +2461,8 @@ impl HostDb {
                 folder.updated_at,
             ],
         )?;
+        Self::clear_tombstone(&tx, SyncEntityType::SnippetFolder, &folder.id)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -2208,16 +2499,23 @@ impl HostDb {
     /// `snippet_folders.parent_id`, child sub-folders are also removed.
     /// Due to `ON DELETE SET NULL` on `snippets.folder_id`, snippets inside
     /// this folder are orphaned rather than deleted.
+    ///
+    /// Only this folder is tombstoned: sub-folders disappear as a cascade of
+    /// the same delete, exactly as host children do, so the parent's tombstone
+    /// covers them.
     #[instrument(skip(self), fields(id = %id))]
     pub fn delete_snippet_folder(&self, id: &str) -> Result<(), DbError> {
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
-        let affected = conn.execute("DELETE FROM snippet_folders WHERE id = ?1", params![id])?;
+        let tx = conn.transaction()?;
+        let affected = tx.execute("DELETE FROM snippet_folders WHERE id = ?1", params![id])?;
         if affected == 0 {
             return Err(DbError::NotFound(id.to_string()));
         }
+        Self::record_tombstone(&tx, SyncEntityType::SnippetFolder, id)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -2272,15 +2570,18 @@ impl HostDb {
         remote_port: u32,
         auto_start: bool,
     ) -> Result<(), DbError> {
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
-        conn.execute(
+        let tx = conn.transaction()?;
+        tx.execute(
             "INSERT INTO port_forwarding_rules (id, host_id, label, description, forward_type, bind_address, local_port, remote_host, remote_port, auto_start)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![id, host_id, label, description, forward_type, bind_address, local_port as i64, remote_host, remote_port as i64, auto_start as i32],
         )?;
+        Self::clear_tombstone(&tx, SyncEntityType::PortForward, id)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -2296,17 +2597,20 @@ impl HostDb {
         remote_port: u32,
         auto_start: bool,
     ) -> Result<(), DbError> {
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
-        let affected = conn.execute(
+        let tx = conn.transaction()?;
+        let affected = tx.execute(
             "UPDATE port_forwarding_rules SET label=?2, description=?3, bind_address=?4, local_port=?5, remote_host=?6, remote_port=?7, auto_start=?8, updated_at=datetime('now') WHERE id=?1",
             params![id, label, description, bind_address, local_port as i64, remote_host, remote_port as i64, auto_start as i32],
         )?;
         if affected == 0 {
             return Err(DbError::NotFound(id.to_string()));
         }
+        Self::clear_tombstone(&tx, SyncEntityType::PortForward, id)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -2324,17 +2628,20 @@ impl HostDb {
     }
 
     pub fn delete_pf_rule(&self, id: &str) -> Result<(), DbError> {
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
-        let affected = conn.execute(
+        let tx = conn.transaction()?;
+        let affected = tx.execute(
             "DELETE FROM port_forwarding_rules WHERE id = ?1",
             params![id],
         )?;
         if affected == 0 {
             return Err(DbError::NotFound(id.to_string()));
         }
+        Self::record_tombstone(&tx, SyncEntityType::PortForward, id)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -2346,8 +2653,8 @@ impl HostDb {
             .conn
             .lock()
             .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
-        let sql_all = "SELECT id, host_id, label, forward_type, bind_address, local_port, remote_host, remote_port, auto_start, enabled, created_at, description, last_used_at, total_bytes FROM port_forwarding_rules ORDER BY sort_order";
-        let sql_host = "SELECT id, host_id, label, forward_type, bind_address, local_port, remote_host, remote_port, auto_start, enabled, created_at, description, last_used_at, total_bytes FROM port_forwarding_rules WHERE host_id = ?1 ORDER BY sort_order";
+        let sql_all = "SELECT id, host_id, label, forward_type, bind_address, local_port, remote_host, remote_port, auto_start, enabled, created_at, description, last_used_at, total_bytes, updated_at FROM port_forwarding_rules ORDER BY sort_order";
+        let sql_host = "SELECT id, host_id, label, forward_type, bind_address, local_port, remote_host, remote_port, auto_start, enabled, created_at, description, last_used_at, total_bytes, updated_at FROM port_forwarding_rules WHERE host_id = ?1 ORDER BY sort_order";
 
         if let Some(hid) = host_id {
             let mut stmt = conn.prepare(sql_host)?;
@@ -2376,6 +2683,7 @@ impl HostDb {
             description: row.get(11)?,
             last_used_at: row.get(12)?,
             total_bytes: row.get::<_, i64>(13).unwrap_or(0) as u64,
+            updated_at: row.get(14)?,
         })
     }
 
@@ -2398,15 +2706,18 @@ impl HostDb {
         environment: Option<&str>,
         notes: Option<&str>,
     ) -> Result<(), DbError> {
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
-        conn.execute(
+        let tx = conn.transaction()?;
+        tx.execute(
             "INSERT OR REPLACE INTO s3_connections (id, label, provider, region, endpoint, bucket, path_style, group_id, color, environment, notes, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'))",
             params![id, label, provider, region, endpoint, bucket, path_style as i32, group_id, color, environment, notes],
         )?;
+        Self::clear_tombstone(&tx, SyncEntityType::S3Connection, id)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -2416,7 +2727,7 @@ impl HostDb {
             .lock()
             .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
         let mut stmt = conn.prepare(
-            "SELECT id, label, provider, region, endpoint, bucket, path_style, group_id, color, environment, notes, created_at FROM s3_connections ORDER BY sort_order ASC, label ASC"
+            "SELECT id, label, provider, region, endpoint, bucket, path_style, group_id, color, environment, notes, created_at, updated_at FROM s3_connections ORDER BY sort_order ASC, label ASC"
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(crate::s3::S3Connection {
@@ -2432,6 +2743,7 @@ impl HostDb {
                 environment: row.get(9)?,
                 notes: row.get(10)?,
                 created_at: row.get(11)?,
+                updated_at: row.get(12)?,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -2465,11 +2777,16 @@ impl HostDb {
     }
 
     pub fn delete_s3_connection(&self, id: &str) -> Result<(), DbError> {
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
-        conn.execute("DELETE FROM s3_connections WHERE id = ?1", params![id])?;
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM s3_connections WHERE id = ?1", params![id])?;
+        // No NotFound guard here: deleting an already-absent connection is
+        // idempotent, and its tombstone is still the right delete record.
+        Self::record_tombstone(&tx, SyncEntityType::S3Connection, id)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -2524,6 +2841,10 @@ impl HostDb {
             .prepare("SELECT id FROM s3_connections")?
             .query_map([], |r| r.get::<_, String>(0))?
             .collect::<Result<Vec<String>, _>>()?;
+        let sync_dataset_ids = conn
+            .prepare("SELECT id FROM sync_datasets")?
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<Result<Vec<String>, _>>()?;
 
         // One transaction. `defer_foreign_keys` postpones FK checks to commit, so
         // we don't have to order deletes around the self-referential
@@ -2544,16 +2865,31 @@ impl HostDb {
              DELETE FROM saved_hosts;
              DELETE FROM host_groups;
              DELETE FROM vault_cleanup_queue;
-             DELETE FROM app_settings;",
+             DELETE FROM app_settings;
+             DELETE FROM sync_conflicts;
+             DELETE FROM sync_record_state;
+             DELETE FROM sync_dataset_members;
+             DELETE FROM sync_datasets;
+             DELETE FROM sync_tombstones;",
         )?;
         tx.commit()?;
 
+        /* Deliberately no tombstones: the deletes above are raw SQL, so a reset
+         * records nothing for sync to publish. A machine that clears its data
+         * and then pushes must not erase a shared dataset — it re-receives the
+         * records on its next pull instead. `sync_record_state` goes too, so the
+         * cleared machine no longer claims those records as its merge base. */
         tracing::info!(
             hosts = host_ids.len(),
             s3 = s3_ids.len(),
+            sync_datasets = sync_dataset_ids.len(),
             "factory reset: cleared all data and settings"
         );
-        Ok(ResetKeys { host_ids, s3_ids })
+        Ok(ResetKeys {
+            host_ids,
+            s3_ids,
+            sync_dataset_ids,
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -2697,12 +3033,469 @@ impl HostDb {
     }
 }
 
+/* Sync dataset accessors (AD-5, AD-10): the persistence half of the sync
+ * feature, kept in their own impl block so the sync surface reads as one API.
+ * Reachability comes from `pub mod db` in lib.rs — the push/pull paths that
+ * consume them land with the sync module. */
+impl HostDb {
+    // -----------------------------------------------------------------------
+    // Sync datasets
+    // -----------------------------------------------------------------------
+
+    /* Tombstone writes are inseparable from the delete they record, and a
+     * tombstone written without the delete (or the reverse) would make a merge
+     * resurrect or drop a record. Both helpers therefore take a bare connection
+     * so the caller can run them inside its own transaction, exactly like the
+     * shared `upsert_host` / `insert_group` helpers. */
+    fn record_tombstone(
+        conn: &Connection,
+        entity_type: SyncEntityType,
+        entity_id: &str,
+    ) -> Result<(), DbError> {
+        conn.execute(
+            "INSERT OR REPLACE INTO sync_tombstones (entity_type, entity_id, deleted_at)
+             VALUES (?1, ?2, datetime('now'))",
+            params![entity_type.as_str(), entity_id],
+        )?;
+        Ok(())
+    }
+
+    /// Inverse of [`record_tombstone`](Self::record_tombstone): saving an id
+    /// means the record exists again, so its delete log entry must go away in
+    /// the same transaction or a pull would re-delete it.
+    fn clear_tombstone(
+        conn: &Connection,
+        entity_type: SyncEntityType,
+        entity_id: &str,
+    ) -> Result<(), DbError> {
+        conn.execute(
+            "DELETE FROM sync_tombstones WHERE entity_type = ?1 AND entity_id = ?2",
+            params![entity_type.as_str(), entity_id],
+        )?;
+        Ok(())
+    }
+
+    /// Upsert a dataset endpoint row. `created_at` is preserved by the caller
+    /// supplying the original value, mirroring [`save_host`](Self::save_host).
+    #[instrument(skip(self), fields(id = %dataset.id))]
+    pub fn upsert_sync_dataset(&self, dataset: &SyncDataset) -> Result<(), DbError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        conn.execute(
+            "INSERT INTO sync_datasets (
+                 id, name, host, port, username, auth_type, remote_path, role,
+                 content_flags, scope_mode, auto_sync, owner_fingerprint,
+                 kdf_salt, kdf_m_kib, kdf_t, kdf_p, wrapped_key,
+                 last_generation, last_synced_at, created_at, updated_at,
+                 pull_interval_secs, push_debounce_secs
+             )
+             VALUES (
+                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+                 ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23
+             )
+             ON CONFLICT(id) DO UPDATE SET
+                 name              = excluded.name,
+                 host              = excluded.host,
+                 port              = excluded.port,
+                 username          = excluded.username,
+                 auth_type         = excluded.auth_type,
+                 remote_path       = excluded.remote_path,
+                 role              = excluded.role,
+                 content_flags     = excluded.content_flags,
+                 scope_mode        = excluded.scope_mode,
+                 auto_sync         = excluded.auto_sync,
+                 owner_fingerprint = excluded.owner_fingerprint,
+                 kdf_salt          = excluded.kdf_salt,
+                 kdf_m_kib         = excluded.kdf_m_kib,
+                 kdf_t             = excluded.kdf_t,
+                 kdf_p             = excluded.kdf_p,
+                 wrapped_key       = excluded.wrapped_key,
+                 last_generation   = excluded.last_generation,
+                 last_synced_at    = excluded.last_synced_at,
+                 updated_at        = excluded.updated_at,
+                 pull_interval_secs = excluded.pull_interval_secs,
+                 push_debounce_secs = excluded.push_debounce_secs",
+            params![
+                dataset.id,
+                dataset.name,
+                dataset.host,
+                dataset.port as i64,
+                dataset.username,
+                dataset.auth_type,
+                dataset.remote_path,
+                dataset.role,
+                dataset.content_flags,
+                dataset.scope_mode,
+                dataset.auto_sync as i32,
+                dataset.owner_fingerprint,
+                dataset.kdf_salt,
+                dataset.kdf_m_kib,
+                dataset.kdf_t,
+                dataset.kdf_p,
+                dataset.wrapped_key,
+                dataset.last_generation,
+                dataset.last_synced_at,
+                dataset.created_at,
+                dataset.updated_at,
+                dataset.pull_interval_secs,
+                dataset.push_debounce_secs,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn map_sync_dataset_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SyncDataset> {
+        Ok(SyncDataset {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            host: row.get(2)?,
+            port: row.get::<_, u32>(3)? as u16,
+            username: row.get(4)?,
+            auth_type: row.get(5)?,
+            remote_path: row.get(6)?,
+            role: row.get(7)?,
+            content_flags: row.get(8)?,
+            scope_mode: row.get(9)?,
+            auto_sync: row.get::<_, i32>(10)? != 0,
+            owner_fingerprint: row.get(11)?,
+            kdf_salt: row.get(12)?,
+            kdf_m_kib: row.get(13)?,
+            kdf_t: row.get(14)?,
+            kdf_p: row.get(15)?,
+            wrapped_key: row.get(16)?,
+            last_generation: row.get(17)?,
+            last_synced_at: row.get(18)?,
+            created_at: row.get(19)?,
+            updated_at: row.get(20)?,
+            pull_interval_secs: row.get(21)?,
+            push_debounce_secs: row.get(22)?,
+        })
+    }
+
+    #[instrument(skip(self))]
+    pub fn list_sync_datasets(&self) -> Result<Vec<SyncDataset>, DbError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, host, port, username, auth_type, remote_path, role,
+                    content_flags, scope_mode, auto_sync, owner_fingerprint,
+                    kdf_salt, kdf_m_kib, kdf_t, kdf_p, wrapped_key,
+                    last_generation, last_synced_at, created_at, updated_at,
+                    pull_interval_secs, push_debounce_secs
+             FROM sync_datasets
+             ORDER BY name ASC, id ASC",
+        )?;
+        let rows = stmt.query_map([], Self::map_sync_dataset_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(DbError::from)
+    }
+
+    #[instrument(skip(self), fields(id = %id))]
+    pub fn get_sync_dataset(&self, id: &str) -> Result<Option<SyncDataset>, DbError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        conn.query_row(
+            "SELECT id, name, host, port, username, auth_type, remote_path, role,
+                    content_flags, scope_mode, auto_sync, owner_fingerprint,
+                    kdf_salt, kdf_m_kib, kdf_t, kdf_p, wrapped_key,
+                    last_generation, last_synced_at, created_at, updated_at,
+                    pull_interval_secs, push_debounce_secs
+             FROM sync_datasets WHERE id = ?1",
+            params![id],
+            Self::map_sync_dataset_row,
+        )
+        .optional()
+        .map_err(DbError::from)
+    }
+
+    /// Delete a dataset. Its members, record state, and conflict log go with it
+    /// through `ON DELETE CASCADE`; local hosts are never touched.
+    #[instrument(skip(self), fields(id = %id))]
+    pub fn delete_sync_dataset(&self, id: &str) -> Result<(), DbError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let affected = conn.execute("DELETE FROM sync_datasets WHERE id = ?1", params![id])?;
+        if affected == 0 {
+            return Err(DbError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    /// Replace a dataset's scope membership in one transaction, so a pull never
+    /// observes a half-written selection.
+    #[instrument(skip(self, members), fields(dataset_id = %dataset_id, count = members.len()))]
+    pub fn set_sync_dataset_members(
+        &self,
+        dataset_id: &str,
+        members: &[(SyncEntityType, String)],
+    ) -> Result<(), DbError> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM sync_dataset_members WHERE dataset_id = ?1",
+            params![dataset_id],
+        )?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR REPLACE INTO sync_dataset_members (dataset_id, entity_type, entity_id)
+                 VALUES (?1, ?2, ?3)",
+            )?;
+            for (entity_type, entity_id) in members {
+                stmt.execute(params![dataset_id, entity_type.as_str(), entity_id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    #[instrument(skip(self), fields(dataset_id = %dataset_id))]
+    pub fn list_sync_dataset_members(
+        &self,
+        dataset_id: &str,
+    ) -> Result<Vec<(SyncEntityType, String)>, DbError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let mut stmt = conn.prepare(
+            "SELECT entity_type, entity_id FROM sync_dataset_members
+             WHERE dataset_id = ?1 ORDER BY entity_type ASC, entity_id ASC",
+        )?;
+        let rows = stmt.query_map(params![dataset_id], |row| {
+            Ok((
+                SyncEntityType::from_db(row.get(0)?)?,
+                row.get::<_, String>(1)?,
+            ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(DbError::from)
+    }
+
+    /// Upsert the agreed base state for a batch of records. Records carry their
+    /// own `synced_at`; an empty value lets SQLite stamp the write time.
+    #[instrument(skip(self, states), fields(count = states.len()))]
+    pub fn upsert_sync_record_state(&self, states: &[SyncRecordState]) -> Result<(), DbError> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO sync_record_state (
+                     dataset_id, entity_type, entity_id, remote_revision, base_hash, managed, synced_at
+                 )
+                 VALUES (
+                     ?1, ?2, ?3, ?4, ?5, ?6,
+                     CASE WHEN ?7 = '' THEN datetime('now') ELSE ?7 END
+                 )
+                 ON CONFLICT(dataset_id, entity_type, entity_id) DO UPDATE SET
+                     remote_revision = excluded.remote_revision,
+                     base_hash       = excluded.base_hash,
+                     managed         = excluded.managed,
+                     synced_at       = excluded.synced_at",
+            )?;
+            for state in states {
+                stmt.execute(params![
+                    state.dataset_id,
+                    state.entity_type.as_str(),
+                    state.entity_id,
+                    state.remote_revision,
+                    state.base_hash,
+                    state.managed as i32,
+                    state.synced_at,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    #[instrument(skip(self), fields(dataset_id = %dataset_id))]
+    pub fn list_sync_record_state(
+        &self,
+        dataset_id: &str,
+    ) -> Result<Vec<SyncRecordState>, DbError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let mut stmt = conn.prepare(
+            "SELECT dataset_id, entity_type, entity_id, remote_revision, base_hash, managed, synced_at
+             FROM sync_record_state
+             WHERE dataset_id = ?1
+             ORDER BY entity_type ASC, entity_id ASC",
+        )?;
+        let rows = stmt.query_map(params![dataset_id], |row| {
+            Ok(SyncRecordState {
+                dataset_id: row.get(0)?,
+                entity_type: SyncEntityType::from_db(row.get(1)?)?,
+                entity_id: row.get(2)?,
+                remote_revision: row.get(3)?,
+                base_hash: row.get(4)?,
+                managed: row.get::<_, i32>(5)? != 0,
+                synced_at: row.get(6)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(DbError::from)
+    }
+
+    /// Drop record state for one record (detach, AD-9) or for a whole dataset
+    /// (a fresh pull), returning how many rows were removed.
+    #[instrument(skip(self), fields(dataset_id = %dataset_id))]
+    pub fn clear_sync_record_state(
+        &self,
+        dataset_id: &str,
+        entity: Option<(SyncEntityType, &str)>,
+    ) -> Result<usize, DbError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let affected = match entity {
+            Some((entity_type, entity_id)) => conn.execute(
+                "DELETE FROM sync_record_state
+                 WHERE dataset_id = ?1 AND entity_type = ?2 AND entity_id = ?3",
+                params![dataset_id, entity_type.as_str(), entity_id],
+            )?,
+            None => conn.execute(
+                "DELETE FROM sync_record_state WHERE dataset_id = ?1",
+                params![dataset_id],
+            )?,
+        };
+        Ok(affected)
+    }
+
+    /// Append merge resolutions to the conflict log. `id` on each input is
+    /// ignored (SQLite assigns it); an empty `detected_at` stamps the write time.
+    #[instrument(skip(self, conflicts), fields(count = conflicts.len()))]
+    pub fn record_sync_conflicts(&self, conflicts: &[SyncConflict]) -> Result<(), DbError> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO sync_conflicts (
+                     dataset_id, entity_type, entity_id, resolution,
+                     winner_updated_at, loser_updated_at, detected_at
+                 )
+                 VALUES (
+                     ?1, ?2, ?3, ?4, ?5, ?6,
+                     CASE WHEN ?7 = '' THEN datetime('now') ELSE ?7 END
+                 )",
+            )?;
+            for conflict in conflicts {
+                stmt.execute(params![
+                    conflict.dataset_id,
+                    conflict.entity_type.as_str(),
+                    conflict.entity_id,
+                    conflict.resolution,
+                    conflict.winner_updated_at,
+                    conflict.loser_updated_at,
+                    conflict.detected_at,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Newest-first slice of a dataset's conflict log for the UI.
+    #[instrument(skip(self), fields(dataset_id = %dataset_id, limit = limit))]
+    pub fn list_sync_conflicts(
+        &self,
+        dataset_id: &str,
+        limit: u32,
+    ) -> Result<Vec<SyncConflict>, DbError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, dataset_id, entity_type, entity_id, resolution,
+                    winner_updated_at, loser_updated_at, detected_at
+             FROM sync_conflicts
+             WHERE dataset_id = ?1
+             ORDER BY detected_at DESC, id DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![dataset_id, limit], |row| {
+            Ok(SyncConflict {
+                id: row.get(0)?,
+                dataset_id: row.get(1)?,
+                entity_type: SyncEntityType::from_db(row.get(2)?)?,
+                entity_id: row.get(3)?,
+                resolution: row.get(4)?,
+                winner_updated_at: row.get(5)?,
+                loser_updated_at: row.get(6)?,
+                detected_at: row.get(7)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(DbError::from)
+    }
+
+    /// Deletes recorded after `since` (exclusive), or the whole delete log when
+    /// `since` is `None`. This is what a push turns into payload tombstones.
+    #[instrument(skip(self))]
+    pub fn list_sync_tombstones(&self, since: Option<&str>) -> Result<Vec<SyncTombstone>, DbError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let map_row = |row: &rusqlite::Row<'_>| {
+            Ok(SyncTombstone {
+                entity_type: SyncEntityType::from_db(row.get(0)?)?,
+                entity_id: row.get(1)?,
+                deleted_at: row.get(2)?,
+            })
+        };
+        let mut stmt = conn.prepare(
+            "SELECT entity_type, entity_id, deleted_at FROM sync_tombstones
+             WHERE ?1 IS NULL OR deleted_at > ?1
+             ORDER BY deleted_at ASC, entity_type ASC, entity_id ASC",
+        )?;
+        let rows = stmt.query_map(params![since], map_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(DbError::from)
+    }
+
+    /// Drop one tombstone (a record was re-created, or a pull applied the
+    /// remote delete and no longer needs the marker).
+    #[instrument(skip(self), fields(entity_id = %entity_id))]
+    pub fn clear_sync_tombstone(
+        &self,
+        entity_type: SyncEntityType,
+        entity_id: &str,
+    ) -> Result<(), DbError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        Self::clear_tombstone(&conn, entity_type, entity_id)
+    }
+}
+
 /// Keychain keys whose secrets must be purged after a [`HostDb::factory_reset`].
 /// Host credentials are keyed by `host_id`; S3 credentials by `s3:{id}`.
 #[derive(Debug, Default)]
 pub struct ResetKeys {
     pub host_ids: Vec<String>,
     pub s3_ids: Vec<String>,
+    /* Sync datasets own two keychain entries each (`sync:{id}:server` and
+     * `sync:{id}:passphrase`), so their ids come back from a reset too —
+     * otherwise a cleared app would leave a server password and a dataset
+     * passphrase behind for datasets that no longer exist. */
+    pub sync_dataset_ids: Vec<String>,
 }
 
 /// Tables copied wholesale during a snapshot restore. `_meta` (schema marker)
@@ -2731,6 +3524,13 @@ fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>, DbError>
         .query_map([], |row| row.get::<_, String>(1))?
         .collect::<Result<Vec<String>, _>>()?;
     Ok(cols)
+}
+
+/// Canonical `sync_record_state` / `sync_tombstones` id for a
+/// [`SyncEntityType::HostPlugin`] row, matching the key
+/// `delete_plugin_config` reports in `DbError::NotFound`.
+fn plugin_entity_id(host_id: &str, plugin_id: &str) -> String {
+    format!("{host_id}:{plugin_id}")
 }
 
 /// Create an owner-only (0700 on Unix) temp directory for a short-lived,
@@ -2818,7 +3618,7 @@ mod tests {
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert_eq!(version, "20");
+            assert_eq!(version, "22");
             assert!(conn
                 .prepare(
                     "SELECT host_id, plugin_id, enabled, config FROM host_plugin_config LIMIT 0"
@@ -2906,7 +3706,7 @@ mod tests {
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert_eq!(version, "20");
+            assert_eq!(version, "22");
             assert!(conn
                 .prepare("SELECT terminal_theme FROM saved_hosts LIMIT 0")
                 .is_ok());
@@ -3024,7 +3824,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(version, "20");
+        assert_eq!(version, "22");
         for table in [
             "local_vault_metadata",
             "local_vault_credentials",
@@ -3118,9 +3918,57 @@ mod tests {
         db.record_connection("host-1").expect("record_connection");
         db.save_setting("app_theme", "light").expect("save_setting");
 
+        db.upsert_sync_dataset(&SyncDataset {
+            id: "ds-1".into(),
+            name: "NOVA".into(),
+            host: "10.0.0.9".into(),
+            port: 22,
+            username: "sync".into(),
+            auth_type: "password".into(),
+            remote_path: "/srv/nova".into(),
+            role: "owner".into(),
+            content_flags: "{}".into(),
+            scope_mode: "{\"mode\":\"all\"}".into(),
+            auto_sync: true,
+            pull_interval_secs: 900,
+            push_debounce_secs: 15,
+            owner_fingerprint: None,
+            kdf_salt: None,
+            kdf_m_kib: None,
+            kdf_t: None,
+            kdf_p: None,
+            wrapped_key: None,
+            last_generation: 4,
+            last_synced_at: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        })
+        .expect("sync dataset");
+        db.upsert_sync_record_state(&[SyncRecordState {
+            dataset_id: "ds-1".into(),
+            entity_type: SyncEntityType::Host,
+            entity_id: "host-1".into(),
+            remote_revision: 2,
+            base_hash: "hash".into(),
+            managed: false,
+            synced_at: String::new(),
+        }])
+        .expect("record state");
+        db.record_sync_conflicts(&[SyncConflict {
+            id: 0,
+            dataset_id: "ds-1".into(),
+            entity_type: SyncEntityType::Host,
+            entity_id: "host-1".into(),
+            resolution: "kept the newer remote copy".into(),
+            winner_updated_at: None,
+            loser_updated_at: None,
+            detected_at: String::new(),
+        }])
+        .expect("conflict");
         let keys = db.factory_reset().expect("factory_reset");
         assert_eq!(keys.host_ids, vec!["host-1".to_string()]);
         assert!(keys.s3_ids.is_empty());
+        assert_eq!(keys.sync_dataset_ids, vec!["ds-1".to_string()]);
 
         // Every data table and app settings are now empty.
         assert!(db.list_hosts().expect("list_hosts").is_empty());
@@ -3132,6 +3980,21 @@ mod tests {
             .get_local_vault_credential("host-1")
             .expect("vault credential")
             .is_none());
+        assert!(db.list_sync_datasets().expect("datasets").is_empty());
+        assert!(db
+            .list_sync_record_state("ds-1")
+            .expect("record state")
+            .is_empty());
+        assert!(db
+            .list_sync_conflicts("ds-1", 10)
+            .expect("conflicts")
+            .is_empty());
+        /* A reset must record NO tombstones: the wipe is local, and publishing
+         * it as deletions would erase a shared dataset for everyone else. */
+        assert!(db
+            .list_sync_tombstones(None)
+            .expect("tombstones")
+            .is_empty());
 
         // The schema survives the wipe — a fresh insert still works (i.e. the
         // DB is reset to first-launch state, not corrupted/dropped).
@@ -4029,5 +4892,571 @@ mod tests {
             db.list_hosts().unwrap()[0].group_id.as_deref(),
             Some(db.list_groups().unwrap()[0].id.as_str())
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Sync dataset tests
+    // -----------------------------------------------------------------------
+
+    fn schema_version(db: &HostDb) -> String {
+        db.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT value FROM _meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    /// `(entity_type, entity_id)` pairs of the delete log, ordered for equality
+    /// assertions against the exact set of recorded tombstones.
+    fn tombstone_rows(db: &HostDb) -> Vec<(String, String)> {
+        let conn = db.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT entity_type, entity_id FROM sync_tombstones
+                 ORDER BY entity_type ASC, entity_id ASC",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap();
+        rows.collect::<Result<Vec<_>, _>>().unwrap()
+    }
+
+    fn sample_sync_dataset(id: &str) -> SyncDataset {
+        SyncDataset {
+            id: id.to_string(),
+            name: format!("Dataset {id}"),
+            host: "192.0.2.10".to_string(),
+            port: 2222,
+            username: "syncuser".to_string(),
+            auth_type: "password".to_string(),
+            remote_path: "/srv/omnissh".to_string(),
+            role: "owner".to_string(),
+            content_flags: r#"{"hosts":true,"groups":true}"#.to_string(),
+            scope_mode: "all".to_string(),
+            auto_sync: true,
+            pull_interval_secs: 0,
+            push_debounce_secs: 0,
+            owner_fingerprint: Some("SHA256:owner".to_string()),
+            kdf_salt: Some(vec![1, 2, 3, 4]),
+            kdf_m_kib: Some(65536),
+            kdf_t: Some(3),
+            kdf_p: Some(1),
+            wrapped_key: Some(vec![9, 8, 7]),
+            last_generation: 7,
+            last_synced_at: Some("2026-09-01T00:00:00".to_string()),
+            created_at: "2026-01-01T00:00:00".to_string(),
+            updated_at: "2026-01-01T00:00:00".to_string(),
+        }
+    }
+
+    #[test]
+    fn sync_migration_creates_tables_and_is_idempotent() {
+        let dir = std::env::temp_dir().join(format!("anyscp_sync_mig_{}", uuid::Uuid::new_v4()));
+        {
+            let db = HostDb::new(&dir).expect("first open");
+            assert_eq!(schema_version(&db), "22");
+            {
+                let conn = db.conn.lock().unwrap();
+                for table in [
+                    "sync_datasets",
+                    "sync_dataset_members",
+                    "sync_record_state",
+                    "sync_conflicts",
+                    "sync_tombstones",
+                ] {
+                    assert!(
+                        conn.prepare(&format!("SELECT * FROM {table} LIMIT 0"))
+                            .is_ok(),
+                        "migration 21 must create {table}"
+                    );
+                }
+                assert!(
+                    conn.prepare("SELECT dataset_id FROM sync_record_state LIMIT 0")
+                        .is_ok(),
+                    "idx_sync_record_state_dataset targets sync_record_state(dataset_id)"
+                );
+            }
+            db.upsert_sync_dataset(&sample_sync_dataset("ds-mig"))
+                .expect("upsert");
+        }
+
+        // Re-opening the same directory re-runs the ladder from version 21: the
+        // migration is a no-op and the data written before the close survives.
+        let db = HostDb::new(&dir).expect("second open");
+        assert_eq!(schema_version(&db), "22");
+        let reopened = db.get_sync_dataset("ds-mig").expect("get").expect("Some");
+        assert_eq!(reopened.name, "Dataset ds-mig");
+        assert_eq!(reopened.port, 2222);
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sync_dataset_round_trip_and_cascade_delete() {
+        let (db, _dir) = test_db();
+        db.upsert_sync_dataset(&sample_sync_dataset("ds-1"))
+            .expect("upsert");
+
+        let listed = db.list_sync_datasets().expect("list");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "ds-1");
+        assert_eq!(listed[0].host, "192.0.2.10");
+        assert_eq!(listed[0].port, 2222);
+        assert_eq!(listed[0].remote_path, "/srv/omnissh");
+        assert!(listed[0].auto_sync);
+        assert_eq!(listed[0].last_generation, 7);
+        assert_eq!(listed[0].kdf_salt.as_deref(), Some(&[1u8, 2, 3, 4][..]));
+        assert_eq!(listed[0].kdf_m_kib, Some(65536));
+        assert_eq!(listed[0].wrapped_key.as_deref(), Some(&[9u8, 8, 7][..]));
+
+        assert!(db.get_sync_dataset("ghost").expect("get").is_none());
+
+        // Editing replaces the row instead of inserting a second one.
+        let updated = SyncDataset {
+            role: "member".to_string(),
+            last_generation: 8,
+            auto_sync: false,
+            pull_interval_secs: 0,
+            push_debounce_secs: 0,
+            ..sample_sync_dataset("ds-1")
+        };
+        db.upsert_sync_dataset(&updated).expect("update");
+        let listed = db.list_sync_datasets().expect("list");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].role, "member");
+        assert_eq!(listed[0].last_generation, 8);
+        assert!(!listed[0].auto_sync);
+        assert_eq!(listed[0].created_at, "2026-01-01T00:00:00");
+
+        db.set_sync_dataset_members(
+            "ds-1",
+            &[
+                (SyncEntityType::Host, "h1".to_string()),
+                (SyncEntityType::Group, "g1".to_string()),
+            ],
+        )
+        .expect("set members");
+        // A second call replaces the selection rather than appending to it.
+        db.set_sync_dataset_members("ds-1", &[(SyncEntityType::Host, "h2".to_string())])
+            .expect("replace members");
+        assert_eq!(
+            db.list_sync_dataset_members("ds-1").expect("members"),
+            vec![(SyncEntityType::Host, "h2".to_string())]
+        );
+
+        db.upsert_sync_record_state(&[
+            SyncRecordState {
+                dataset_id: "ds-1".to_string(),
+                entity_type: SyncEntityType::Host,
+                entity_id: "h2".to_string(),
+                remote_revision: 3,
+                base_hash: "hash-h2".to_string(),
+                managed: true,
+                synced_at: String::new(),
+            },
+            SyncRecordState {
+                dataset_id: "ds-1".to_string(),
+                entity_type: SyncEntityType::SnippetFolder,
+                entity_id: "f1".to_string(),
+                remote_revision: 1,
+                base_hash: "hash-f1".to_string(),
+                managed: false,
+                synced_at: "2026-09-02T00:00:00".to_string(),
+            },
+        ])
+        .expect("record state");
+
+        let states = db.list_sync_record_state("ds-1").expect("list state");
+        assert_eq!(states.len(), 2);
+        assert_eq!(states[0].entity_type, SyncEntityType::Host);
+        assert_eq!(states[0].remote_revision, 3);
+        assert!(states[0].managed);
+        assert!(
+            !states[0].synced_at.is_empty(),
+            "an empty synced_at is stamped by SQLite"
+        );
+        assert_eq!(states[1].entity_type, SyncEntityType::SnippetFolder);
+        assert!(!states[1].managed);
+        assert_eq!(states[1].synced_at, "2026-09-02T00:00:00");
+
+        // Upserting the same record keeps one row and replaces its base.
+        db.upsert_sync_record_state(&[SyncRecordState {
+            dataset_id: "ds-1".to_string(),
+            entity_type: SyncEntityType::Host,
+            entity_id: "h2".to_string(),
+            remote_revision: 4,
+            base_hash: "hash-h2-new".to_string(),
+            managed: true,
+            synced_at: String::new(),
+        }])
+        .expect("upsert state");
+        let states = db.list_sync_record_state("ds-1").expect("list state");
+        assert_eq!(states.len(), 2);
+        assert_eq!(states[0].remote_revision, 4);
+        assert_eq!(states[0].base_hash, "hash-h2-new");
+
+        db.record_sync_conflicts(&[SyncConflict {
+            id: 0,
+            dataset_id: "ds-1".to_string(),
+            entity_type: SyncEntityType::Host,
+            entity_id: "h2".to_string(),
+            resolution: "kept newer local copy".to_string(),
+            winner_updated_at: Some("2026-09-03T00:00:00".to_string()),
+            loser_updated_at: Some("2026-09-02T00:00:00".to_string()),
+            detected_at: String::new(),
+        }])
+        .expect("record conflict");
+        let conflicts = db.list_sync_conflicts("ds-1", 10).expect("list conflicts");
+        assert_eq!(conflicts.len(), 1);
+        assert!(conflicts[0].id > 0, "the conflict id is assigned by SQLite");
+        assert_eq!(conflicts[0].entity_id, "h2");
+        assert_eq!(conflicts[0].resolution, "kept newer local copy");
+        assert!(conflicts[0].detected_at.starts_with("20"));
+
+        // Clearing one record's base leaves the rest of the dataset alone.
+        assert_eq!(
+            db.clear_sync_record_state("ds-1", Some((SyncEntityType::SnippetFolder, "f1")))
+                .expect("clear one"),
+            1
+        );
+        assert_eq!(db.list_sync_record_state("ds-1").expect("state").len(), 1);
+        assert_eq!(
+            db.clear_sync_record_state("ds-1", Some((SyncEntityType::SnippetFolder, "f1")))
+                .expect("clear again"),
+            0
+        );
+
+        db.delete_sync_dataset("ds-1").expect("delete dataset");
+        assert!(db.list_sync_datasets().expect("list").is_empty());
+        assert!(
+            db.list_sync_dataset_members("ds-1")
+                .expect("members")
+                .is_empty(),
+            "members cascade with their dataset"
+        );
+        assert!(
+            db.list_sync_record_state("ds-1").expect("state").is_empty(),
+            "record state cascades with its dataset"
+        );
+        assert!(
+            db.list_sync_conflicts("ds-1", 10)
+                .expect("conflicts")
+                .is_empty(),
+            "the conflict log cascades with its dataset"
+        );
+        assert!(matches!(
+            db.delete_sync_dataset("ds-1").expect_err("already gone"),
+            DbError::NotFound(_)
+        ));
+    }
+
+    #[test]
+    fn delete_host_records_one_tombstone_and_save_clears_it() {
+        let (db, _dir) = test_db();
+        db.save_host(&sample_host("tomb-host")).expect("save host");
+        db.create_pf_rule(
+            "tomb-pf",
+            Some("tomb-host"),
+            None,
+            None,
+            "local",
+            "127.0.0.1",
+            8080,
+            "localhost",
+            80,
+            false,
+        )
+        .expect("pf rule");
+        db.set_plugin_config("tomb-host", "docker", true, "{}")
+            .expect("plugin");
+
+        assert!(
+            tombstone_rows(&db).is_empty(),
+            "creating records never writes tombstones"
+        );
+
+        db.delete_host("tomb-host").expect("delete host");
+
+        // Exactly one tombstone: the cascaded port-forward rule and plugin row
+        // are covered by the host's own delete record.
+        assert_eq!(
+            tombstone_rows(&db),
+            vec![("host".to_string(), "tomb-host".to_string())]
+        );
+        assert!(db.list_pf_rules(Some("tomb-host")).expect("pf").is_empty());
+        assert!(db
+            .list_plugin_configs("tomb-host")
+            .expect("plugins")
+            .is_empty());
+
+        // Re-creating the same id is a live record again, not a resurrection of
+        // a deleted one, so its tombstone goes away.
+        db.save_host(&sample_host("tomb-host"))
+            .expect("re-save host");
+        assert!(tombstone_rows(&db).is_empty());
+
+        assert!(matches!(
+            db.delete_host("tomb-host-ghost").expect_err("missing"),
+            DbError::NotFound(_)
+        ));
+        assert!(tombstone_rows(&db).is_empty());
+    }
+
+    #[test]
+    fn delete_group_with_hosts_records_group_and_host_tombstones() {
+        let (db, _dir) = test_db();
+        db.create_group(&sample_group("tomb-group")).expect("group");
+        db.create_group(&sample_group("keeper-group"))
+            .expect("group");
+        for id in ["tomb-h1", "tomb-h2"] {
+            db.save_host(&SavedHost {
+                group_id: Some("tomb-group".to_string()),
+                ..sample_host(id)
+            })
+            .expect("save host");
+        }
+        db.save_host(&SavedHost {
+            group_id: Some("keeper-group".to_string()),
+            ..sample_host("keeper-h")
+        })
+        .expect("save host");
+
+        db.delete_group_with_hosts("tomb-group")
+            .expect("delete group with hosts");
+
+        assert_eq!(
+            tombstone_rows(&db),
+            vec![
+                ("group".to_string(), "tomb-group".to_string()),
+                ("host".to_string(), "tomb-h1".to_string()),
+                ("host".to_string(), "tomb-h2".to_string()),
+            ]
+        );
+
+        // `delete_group` only orphans its hosts, so it leaves host tombstones
+        // out: those hosts still exist locally.
+        db.delete_group("keeper-group").expect("delete group");
+        let rows = tombstone_rows(&db);
+        assert!(rows.contains(&("group".to_string(), "keeper-group".to_string())));
+        assert_eq!(
+            rows.iter().filter(|(kind, _)| kind == "host").count(),
+            2,
+            "orphaned hosts are not deleted"
+        );
+        assert!(db.get_host("keeper-h").expect("get").is_some());
+
+        assert!(matches!(
+            db.delete_group_with_hosts("tomb-group-ghost")
+                .expect_err("missing"),
+            DbError::NotFound(_)
+        ));
+    }
+
+    #[test]
+    fn syncable_deletes_record_tombstones_and_saves_clear_them() {
+        let (db, _dir) = test_db();
+        db.save_host(&sample_host("ev-host")).expect("host");
+        db.save_snippet_folder(&sample_snippet_folder("ev-folder"))
+            .expect("folder");
+        db.save_snippet(&sample_snippet("ev-snippet"))
+            .expect("snippet");
+        db.create_pf_rule(
+            "ev-pf",
+            None,
+            None,
+            None,
+            "local",
+            "127.0.0.1",
+            9000,
+            "localhost",
+            90,
+            false,
+        )
+        .expect("pf");
+        db.save_s3_connection(
+            "ev-s3",
+            "Bucket",
+            "aws",
+            "eu-west-1",
+            None,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("s3");
+        db.set_plugin_config("ev-host", "kube", true, "{}")
+            .expect("plugin");
+
+        db.delete_snippet("ev-snippet").expect("delete snippet");
+        db.delete_snippet_folder("ev-folder")
+            .expect("delete folder");
+        db.delete_pf_rule("ev-pf").expect("delete pf");
+        db.delete_s3_connection("ev-s3").expect("delete s3");
+        db.delete_plugin_config("ev-host", "kube")
+            .expect("delete plugin");
+
+        assert_eq!(
+            tombstone_rows(&db),
+            vec![
+                ("hostPlugin".to_string(), "ev-host:kube".to_string()),
+                ("portForward".to_string(), "ev-pf".to_string()),
+                ("s3Connection".to_string(), "ev-s3".to_string()),
+                ("snippet".to_string(), "ev-snippet".to_string()),
+                ("snippetFolder".to_string(), "ev-folder".to_string()),
+            ]
+        );
+
+        // Every save path clears the tombstone of the id it writes, so a
+        // re-created record is not deleted again on the next pull.
+        db.save_snippet(&sample_snippet("ev-snippet"))
+            .expect("re-save snippet");
+        db.save_snippet_folder(&sample_snippet_folder("ev-folder"))
+            .expect("re-save folder");
+        db.create_pf_rule(
+            "ev-pf",
+            None,
+            None,
+            None,
+            "local",
+            "127.0.0.1",
+            9000,
+            "localhost",
+            90,
+            false,
+        )
+        .expect("re-create pf");
+        db.save_s3_connection(
+            "ev-s3",
+            "Bucket",
+            "aws",
+            "eu-west-1",
+            None,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("re-save s3");
+        db.set_plugin_config("ev-host", "kube", true, "{}")
+            .expect("re-save plugin");
+        assert!(tombstone_rows(&db).is_empty());
+
+        // The public accessor mirrors that clear.
+        db.delete_snippet("ev-snippet").expect("delete snippet");
+        assert_eq!(tombstone_rows(&db).len(), 1);
+        db.clear_sync_tombstone(SyncEntityType::Snippet, "ev-snippet")
+            .expect("clear tombstone");
+        assert!(tombstone_rows(&db).is_empty());
+    }
+
+    #[test]
+    fn updates_clear_stale_tombstones() {
+        let (db, _dir) = test_db();
+        db.create_group(&sample_group("up-group")).expect("group");
+        db.create_pf_rule(
+            "up-pf",
+            None,
+            None,
+            None,
+            "local",
+            "127.0.0.1",
+            9100,
+            "localhost",
+            91,
+            false,
+        )
+        .expect("pf");
+
+        // A tombstone can outlive its record when a delete arrives from a pull
+        // that also (re)creates the row locally; an edit must still clear it.
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT OR REPLACE INTO sync_tombstones (entity_type, entity_id)
+                 VALUES ('group', 'up-group'), ('portForward', 'up-pf')",
+                [],
+            )
+            .expect("seed tombstones");
+        }
+        assert_eq!(tombstone_rows(&db).len(), 2);
+
+        db.update_group(&HostGroup {
+            name: "Renamed Group".to_string(),
+            ..sample_group("up-group")
+        })
+        .expect("update group");
+        db.update_pf_rule(
+            "up-pf",
+            Some("Renamed rule"),
+            None,
+            "127.0.0.1",
+            9101,
+            "localhost",
+            91,
+            false,
+        )
+        .expect("update pf");
+
+        assert!(
+            tombstone_rows(&db).is_empty(),
+            "editing a record clears its delete log entry"
+        );
+    }
+
+    #[test]
+    fn sync_tables_store_no_secret_columns() {
+        let (db, _dir) = test_db();
+        let conn = db.conn.lock().unwrap();
+
+        /* Wrapped dataset key and KDF salt are the only key-shaped columns the
+         * schema may hold: the wrapped key is useless without the
+         * passphrase-derived key, and the salt is public by design. Every other
+         * column name that reads like credential material is a bug, and the
+         * struct has no field for one, so a write cannot carry a secret. */
+        const ALLOWED: &[&str] = &["wrapped_key", "kdf_salt"];
+        const FORBIDDEN: &[&str] = &["password", "passphrase", "secret", "key", "private", "salt"];
+
+        for table in [
+            "sync_datasets",
+            "sync_dataset_members",
+            "sync_record_state",
+            "sync_conflicts",
+            "sync_tombstones",
+        ] {
+            for column in table_columns(&conn, table).expect("table columns") {
+                let lowered = column.to_lowercase();
+                if ALLOWED.contains(&lowered.as_str()) {
+                    continue;
+                }
+                for needle in FORBIDDEN {
+                    assert!(
+                        !lowered.contains(needle),
+                        "{table}.{column} looks like credential storage; sync secrets live in the keychain / App Vault"
+                    );
+                }
+            }
+        }
+
+        // The whitelist must describe columns that really exist, so a rename
+        // cannot quietly widen it.
+        let dataset_columns = table_columns(&conn, "sync_datasets").expect("columns");
+        for allowed in ALLOWED {
+            assert!(
+                dataset_columns.iter().any(|column| column == allowed),
+                "whitelisted column {allowed} is missing from sync_datasets"
+            );
+        }
     }
 }

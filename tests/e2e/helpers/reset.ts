@@ -1,21 +1,24 @@
 // Reset helper — wipes the app's persisted state and relaunches the Tauri
 // process so each test starts from a clean DB.
 //
-// The Tauri app reads `$XDG_DATA_HOME/com.macnev2013.anyscp/anyscp.db`.
-// Deleting the directory between sessions is sufficient; the app re-creates
-// the schema on startup.
+// The suite drives a *debug* build, which stores state in
+// `$XDG_DATA_HOME/com.omnissh.desktop-dev` (see `resolve_data_dir` in
+// `src-tauri/src/lib.rs`): a debug build never shares a database with an
+// installed release. The release and legacy directories are wiped too, so a
+// machine that previously ran another binary cannot leak state into a run.
+// Deleting the directories is sufficient; the app re-creates the schema on
+// startup.
 
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 
-const APP_DATA_DIR = join(
-    process.env.XDG_DATA_HOME ?? `${process.env.HOME}/.local/share`,
-    "com.omnissh.desktop",
-);
-const LEGACY_APP_DATA_DIR = join(
-    process.env.XDG_DATA_HOME ?? `${process.env.HOME}/.local/share`,
-    "com.macnev2013.anyscp",
-);
+const DATA_ROOT = process.env.XDG_DATA_HOME ?? `${process.env.HOME}/.local/share`;
+
+const APP_DATA_DIRS = [
+    join(DATA_ROOT, "com.omnissh.desktop-dev"),
+    join(DATA_ROOT, "com.omnissh.desktop"),
+    join(DATA_ROOT, "com.macnev2013.anyscp"),
+];
 
 /**
  * Delete the app's data directory and start a fresh WebDriver session.
@@ -26,8 +29,9 @@ export async function resetApp(): Promise<void> {
     // (SQLite WAL/journal), so a child file can reappear between rm's unlink
     // pass and the final rmdir → ENOTEMPTY. maxRetries makes rm retry the
     // rmdir with a linear backoff until the writes settle.
-    await rm(APP_DATA_DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
-    await rm(LEGACY_APP_DATA_DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
+    for (const dir of APP_DATA_DIRS) {
+        await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
+    }
     await browser.reloadSession();
 }
 

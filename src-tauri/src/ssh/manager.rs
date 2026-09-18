@@ -880,6 +880,27 @@ impl SshManager {
         info!(session_id = %session_id, "SSH disconnected");
         Ok(())
     }
+
+    /* Tear down a `connect_no_pty` connection without emitting `ssh:status`.
+     * Background work (dataset sync) opens connections the user never sees in
+     * a tab; routing them through `disconnect` would publish Disconnecting /
+     * Disconnected events for a session id the frontend never learned about,
+     * which the session store would treat as a live connection dropping. */
+    pub async fn disconnect_bare(&self, session_id: &str) -> Result<(), SshError> {
+        let Some((_, bare)) = self.bare_handles.remove(session_id) else {
+            return Err(SshError::SessionNotFound(session_id.to_string()));
+        };
+        // Best-effort goodbye — dropping the handle closes the connection even
+        // when the server is already gone.
+        let _ = bare
+            .handle
+            .lock()
+            .await
+            .disconnect(russh::Disconnect::ByApplication, "", "en")
+            .await;
+        info!(session_id = %session_id, "SSH disconnected (background, no PTY)");
+        Ok(())
+    }
 }
 
 #[cfg(test)]

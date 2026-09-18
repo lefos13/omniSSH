@@ -5,15 +5,19 @@ import { useSettingsStore } from "../../stores/settings-store";
 import { CustomSelect, type SelectOption } from "../shared/CustomSelect";
 import { useUpdaterStore } from "../../stores/updater-store";
 import { toast } from "../../stores/toast-store";
-import { RefreshCw, CheckCircle2, AlertCircle, Palette, SquareTerminal, ArrowUpDown, Info, ExternalLink, Check, FileCode, Plus, Trash2, FolderOpen, Star, Search, Database, Download, Upload, ShieldCheck, KeyRound, Puzzle, Pencil, Globe, Server } from "lucide-react";
+import { RefreshCw, CheckCircle2, AlertCircle, Palette, SquareTerminal, ArrowUpDown, Info, ExternalLink, Check, FileCode, Plus, Trash2, FolderOpen, Star, Search, Database, Download, Upload, ShieldCheck, KeyRound, Puzzle, Pencil, Globe, Server, Save, AlertTriangle } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { CursorStyle, ThemeMode, EditorConfig, PasteButton, DoubleClickAction } from "../../stores/settings-store";
-import type { BackupPreflightSummary, BulkMigrationResult, CredentialStorage, MigrationPreflightSummary, TerminalHighlightRule } from "../../types";
+import type { BackupPreflightSummary, BulkMigrationResult, CredentialStorage, MigrationPreflightSummary, TerminalHighlightRule, SyncConflictEntry, SyncContentFlags, SyncContentKind, SyncDatasetInput, SyncDatasetSecrets, SyncDatasetSummary, SyncErrorKind, SyncPhase, SyncPullOutcome, SyncPushOutcome, SyncSaveOutcome, SyncStatusSnapshot } from "../../types";
 import { useLocalVaultStore } from "../../stores/local-vault-store";
 import { useHostsStore } from "../../stores/hosts-store";
+import { DEFAULT_SYNC_CONTENT_FLAGS, DEFAULT_SYNC_ENDPOINT, useSyncStore } from "../../stores/sync-store";
+import type { SyncScheduleInput } from "../../stores/sync-store";
+import { ConfirmDangerDialog } from "../shared/ConfirmDangerDialog";
 import { ChangeVaultPasswordDialog, UnlockVaultDialog } from "../vault";
 import { TerminalHighlightModal } from "./TerminalHighlightModal";
 import { isLightColor } from "../../lib/terminal-highlighter";
+import { relativeTime } from "../../utils/time";
 
 
 
@@ -55,7 +59,7 @@ const REPO_URL = "https://github.com/lefos13/omniSSH";
 // Each settings category is a section here. To add a new category, add an entry
 // to SECTIONS, a description, and render its content in <SectionContent />.
 
-type SectionId = "appearance" | "terminal" | "explorer" | "transfers" | "editors" | "plugins" | "security" | "data" | "about";
+type SectionId = "appearance" | "terminal" | "explorer" | "transfers" | "editors" | "plugins" | "security" | "sync" | "data" | "about";
 
 const SECTIONS: { id: SectionId; label: string; icon: LucideIcon }[] = [
   { id: "appearance", label: "Appearance", icon: Palette },
@@ -65,6 +69,7 @@ const SECTIONS: { id: SectionId; label: string; icon: LucideIcon }[] = [
   { id: "editors", label: "Editors", icon: FileCode },
   { id: "plugins", label: "Plugins", icon: Puzzle },
   { id: "security", label: "Security & Vault", icon: KeyRound },
+  { id: "sync", label: "Dataset Sync", icon: RefreshCw },
   { id: "data", label: "Data", icon: Database },
   { id: "about", label: "About & Updates", icon: Info },
 ];
@@ -77,6 +82,7 @@ const SECTION_DESCRIPTIONS: Record<SectionId, string> = {
   editors: "Editors used by “Edit” / “Open With” in the file browser.",
   plugins: "Enable built-in host trackers and set their defaults.",
   security: "Manage encrypted local host passwords.",
+  sync: "Keep your hosts on a server you own, encrypted end to end.",
   data: "Back up, restore, and reset your data.",
   about: "App information, links, and updates.",
 };
@@ -172,6 +178,8 @@ function SectionContent({ section }: { section: SectionId }) {
       return <PluginsSettings />;
     case "security":
       return <SecuritySettings />;
+    case "sync":
+      return <SyncSettings />;
     case "data":
       return <DataSettings />;
     case "about":
@@ -957,6 +965,1249 @@ const TRACKER_CATALOG: { id: string; label: string; description: string; interva
   { id: "dbping", label: "Database Ping", description: "Postgres, Redis, and MySQL presets.", intervalLabel: "on demand" },
   { id: "cron", label: "Cron & Timers", description: "crontab entries and systemd timers.", intervalLabel: "every 60s" },
 ];
+
+// ─── Dataset Sync ─────────────────────────────────────────────────────────────
+
+const MIN_DATASET_PASSPHRASE = 12;
+
+/* One toggle per syncable content kind (AD-11). `parent` marks a kind that is a
+ * foreign-key child of another: it can only travel when its parent does, so it
+ * is rendered indented and disabled while the parent is off. */
+const CONTENT_TOGGLES: {
+  kind: SyncContentKind;
+  label: string;
+  parent?: SyncContentKind;
+  hint?: string;
+}[] = [
+  { kind: "hosts", label: "Hosts" },
+  {
+    kind: "hostCredentials",
+    label: "Saved host credentials",
+    parent: "hosts",
+    hint: "Passwords and private keys stored for those hosts. Off by default — anyone holding the dataset passphrase can read them.",
+  },
+  {
+    kind: "portForwards",
+    label: "Port-forward rules",
+    parent: "hosts",
+    hint: "Children of your hosts — they travel with the hosts they belong to.",
+  },
+  {
+    kind: "hostPlugins",
+    label: "Host plugins",
+    parent: "hosts",
+    hint: "Children of your hosts — they travel with the hosts they belong to.",
+  },
+  { kind: "groups", label: "Groups" },
+  { kind: "snippets", label: "Snippets" },
+  { kind: "snippetFolders", label: "Snippet folders" },
+  { kind: "s3Connections", label: "S3 connections" },
+  {
+    kind: "s3Credentials",
+    label: "S3 access keys",
+    parent: "s3Connections",
+    hint: "Access keys stored for those connections. Off by default.",
+  },
+  {
+    kind: "appSettings",
+    label: "App settings",
+    hint: "Preferences only — machine-specific keys such as window state stay on this computer.",
+  },
+];
+
+/* Turning a parent off also clears its children: a disabled toggle that still
+ * claims a value would only publish a payload the backend rejects anyway. */
+const CONTENT_CHILDREN: Partial<Record<SyncContentKind, SyncContentKind[]>> = {
+  hosts: ["hostCredentials", "portForwards", "hostPlugins"],
+  s3Connections: ["s3Credentials"],
+};
+
+/* Count line for a push summary; zeros are dropped so it reports what actually
+ * travelled. */
+function describePush(outcome: SyncPushOutcome): string {
+  const counts: [number, string][] = [
+    [outcome.hosts, "hosts"],
+    [outcome.groups, "groups"],
+    [outcome.snippets, "snippets"],
+    [outcome.snippetFolders, "snippet folders"],
+    [outcome.portForwards, "port forwards"],
+    [outcome.s3Connections, "S3 connections"],
+    [outcome.hostPlugins, "plugins"],
+    [outcome.credentialsIncluded, "credentials"],
+    [outcome.tombstones, "deletions"],
+  ];
+  const parts = counts.filter(([count]) => count > 0).map(([count, label]) => `${count} ${label}`);
+  if (outcome.appSettings) parts.push("app settings");
+  return parts.length > 0 ? parts.join(" · ") : "Nothing had changed since the last push.";
+}
+
+/*
+ * Count line for a pull summary. Only what the merge actually wrote is listed:
+ * a content kind that did not change is dropped, and the deletions and
+ * credentials the pull carried are named for what they are so "12 hosts" is
+ * never mistaken for the whole dataset.
+ */
+function describePull(outcome: SyncPullOutcome): string {
+  const counts: [number, string][] = [
+    [outcome.applied.hosts, "hosts"],
+    [outcome.applied.groups, "groups"],
+    [outcome.applied.snippets, "snippets"],
+    [outcome.applied.snippetFolders, "snippet folders"],
+    [outcome.applied.portForwards, "port forwards"],
+    [outcome.applied.s3Connections, "S3 connections"],
+    [outcome.applied.hostPlugins, "plugins"],
+    [outcome.deleted, "deletions"],
+    [outcome.credentialsApplied, "credentials"],
+  ];
+  const parts = counts.filter(([count]) => count > 0).map(([count, label]) => `${count} ${label}`);
+  if (outcome.applied.appSettings) parts.push("app settings");
+  return parts.length > 0 ? parts.join(" · ") : "Nothing had changed since the last sync.";
+}
+
+/* The two numbers that explain what a pull refused to overwrite. Both are
+ * silent at zero, because "kept 0 local edits" reads like a warning. */
+function describePullPreserved(outcome: SyncPullOutcome): string[] {
+  const parts: string[] = [];
+  if (outcome.keptLocal > 0) {
+    parts.push(`kept ${outcome.keptLocal} local edit${outcome.keptLocal === 1 ? "" : "s"}`);
+  }
+  if (outcome.conflicts > 0) {
+    parts.push(`${outcome.conflicts} conflict${outcome.conflicts === 1 ? "" : "s"}`);
+  }
+  return parts;
+}
+
+/*
+ * Conflict log for one dataset (AD-5). The merge resolves a both-changed record
+ * by newest `updated_at`, so this list is the only trace of the copy that lost:
+ * it names the record and the rule that decided, and it prints both timestamps
+ * so the user can see which side was newer and that nothing vanished silently.
+ *
+ * Rendered only for the dataset that was just pulled: conflicts belong to one
+ * pull, and an empty list with a non-zero count still explains itself.
+ */
+function SyncConflictLog({ conflicts }: { conflicts: SyncConflictEntry[] }) {
+  return (
+    <div
+      data-testid="settings-sync-conflicts"
+      className="mt-2 px-3 py-2.5 rounded-lg bg-bg-base border border-border/60 text-[length:var(--text-xs)] text-text-secondary"
+    >
+      <p className={LABEL_CLASS}>Conflicts resolved — the newer copy was kept</p>
+      <p className={DESC_CLASS}>
+        Nothing was discarded silently. Each row records which copy won and when each copy
+        was last changed.
+      </p>
+      {conflicts.length === 0 ? (
+        <p className="mt-2">The conflict details could not be loaded.</p>
+      ) : (
+        <ul className="mt-2 space-y-1.5">
+          {conflicts.map((entry) => (
+            <li key={entry.id} data-testid={`settings-sync-conflict-${entry.id}`}>
+              <span className="font-mono text-text-primary">
+                {entry.entityType} {entry.entityId}
+              </span>
+              <span> — {entry.resolution}</span>
+              <span className="block text-text-muted">
+                kept the copy updated {entry.winnerUpdatedAt ?? "at an unknown time"}
+                {" · "}replaced the copy updated {entry.loserUpdatedAt ?? "at an unknown time"}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/* ─── Save report ───────────────────────────────────────────────────────────
+ * "Joined a dataset that is already published here" and "created an empty one
+ * here" produce the same row in the saved list but opposite next steps — pull
+ * versus push — and reading one for the other is exactly how a mistyped remote
+ * path turns into an empty dataset nobody can explain. The saved list already
+ * names the row (name, host, path, generation), so this panel names the
+ * consequence and the button to press next.
+ *
+ * The generation is printed only when the server actually reported one, so the
+ * panel can never claim a generation that was not seen. */
+function SyncSaveReport({ outcome }: { outcome: SyncSaveOutcome }) {
+  const generation =
+    outcome.joined && outcome.remoteGeneration > 0
+      ? ` (generation ${outcome.remoteGeneration})`
+      : "";
+  return (
+    <div
+      data-testid="settings-sync-save-outcome"
+      role="status"
+      className={[
+        "flex items-start gap-2 mt-3 px-3 py-2.5 rounded-lg border",
+        "text-[length:var(--text-xs)] text-text-secondary",
+        outcome.joined
+          ? "bg-status-success/10 border-status-success/30"
+          : "bg-status-connecting/10 border-status-connecting/30",
+      ].join(" ")}
+    >
+      {outcome.joined ? (
+        <CheckCircle2 size={13} strokeWidth={2} className="text-status-success shrink-0 mt-0.5" />
+      ) : (
+        <AlertTriangle
+          size={13}
+          strokeWidth={2}
+          className="text-status-connecting shrink-0 mt-0.5"
+        />
+      )}
+      <span>
+        {outcome.joined
+          ? `Joined the dataset published at this path${generation}. Press Pull now to bring it in.`
+          : "No dataset is published at this path yet, so a new one was created. Press Push now to publish it."}
+      </span>
+    </div>
+  );
+}
+
+/* ─── Automatic sync (Task 6) ────────────────────────────────────────────────
+ * Automatic sync is opt-in per dataset: the master switch starts off, saving a
+ * dataset never turns it on, and each cadence has an explicit "0 = manual only"
+ * meaning. Both cadences are stored in seconds (minutes in the UI for the pull
+ * interval) and are validated here as well as in the backend.
+ *
+ * A cadence field accepts a whole number only: blank, fractional ("0.5"), and
+ * out-of-range values are reported inline and never sent. Values commit on blur
+ * or Enter rather than per keystroke, so typing "15" cannot save "1" first.
+ */
+
+const PULL_INTERVAL_MAX_MINUTES = 1440;
+const PUSH_DEBOUNCE_MIN_SECONDS = 5;
+const PUSH_DEBOUNCE_MAX_SECONDS = 3600;
+
+/** The field as a number, or null when it is blank or not numeric. */
+function parseCadenceField(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+  const value = Number(trimmed);
+  return Number.isFinite(value) ? value : null;
+}
+
+function pullIntervalError(raw: string): string | null {
+  const minutes = parseCadenceField(raw);
+  const allowed =
+    minutes !== null &&
+    Number.isInteger(minutes) &&
+    (minutes === 0 || (minutes >= 1 && minutes <= PULL_INTERVAL_MAX_MINUTES));
+  return allowed
+    ? null
+    : `Enter 0 to pull only when you click “Pull now”, or a whole number of minutes from 1 to ${PULL_INTERVAL_MAX_MINUTES}.`;
+}
+
+function pushDebounceError(raw: string): string | null {
+  const seconds = parseCadenceField(raw);
+  const allowed =
+    seconds !== null &&
+    Number.isInteger(seconds) &&
+    (seconds === 0 ||
+      (seconds >= PUSH_DEBOUNCE_MIN_SECONDS && seconds <= PUSH_DEBOUNCE_MAX_SECONDS));
+  return allowed
+    ? null
+    : `Enter 0 to push only when you click “Push now”, or a whole number of seconds from ${PUSH_DEBOUNCE_MIN_SECONDS} to ${PUSH_DEBOUNCE_MAX_SECONDS}.`;
+}
+
+/*
+ * The backend reports a failure as `{ kind, message }`; the kind is what turns
+ * it into something to act on. A hint is rendered *after* the message, so it is
+ * listed only for kinds whose message leaves something to act on: `notFound`
+ * and `version` are absent on purpose, because their messages already say what
+ * happened ("nothing has been published…", "update OmniSSH first") and
+ * repeating them printed the same sentence twice in one line.
+ */
+const SYNC_ERROR_HINTS: Partial<Record<SyncErrorKind, string>> = {
+  conflict: "Another machine published first — pull before pushing.",
+  vault: "Unlock the App Vault and try again.",
+  decrypt: "Wrong dataset passphrase — re-save the dataset with the correct passphrase.",
+  sftpUnavailable: "Dataset sync needs a server with the SFTP subsystem enabled.",
+  locked: "Another machine is syncing this dataset — try again in a moment.",
+  unreachable: "The server could not be reached — sync retries on the next trigger.",
+};
+
+/*
+ * Live phase of one dataset. It comes from the scheduler rather than from local
+ * button state, so a background run shows up here too; a click in this window
+ * takes precedence while its own result is still in flight. An error keeps the
+ * backend's message on screen instead of collapsing to a badge.
+ */
+function SyncPhaseLine({ dataset, status, busy }: {
+  dataset: SyncDatasetSummary;
+  status: SyncStatusSnapshot | undefined;
+  busy: "pulling" | "pushing" | null;
+}) {
+  const phase: SyncPhase = busy ?? status?.phase ?? "idle";
+  const lastSyncedAt = status?.lastSyncedAt ?? dataset.lastSyncedAt;
+  const hint = status?.phase === "error" && status.kind ? SYNC_ERROR_HINTS[status.kind] : undefined;
+
+  return (
+    <div
+      data-testid={`settings-sync-phase-${dataset.id}`}
+      className="mt-2 space-y-1 text-[length:var(--text-xs)]"
+    >
+      {phase === "pulling" && (
+        <p className="flex items-center gap-1.5 text-text-secondary">
+          <RefreshCw size={12} strokeWidth={2} className="motion-safe:animate-spin" />
+          Pulling changes from the server…
+        </p>
+      )}
+      {phase === "pushing" && (
+        <p className="flex items-center gap-1.5 text-text-secondary">
+          <RefreshCw size={12} strokeWidth={2} className="motion-safe:animate-spin" />
+          Publishing your changes…
+        </p>
+      )}
+      {phase === "error" && (
+        <p className="flex items-start gap-1.5 text-status-error">
+          <AlertCircle size={12} strokeWidth={2} className="mt-0.5 shrink-0" />
+          <span>
+            {status?.message ?? "The last sync failed."}
+            {hint && ` ${hint}`}
+          </span>
+        </p>
+      )}
+      {phase === "idle" && (
+        <p className="flex items-center gap-1.5 text-text-muted">
+          <CheckCircle2 size={12} strokeWidth={2} />
+          {lastSyncedAt ? `Last synced ${relativeTime(lastSyncedAt)}.` : "Not synced yet."}
+        </p>
+      )}
+      {status?.pendingLocalChanges && (
+        <p data-testid={`settings-sync-pending-${dataset.id}`} className="text-status-connecting">
+          Changes waiting to publish — they go out once the push delay has passed.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/*
+ * Automatic-sync controls for one saved dataset: the master switch plus both
+ * cadences. The drafts are strings so a half-typed number is never coerced and
+ * saved, and they are seeded once from the row — this component is the only
+ * writer of these fields, and the store mirrors what was sent.
+ *
+ * A field whose current text is invalid falls back to the stored value, so
+ * toggling the master switch can never persist what the user is mid-typing.
+ */
+function SyncScheduleControls({ dataset }: { dataset: SyncDatasetSummary }) {
+  const updateDatasetSchedule = useSyncStore((s) => s.updateDatasetSchedule);
+  const [autoSync, setAutoSync] = useState(dataset.autoSync);
+  const [pullMinutes, setPullMinutes] = useState(() =>
+    String(Math.round(dataset.pullIntervalSecs / 60)),
+  );
+  const [pushSeconds, setPushSeconds] = useState(() => String(dataset.pushDebounceSecs));
+
+  const pullError = pullIntervalError(pullMinutes);
+  const pushError = pushDebounceError(pushSeconds);
+  const pullSecs = pullError === null
+    ? (parseCadenceField(pullMinutes) ?? 0) * 60
+    : dataset.pullIntervalSecs;
+  const pushSecs = pushError === null
+    ? parseCadenceField(pushSeconds) ?? 0
+    : dataset.pushDebounceSecs;
+  const pullMins = pullSecs / 60;
+
+  /* The dataset card renders the failure; a schedule change is not worth a toast. */
+  const commit = useCallback((next: SyncScheduleInput) => {
+    void updateDatasetSchedule(dataset.id, next).catch(() => {});
+  }, [dataset.id, updateDatasetSchedule]);
+
+  const changeAutoSync = (value: boolean) => {
+    setAutoSync(value);
+    commit({ autoSync: value, pullIntervalSecs: pullSecs, pushDebounceSecs: pushSecs });
+  };
+
+  const commitPull = () => {
+    if (pullError !== null) return;
+    const secs = (parseCadenceField(pullMinutes) ?? 0) * 60;
+    if (secs === dataset.pullIntervalSecs) return;
+    commit({ autoSync, pullIntervalSecs: secs, pushDebounceSecs: pushSecs });
+  };
+
+  const commitPush = () => {
+    if (pushError !== null) return;
+    const secs = parseCadenceField(pushSeconds) ?? 0;
+    if (secs === dataset.pushDebounceSecs) return;
+    commit({ autoSync, pullIntervalSecs: pullSecs, pushDebounceSecs: secs });
+  };
+
+  const commitOnEnter = (commitField: () => void) => (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") commitField();
+  };
+
+  return (
+    <div className="mt-3 pt-3 border-t border-border/50">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <label htmlFor="settings-sync-auto" className={LABEL_CLASS}>Automatic sync</label>
+          <p className={DESC_CLASS}>
+            {autoSync
+              ? "This dataset syncs on its own using the cadences below."
+              : "Off — this dataset only syncs when you press Pull now or Push now."}
+          </p>
+        </div>
+        <Toggle id="settings-sync-auto" checked={autoSync} onChange={changeAutoSync} />
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 mt-3">
+        <div>
+          <label htmlFor="settings-sync-pull-interval" className={FIELD_LABEL_CLASS}>
+            Pull every (minutes)
+          </label>
+          <input
+            id="settings-sync-pull-interval"
+            data-testid="settings-sync-pull-interval"
+            type="number"
+            inputMode="numeric"
+            min={0}
+            max={PULL_INTERVAL_MAX_MINUTES}
+            step={1}
+            disabled={!autoSync}
+            value={pullMinutes}
+            onChange={(e) => setPullMinutes(e.target.value)}
+            onBlur={commitPull}
+            onKeyDown={commitOnEnter(commitPull)}
+            className={TEXT_INPUT_CLASS}
+          />
+          {pullError === null ? (
+            <p className={DESC_CLASS}>
+              {!autoSync
+                ? "Turn automatic sync on to give this dataset a pull cadence."
+                : pullSecs === 0
+                  ? "0 — only when I click “Pull now”."
+                  : `Checks the server for changes every ${pullMins} minute${pullMins === 1 ? "" : "s"}.`}
+            </p>
+          ) : (
+            <p
+              data-testid="settings-sync-pull-interval-error"
+              className="mt-1 text-[length:var(--text-xs)] text-status-error"
+            >
+              {pullError}
+            </p>
+          )}
+        </div>
+
+        <div>
+          <label htmlFor="settings-sync-push-debounce" className={FIELD_LABEL_CLASS}>
+            Push delay (seconds)
+          </label>
+          <input
+            id="settings-sync-push-debounce"
+            data-testid="settings-sync-push-debounce"
+            type="number"
+            inputMode="numeric"
+            min={0}
+            max={PUSH_DEBOUNCE_MAX_SECONDS}
+            step={1}
+            disabled={!autoSync}
+            value={pushSeconds}
+            onChange={(e) => setPushSeconds(e.target.value)}
+            onBlur={commitPush}
+            onKeyDown={commitOnEnter(commitPush)}
+            className={TEXT_INPUT_CLASS}
+          />
+          {pushError === null ? (
+            <p className={DESC_CLASS}>
+              {!autoSync
+                ? "Turn automatic sync on to give this dataset a push delay."
+                : pushSecs === 0
+                  ? "0 — only when I click “Push now”."
+                  : `Waits ${pushSecs} second${pushSecs === 1 ? "" : "s"} after your last change before publishing.`}
+            </p>
+          ) : (
+            <p
+              data-testid="settings-sync-push-debounce-error"
+              className="mt-1 text-[length:var(--text-xs)] text-status-error"
+            >
+              {pushError}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Both cadences at 0 means the switch is on but nothing can ever trigger,
+          which reads as "syncing works" and is not true. */}
+      {autoSync && pullSecs === 0 && pushSecs === 0 && (
+        <p data-testid="settings-sync-manual-only" className={DESC_CLASS}>
+          Automatic sync is on, but both cadences are 0 — nothing runs until you set one.
+        </p>
+      )}
+
+      {/* Sharing one dataset between installations is the normal case, not a
+          hazard: a measured two-machine test showed the merge converges (the
+          stale publisher is refused with `conflict`, the pull merges, the newer
+          edit of a simultaneously-edited record wins, and the loser is logged).
+          The one surprise worth naming up front is that "simultaneous" means
+          "before they sync", so this note states the rule instead of leaving it
+          to be discovered in the conflict log. */}
+      {autoSync && (
+        <div className="mt-3">
+          <p data-testid="settings-sync-multi-writer-note" className={DESC_CLASS}>
+            Syncing from more than one computer is safe: changes are merged record by
+            record. If the same host is edited on two computers before they sync, the newer
+            edit wins and the older one is listed under Conflicts. A push is refused while
+            another computer has published in the meantime — pull first.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/*
+ * Endpoint form for the self-hosted dataset. "Test connection" opens a real
+ * ephemeral SSH+SFTP session, probes the remote path, and reports what is
+ * there — it never creates or overwrites anything, so the user can point at a
+ * path and find out whether a teammate's dataset already lives in it.
+ *
+ * The same server details feed the dataset row: **Save dataset** persists the
+ * endpoint, the content toggles, and the dataset passphrase (which the backend
+ * keeps in the keychain / App Vault). Secrets stay component state and are
+ * handed to the invoke as parameters — they never reach the store,
+ * `save_setting`, or the DB.
+ *
+ * A push always runs preflight first: publishing hosts without the credentials
+ * they need is worse than refusing, so an unreadable secret blocks the run and
+ * says which one.
+ */
+function SyncSettings() {
+  const {
+    endpoint, testing, testResult, error, errorKind, setEndpoint, testConnection,
+    datasets, datasetsLoading, saving, saveOutcome, pushing, pushResult, preflight,
+    pulling, pullResult, conflicts, statuses,
+    datasetError, datasetErrorKind,
+    loadDatasets, saveDataset, clearSaveOutcome, deleteDataset, loadPreflight, push, pull,
+    loadStatus, subscribeSyncStatus,
+  } = useSyncStore();
+  const [password, setPassword] = useState("");
+  const [keyPassphrase, setKeyPassphrase] = useState("");
+  const [useKey, setUseKey] = useState(false);
+  const [name, setName] = useState("");
+  const [passphrase, setPassphrase] = useState("");
+  const [formError, setFormError] = useState<string | null>(null);
+  const [contentFlags, setContentFlags] = useState<SyncContentFlags>({
+    ...DEFAULT_SYNC_CONTENT_FLAGS,
+  });
+  const [confirmRemove, setConfirmRemove] = useState<SyncDatasetSummary | null>(null);
+  /* The saved row the form is currently updating; null means the form is
+   * composing a new dataset. The whole row is kept because everything the form
+   * does not collect — its id, role, and automatic-sync schedule — has to be
+   * sent back on save rather than reset to a default. */
+  const [editing, setEditing] = useState<SyncDatasetSummary | null>(null);
+
+  /* Loaded once when the section mounts. `loadDatasets` is a stable store
+   * action, so this effect cannot re-trigger itself. */
+  useEffect(() => {
+    void loadDatasets().catch(() => { /* the dataset card renders the failure */ });
+  }, [loadDatasets]);
+
+  /*
+   * The rows show the scheduler's phase, not just this window's button clicks,
+   * so the section reads the current snapshots and then follows `sync:status`.
+   * The listener is shared with the status bar; `subscribeSyncStatus` returns
+   * the unsubscribe function, which is what closes this half of it.
+   */
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void loadStatus();
+    void subscribeSyncStatus()
+      .then((release) => {
+        if (cancelled) release();
+        else unlisten = release;
+      })
+      .catch(() => { /* the rows keep what `sync_status` last reported */ });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [loadStatus, subscribeSyncStatus]);
+
+  const runTest = useCallback(async () => {
+    try {
+      await testConnection(useKey ? { keyPassphrase } : { password });
+    } catch { /* surfaced through the store's error state */ }
+  }, [testConnection, useKey, keyPassphrase, password]);
+
+  const toggleContent = useCallback((kind: SyncContentKind, value: boolean) => {
+    clearSaveOutcome();
+    setContentFlags((prev) => {
+      const next: SyncContentFlags = { ...prev, [kind]: value };
+      if (!value) {
+        for (const child of CONTENT_CHILDREN[kind] ?? []) next[child] = false;
+      }
+      return next;
+    });
+  }, [clearSaveOutcome]);
+
+  /*
+   * Load a saved row into the form so a typo in the remote path — or any other
+   * field — can be corrected in place instead of deleting the dataset and
+   * publishing a second one. The secrets are deliberately not prefilled: they
+   * are stored in the keychain / App Vault and never travel back to the
+   * frontend, so a save asks for them again by design.
+   */
+  const beginEdit = useCallback((dataset: SyncDatasetSummary) => {
+    setEditing(dataset);
+    setName(dataset.name);
+    setContentFlags({ ...dataset.contentFlags });
+    setUseKey(dataset.authType === "privateKey");
+    setPassword("");
+    setKeyPassphrase("");
+    setPassphrase("");
+    setFormError(null);
+    clearSaveOutcome();
+    setEndpoint({
+      host: dataset.host,
+      port: dataset.port,
+      username: dataset.username,
+      remotePath: dataset.remotePath,
+      keyPath: dataset.keyPath ?? "",
+    });
+  }, [clearSaveOutcome, setEndpoint]);
+
+  /* Blank the dataset-specific fields and leave edit mode. The endpoint stays
+   * as typed: the save report names a remote path, and keeping it on screen
+   * leaves the report and the form describing the same place. The cleared name
+   * is also what stops a second click on the primary button from saving the
+   * dataset a second time. */
+  const resetDatasetFields = useCallback(() => {
+    setEditing(null);
+    setName("");
+    setPassphrase("");
+    setPassword("");
+    setKeyPassphrase("");
+    setFormError(null);
+    setContentFlags({ ...DEFAULT_SYNC_CONTENT_FLAGS });
+  }, []);
+
+  const cancelEdit = useCallback(() => {
+    resetDatasetFields();
+    setEndpoint({ ...DEFAULT_SYNC_ENDPOINT });
+    clearSaveOutcome();
+  }, [resetDatasetFields, setEndpoint, clearSaveOutcome]);
+
+  const handleSave = useCallback(async () => {
+    if (!name.trim()) {
+      setFormError("Give the dataset a name so you can tell it apart later.");
+      return;
+    }
+    if (passphrase.length < MIN_DATASET_PASSPHRASE) {
+      setFormError(`Use at least ${MIN_DATASET_PASSPHRASE} characters for the dataset passphrase.`);
+      return;
+    }
+    /* Key auth without a path would silently fall back to password auth inside
+     * the save, so the form asks for the path itself when the row it is editing
+     * could not supply one. */
+    if (useKey && !endpoint.keyPath.trim()) {
+      setFormError("Enter the path to the private key this dataset connects with.");
+      return;
+    }
+    setFormError(null);
+    const input: SyncDatasetInput = {
+      name: name.trim(),
+      host: endpoint.host,
+      port: endpoint.port,
+      username: endpoint.username,
+      remotePath: endpoint.remotePath,
+      contentFlags,
+      ...(endpoint.keyPath ? { keyPath: endpoint.keyPath } : {}),
+      /* An update keeps everything the form does not collect: its id (so the
+       * row is replaced, never duplicated), its role, and its automatic-sync
+       * schedule — sending the new-dataset defaults would silently demote a
+       * member to owner and turn a configured cadence back to manual. */
+      ...(editing
+        ? {
+            id: editing.id,
+            role: editing.role,
+            autoSync: editing.autoSync,
+            pullIntervalSecs: editing.pullIntervalSecs,
+            pushDebounceSecs: editing.pushDebounceSecs,
+          }
+        : {
+            /* A new dataset never syncs on its own: the switch starts off and
+             * both cadences start at 0, so saving a dataset cannot start
+             * background network activity the user did not ask for. */
+            autoSync: false,
+            pullIntervalSecs: 0,
+            pushDebounceSecs: 0,
+          }),
+    };
+    const secrets: SyncDatasetSecrets = {
+      passphrase,
+      ...(useKey ? { keyPassphrase } : { password }),
+    };
+    try {
+      await saveDataset(input, secrets);
+      await loadDatasets();
+      /* The row is saved, so the form goes back to composing a new dataset.
+       * The outcome stays: it is the only account of what the save just did,
+       * and the dataset it names is now a row below. */
+      resetDatasetFields();
+      toast.success(editing ? "Dataset updated." : "Dataset saved.");
+    } catch { /* the dataset card renders the failure */ }
+  }, [
+    name, passphrase, endpoint, useKey, contentFlags, password, keyPassphrase,
+    editing, saveDataset, loadDatasets, resetDatasetFields,
+  ]);
+
+  const runPush = useCallback(async (datasetId: string) => {
+    try {
+      const check = await loadPreflight(datasetId);
+      if (check.includeCredentials && (check.vaultLocked || check.credentialsBlocked > 0)) return;
+      await push(datasetId);
+    } catch { /* the dataset card renders the failure */ }
+  }, [loadPreflight, push]);
+
+  /* A pull needs no preflight: it only reads the remote bundle and writes
+   * locally, so a locked vault costs the credentials it cannot store and
+   * nothing else. The store reloads hosts/groups itself afterwards. */
+  const runPull = useCallback(async (datasetId: string) => {
+    try {
+      await pull(datasetId);
+    } catch { /* the dataset card renders the failure */ }
+  }, [pull]);
+
+  const handleRemove = useCallback(async () => {
+    const dataset = confirmRemove;
+    setConfirmRemove(null);
+    if (!dataset) return;
+    try {
+      await deleteDataset(dataset.id);
+      toast.success(`Removed “${dataset.name}”. Your local hosts are untouched.`);
+    } catch { /* the dataset card renders the failure */ }
+  }, [confirmRemove, deleteDataset]);
+
+  const passphraseTooShort = passphrase.length > 0 && passphrase.length < MIN_DATASET_PASSPHRASE;
+
+  return (
+    <>
+      <SettingsGroup label="Sync server">
+        <div className="px-4 py-3 rounded-xl bg-bg-surface border border-border/50">
+          <p className={LABEL_CLASS}>Your own server</p>
+          <p className={DESC_CLASS}>
+            OmniSSH publishes your hosts as a single encrypted file in a directory on a
+            server you control. Nothing is readable without the dataset passphrase — not
+            even by the server’s administrator.
+          </p>
+
+          <div className="grid grid-cols-[1fr_7rem] gap-3 mt-4">
+            <div>
+              <label className={FIELD_LABEL_CLASS} htmlFor="sync-host">Server address</label>
+              <input
+                id="sync-host"
+                data-testid="settings-sync-host"
+                type="text"
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="10.0.0.9 or sync.example.com"
+                value={endpoint.host}
+                onChange={(e) => setEndpoint({ host: e.target.value })}
+                className={TEXT_INPUT_CLASS}
+              />
+            </div>
+            <div>
+              <label className={FIELD_LABEL_CLASS} htmlFor="sync-port">Port</label>
+              <input
+                id="sync-port"
+                data-testid="settings-sync-port"
+                type="number"
+                min={1}
+                max={65535}
+                value={endpoint.port}
+                onChange={(e) => setEndpoint({ port: Number(e.target.value) || 22 })}
+                className={TEXT_INPUT_CLASS}
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 mt-3">
+            <div>
+              <label className={FIELD_LABEL_CLASS} htmlFor="sync-username">Username</label>
+              <input
+                id="sync-username"
+                data-testid="settings-sync-username"
+                type="text"
+                autoComplete="off"
+                spellCheck={false}
+                value={endpoint.username}
+                onChange={(e) => setEndpoint({ username: e.target.value })}
+                className={TEXT_INPUT_CLASS}
+              />
+            </div>
+            <div>
+              <label className={FIELD_LABEL_CLASS} htmlFor="sync-path">Remote path</label>
+              <input
+                id="sync-path"
+                data-testid="settings-sync-path"
+                type="text"
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="/srv/omnissh/my-hosts"
+                value={endpoint.remotePath}
+                onChange={(e) => setEndpoint({ remotePath: e.target.value })}
+                className={TEXT_INPUT_CLASS}
+              />
+            </div>
+          </div>
+
+          <div className="mt-3">
+            <div className="flex items-center gap-4 mb-1">
+              <span className={FIELD_LABEL_CLASS}>Authentication</span>
+              <label className="flex items-center gap-1.5 text-[length:var(--text-xs)] text-text-secondary">
+                <input
+                  type="radio"
+                  name="sync-auth"
+                  data-testid="settings-sync-auth-password"
+                  checked={!useKey}
+                  onChange={() => { setUseKey(false); setEndpoint({ keyPath: "" }); }}
+                />
+                Password
+              </label>
+              <label className="flex items-center gap-1.5 text-[length:var(--text-xs)] text-text-secondary">
+                <input
+                  type="radio"
+                  name="sync-auth"
+                  data-testid="settings-sync-auth-key"
+                  checked={useKey}
+                  onChange={() => { setUseKey(true); setPassword(""); }}
+                />
+                Private key
+              </label>
+            </div>
+            {useKey ? (
+              <div className="grid grid-cols-2 gap-3">
+                <input
+                  data-testid="settings-sync-key-path"
+                  type="text"
+                  autoComplete="off"
+                  spellCheck={false}
+                  placeholder="~/.ssh/id_ed25519"
+                  value={endpoint.keyPath}
+                  onChange={(e) => setEndpoint({ keyPath: e.target.value })}
+                  className={TEXT_INPUT_CLASS}
+                  aria-label="Private key path"
+                />
+                <input
+                  data-testid="settings-sync-key-passphrase"
+                  type="password"
+                  autoComplete="off"
+                  placeholder="Key passphrase (optional)"
+                  value={keyPassphrase}
+                  onChange={(e) => setKeyPassphrase(e.target.value)}
+                  className={TEXT_INPUT_CLASS}
+                  aria-label="Private key passphrase"
+                />
+              </div>
+            ) : (
+              <input
+                data-testid="settings-sync-password"
+                type="password"
+                autoComplete="off"
+                placeholder="Server password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className={TEXT_INPUT_CLASS}
+                aria-label="Server password"
+              />
+            )}
+          </div>
+
+          <div className="flex items-center gap-3 mt-4">
+            <button
+              type="button"
+              data-testid="settings-sync-test"
+              onClick={() => void runTest()}
+              disabled={testing}
+              className={BTN_SECONDARY}
+            >
+              <RefreshCw size={13} strokeWidth={2} className={testing ? "animate-spin" : undefined} />
+              {testing ? "Testing…" : "Test connection"}
+            </button>
+            <p className={DESC_CLASS}>
+              Nothing is written to the server — the test only reports what is already there.
+            </p>
+          </div>
+
+          {error && (
+            <p
+              data-testid="settings-sync-test-error"
+              className="flex items-start gap-1.5 mt-3 text-[length:var(--text-xs)] text-status-error"
+            >
+              <AlertCircle size={13} strokeWidth={2} className="mt-0.5 shrink-0" />
+              <span>
+                {error}
+                {errorKind && SYNC_ERROR_HINTS[errorKind]
+                  ? ` ${SYNC_ERROR_HINTS[errorKind]}`
+                  : null}
+              </span>
+            </p>
+          )}
+
+          {testResult && (
+            <div
+              data-testid="settings-sync-test-result"
+              className="mt-3 px-3 py-2.5 rounded-lg bg-bg-base border border-border/60 text-[length:var(--text-xs)] text-text-secondary"
+            >
+              <p className="flex items-center gap-1.5 text-status-success">
+                <CheckCircle2 size={13} strokeWidth={2} /> Connected over SFTP.
+              </p>
+              <ul className="mt-1.5 space-y-1">
+                <li>
+                  {testResult.pathExists
+                    ? "Remote path exists."
+                    : "Remote path does not exist yet — it will be created on the first sync."}
+                </li>
+                <li>
+                  {testResult.writable
+                    ? "This account can write to it."
+                    : "This account cannot write to it — you can pull from this dataset but not publish to it."}
+                </li>
+                {testResult.existingDataset ? (
+                  <li data-testid="settings-sync-existing-dataset">
+                    A dataset is already published here: generation{" "}
+                    {testResult.existingDataset.generation}, updated{" "}
+                    {testResult.existingDataset.updatedAt}
+                    {testResult.existingDataset.signed ? ", signed by its owner" : ", unsigned"}.
+                    Syncing with it needs that dataset’s passphrase.
+                  </li>
+                ) : (
+                  <li>No dataset here yet.</li>
+                )}
+                {testResult.metadataError && (
+                  <li className="text-status-error">{testResult.metadataError}</li>
+                )}
+              </ul>
+            </div>
+          )}
+        </div>
+      </SettingsGroup>
+
+      <SettingsGroup label="Dataset">
+        <div className="px-4 py-3 rounded-xl bg-bg-surface border border-border/50">
+          {editing && (
+            <p
+              data-testid="settings-sync-editing"
+              className="flex items-start gap-1.5 mb-3 px-3 py-2 rounded-lg bg-status-connecting/10 border border-status-connecting/30 text-[length:var(--text-xs)] text-text-secondary"
+            >
+              <Pencil size={13} strokeWidth={2} className="text-status-connecting shrink-0 mt-0.5" />
+              <span>
+                Editing “{editing.name}” — it is saved as this dataset’s new settings, and
+                whatever is already published on the server is left as it is.
+              </span>
+            </p>
+          )}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={FIELD_LABEL_CLASS} htmlFor="sync-name">Dataset name</label>
+              <input
+                id="sync-name"
+                data-testid="settings-sync-name"
+                type="text"
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="NOVA"
+                value={name}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  setFormError(null);
+                  clearSaveOutcome();
+                }}
+                className={TEXT_INPUT_CLASS}
+              />
+            </div>
+            <div>
+              <label className={FIELD_LABEL_CLASS} htmlFor="sync-passphrase">Dataset passphrase</label>
+              <input
+                id="sync-passphrase"
+                data-testid="settings-sync-passphrase"
+                type="password"
+                autoComplete="new-password"
+                value={passphrase}
+                onChange={(e) => {
+                  setPassphrase(e.target.value);
+                  setFormError(null);
+                  clearSaveOutcome();
+                }}
+                className={TEXT_INPUT_CLASS}
+              />
+            </div>
+          </div>
+          <p className={DESC_CLASS}>
+            The passphrase encrypts the dataset on this computer — it is never sent to the
+            server, and every other machine needs the same passphrase to read the hosts back.
+            {" "}Every save needs it again: OmniSSH verifies it against the dataset key before
+            storing anything, so an update can never lock you out of what is already published.
+          </p>
+          {(passphraseTooShort || formError) && (
+            <p
+              data-testid="settings-sync-passphrase-error"
+              className="mt-1 text-[length:var(--text-xs)] text-status-error"
+            >
+              {formError
+                ?? `Use at least ${MIN_DATASET_PASSPHRASE} characters for the dataset passphrase.`}
+            </p>
+          )}
+
+          <p className={`${LABEL_CLASS} mt-5`}>What this dataset publishes</p>
+          <div className="mt-2 space-y-2">
+            {CONTENT_TOGGLES.map(({ kind, label, parent, hint }) => {
+              const disabled = parent ? !contentFlags[parent] : false;
+              return (
+                <label
+                  key={kind}
+                  className={`flex items-start gap-2 ${parent ? "ml-6" : ""} ${disabled ? "opacity-50" : ""}`}
+                >
+                  <input
+                    type="checkbox"
+                    data-testid={`settings-sync-content-${kind}`}
+                    className="mt-0.5 w-3.5 h-3.5 shrink-0 rounded border-border text-accent focus:ring-ring cursor-pointer disabled:opacity-50 disabled:cursor-default"
+                    checked={contentFlags[kind]}
+                    disabled={disabled}
+                    onChange={(e) => toggleContent(kind, e.target.checked)}
+                  />
+                  <span className="text-[length:var(--text-xs)] text-text-secondary">
+                    {label}
+                    {hint && <span className="block mt-0.5 text-text-muted">{hint}</span>}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+
+          <div className="flex items-center gap-3 mt-4">
+            <button
+              type="button"
+              data-testid="settings-sync-save"
+              onClick={() => void handleSave()}
+              disabled={saving}
+              className={BTN_SECONDARY}
+            >
+              {saving
+                ? <RefreshCw size={13} strokeWidth={2} className="animate-spin" />
+                : <Save size={13} strokeWidth={2} />}
+              {saving ? "Saving…" : editing ? "Update dataset" : "Save dataset"}
+            </button>
+            {editing && (
+              <button
+                type="button"
+                data-testid="settings-sync-cancel-edit"
+                onClick={cancelEdit}
+                disabled={saving}
+                className={BTN_SECONDARY}
+              >
+                Cancel
+              </button>
+            )}
+            <p className={DESC_CLASS}>
+              The passphrase and the server login are stored on this computer, not on the server.
+            </p>
+          </div>
+
+          {saveOutcome && <SyncSaveReport outcome={saveOutcome} />}
+        </div>
+      </SettingsGroup>
+
+      <SettingsGroup label="Saved datasets">
+        {datasetError && (
+          <p
+            data-testid="settings-sync-dataset-error"
+            className="flex items-start gap-1.5 mb-3 text-[length:var(--text-xs)] text-status-error"
+          >
+            <AlertCircle size={13} strokeWidth={2} className="mt-0.5 shrink-0" />
+            <span>
+              {datasetError}
+              {datasetErrorKind && SYNC_ERROR_HINTS[datasetErrorKind]
+                ? ` ${SYNC_ERROR_HINTS[datasetErrorKind]}`
+                : null}
+            </span>
+          </p>
+        )}
+
+        <div className="space-y-3">
+          {datasetsLoading && datasets.length === 0 && (
+            <p className={DESC_CLASS}>Loading saved datasets…</p>
+          )}
+          {!datasetsLoading && datasets.length === 0 && (
+            <div className="px-4 py-3 rounded-xl bg-bg-surface border border-border/50">
+              <p className={DESC_CLASS}>
+                No dataset saved yet. Fill in the server details above, choose a passphrase,
+                and press “Save dataset”.
+              </p>
+            </div>
+          )}
+
+          {datasets.map((dataset) => {
+            /* One claim at a time per row: a push and a pull both write the same
+             * records, so the row disables both buttons while either runs. */
+            const busy = pushing === dataset.id || pulling === dataset.id;
+            const blocked = preflight?.datasetId === dataset.id
+              && preflight.includeCredentials
+              && (preflight.vaultLocked || preflight.credentialsBlocked > 0);
+            const outcome = pushResult?.datasetId === dataset.id ? pushResult : null;
+            const pulled = pullResult?.datasetId === dataset.id ? pullResult : null;
+            const preserved = pulled ? describePullPreserved(pulled) : [];
+            const showConflicts = pulled !== null && (pulled.conflicts > 0 || conflicts.length > 0);
+            return (
+              <div
+                key={dataset.id}
+                data-testid={`settings-sync-dataset-${dataset.id}`}
+                className="px-4 py-3 rounded-xl bg-bg-surface border border-border/50"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className={LABEL_CLASS}>{dataset.name}</p>
+                    <p className="text-[length:var(--text-xs)] font-mono text-text-muted truncate">
+                      {dataset.username}@{dataset.host}:{dataset.port}
+                    </p>
+                    <p className="text-[length:var(--text-xs)] text-text-muted truncate">
+                      {dataset.remotePath}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      data-testid="settings-sync-edit"
+                      onClick={() => beginEdit(dataset)}
+                      disabled={busy}
+                      className={BTN_SECONDARY}
+                      aria-label={`Edit the dataset “${dataset.name}”`}
+                    >
+                      <Pencil size={13} strokeWidth={2} /> Edit
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="settings-sync-push"
+                      onClick={() => void runPush(dataset.id)}
+                      disabled={busy}
+                      className={BTN_SECONDARY}
+                    >
+                      <Upload size={13} strokeWidth={2} />
+                      {pushing === dataset.id ? "Pushing…" : "Push now"}
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="settings-sync-pull"
+                      onClick={() => void runPull(dataset.id)}
+                      disabled={busy}
+                      className={BTN_SECONDARY}
+                    >
+                      <Download size={13} strokeWidth={2} />
+                      {pulling === dataset.id ? "Pulling…" : "Pull now"}
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="settings-sync-remove"
+                      onClick={() => setConfirmRemove(dataset)}
+                      disabled={busy}
+                      className={BTN_SECONDARY}
+                    >
+                      <Trash2 size={13} strokeWidth={2} /> Remove
+                    </button>
+                  </div>
+                </div>
+
+                <p className="mt-2 text-[length:var(--text-xs)] text-text-muted">
+                  {dataset.role === "owner" ? "Owner — can publish" : "Member — pull only"}
+                  {" · "}generation {dataset.lastGeneration}
+                  {" · "}
+                  {dataset.lastSyncedAt
+                    ? `last synced ${relativeTime(dataset.lastSyncedAt)}`
+                    : "never synced"}
+                </p>
+
+                {/* Generation 0 is not a number to read past: it says this
+                    dataset holds nothing on the server yet, which is the state
+                    a mistyped remote path leaves behind. */}
+                {dataset.lastGeneration === 0 && (
+                  <p
+                    data-testid={`settings-sync-unpublished-${dataset.id}`}
+                    className="mt-1 text-[length:var(--text-xs)] text-status-connecting"
+                  >
+                    Nothing is published at {dataset.remotePath} yet — press Push now to create
+                    the first generation.
+                  </p>
+                )}
+
+                <SyncPhaseLine
+                  dataset={dataset}
+                  status={statuses[dataset.id]}
+                  busy={pushing === dataset.id ? "pushing" : pulling === dataset.id ? "pulling" : null}
+                />
+
+                {blocked && preflight && (
+                  <div
+                    data-testid="settings-sync-preflight-warning"
+                    className="flex items-start gap-2 mt-2 px-3 py-2.5 rounded-lg bg-status-connecting/10 border border-status-connecting/30"
+                  >
+                    <AlertTriangle
+                      size={13}
+                      strokeWidth={2}
+                      className="text-status-connecting shrink-0 mt-0.5"
+                    />
+                    <span className="text-[length:var(--text-xs)] text-text-secondary">
+                      {preflight.vaultLocked
+                        ? "Unlock the App Vault to include credentials."
+                        : `${preflight.credentialsBlocked} stored credential${preflight.credentialsBlocked === 1 ? "" : "s"} cannot be read on this computer.`}
+                      {" "}Nothing was pushed — publish without them by turning the credential
+                      toggles off, or unlock the vault and push again.
+                    </span>
+                  </div>
+                )}
+
+                {outcome && (
+                  <div
+                    data-testid="settings-sync-push-result"
+                    className="mt-2 px-3 py-2.5 rounded-lg bg-bg-base border border-border/60 text-[length:var(--text-xs)] text-text-secondary"
+                  >
+                    <p className="flex items-center gap-1.5 text-status-success">
+                      <CheckCircle2 size={13} strokeWidth={2} /> Pushed generation {outcome.generation}.
+                    </p>
+                    <p className="mt-1">{describePush(outcome)}</p>
+                  </div>
+                )}
+
+                {pulled && (
+                  <div
+                    data-testid="settings-sync-pull-result"
+                    className="mt-2 px-3 py-2.5 rounded-lg bg-bg-base border border-border/60 text-[length:var(--text-xs)] text-text-secondary"
+                  >
+                    <p className="flex items-center gap-1.5 text-status-success">
+                      <CheckCircle2 size={13} strokeWidth={2} /> Pulled generation {pulled.generation}.
+                    </p>
+                    <p className="mt-1">{describePull(pulled)}</p>
+                    {pulled.publishedByAnotherMachine && (
+                      <p data-testid="settings-sync-other-writer" className="mt-1">
+                        This update came from another computer.
+                      </p>
+                    )}
+                    {preserved.length > 0 && <p className="mt-1">{preserved.join(" · ")}</p>}
+                  </div>
+                )}
+
+                {showConflicts && <SyncConflictLog conflicts={conflicts} />}
+
+                <SyncScheduleControls dataset={dataset} />
+              </div>
+            );
+          })}
+        </div>
+      </SettingsGroup>
+
+      <ConfirmDangerDialog
+        open={confirmRemove !== null}
+        title="Remove this dataset?"
+        message={`“${confirmRemove?.name ?? ""}” is removed from this computer: OmniSSH stops syncing it and forgets its passphrase. Your local hosts are kept, and the published dataset on the server is untouched.`}
+        confirmLabel="Remove"
+        onConfirm={() => void handleRemove()}
+        onCancel={() => setConfirmRemove(null)}
+      />
+    </>
+  );
+}
 
 // ─── Data ───────────────────────────────────────────────────────────────────────
 

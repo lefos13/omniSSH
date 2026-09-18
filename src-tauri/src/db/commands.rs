@@ -355,6 +355,11 @@ pub async fn factory_reset(
                 tracing::warn!(key = %key, error = %e, "factory reset: keychain purge failed");
             }
         }
+        for dataset_id in &keys.sync_dataset_ids {
+            if let Err(e) = crate::sync::secrets::delete_dataset_secrets(dataset_id) {
+                tracing::warn!(error = %e, "factory reset: sync secret purge failed");
+            }
+        }
         /* Reset removes persisted encrypted values and must also invalidate the
          * in-memory session key before any subsequent first-launch setup. */
         local_vault.lock_session();

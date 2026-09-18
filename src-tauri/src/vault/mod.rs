@@ -7,6 +7,7 @@ pub(crate) mod local;
 
 pub(crate) use local::migrate_hosts_to_vault;
 pub(crate) use local::resolve_host_credential;
+pub(crate) use local::store_host_credential_in_vault;
 pub use local::LocalVault;
 
 // ---------------------------------------------------------------------------
@@ -14,8 +15,23 @@ pub use local::LocalVault;
 // ---------------------------------------------------------------------------
 
 /// Keychain service name used as the top-level namespace for every entry.
-/// All credentials are keyed as `(SERVICE_NAME, host_id)`.
+/// All credentials are keyed as `(service_name(), host_id)`.
+///
+/// A debug build (`pnpm tauri dev`, the E2E binary) uses a separate namespace
+/// so development and testing can never read, overwrite, or delete the
+/// credentials of an installed release on the same machine. This pairs with the
+/// data-directory split in `lib.rs`: dev builds get their own database *and*
+/// their own keychain records.
 const SERVICE_NAME: &str = "com.anyscp.credentials";
+const SERVICE_NAME_DEV: &str = "com.anyscp.credentials.dev";
+
+pub(crate) fn service_name() -> &'static str {
+    if cfg!(debug_assertions) {
+        SERVICE_NAME_DEV
+    } else {
+        SERVICE_NAME
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -169,7 +185,7 @@ impl Drop for StoredCredential {
 /// the keychain C-API.  It is never written to disk or emitted to logs.
 #[instrument(skip(credential), fields(host_id = %host_id))]
 pub fn save_credential(host_id: &str, credential: &StoredCredential) -> Result<(), VaultError> {
-    let entry = keyring::Entry::new(SERVICE_NAME, host_id)
+    let entry = keyring::Entry::new(service_name(), host_id)
         .map_err(|e| VaultError::Keychain(e.to_string()))?;
 
     let mut json =
@@ -190,7 +206,7 @@ pub fn save_credential(host_id: &str, credential: &StoredCredential) -> Result<(
 /// Returns `VaultError::NotFound` when no entry exists for `host_id`.
 #[instrument(fields(host_id = %host_id))]
 pub fn get_credential(host_id: &str) -> Result<StoredCredential, VaultError> {
-    let entry = keyring::Entry::new(SERVICE_NAME, host_id)
+    let entry = keyring::Entry::new(service_name(), host_id)
         .map_err(|e| VaultError::Keychain(e.to_string()))?;
 
     let mut json = entry.get_password().map_err(|e| match e {
@@ -209,7 +225,7 @@ pub fn get_credential(host_id: &str) -> Result<StoredCredential, VaultError> {
 /// `delete_host` and `vault_delete_credential` are called together.
 #[instrument(fields(host_id = %host_id))]
 pub fn delete_credential(host_id: &str) -> Result<(), VaultError> {
-    let entry = keyring::Entry::new(SERVICE_NAME, host_id)
+    let entry = keyring::Entry::new(service_name(), host_id)
         .map_err(|e| VaultError::Keychain(e.to_string()))?;
 
     match entry.delete_credential() {
@@ -229,7 +245,7 @@ pub fn has_credential(host_id: &str) -> bool {
 }
 
 pub fn credential_exists(host_id: &str) -> Result<bool, VaultError> {
-    let Ok(entry) = keyring::Entry::new(SERVICE_NAME, host_id) else {
+    let Ok(entry) = keyring::Entry::new(service_name(), host_id) else {
         return Err(VaultError::Keychain(
             "credential entry unavailable".to_string(),
         ));

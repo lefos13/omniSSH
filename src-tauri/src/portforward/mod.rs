@@ -19,6 +19,9 @@ pub struct PortForwardRule {
     pub last_used_at: Option<String>,
     pub total_bytes: u64,
     pub created_at: String,
+    /// Last edit timestamp. Read from the table's `updated_at` column; it is
+    /// the last-writer-wins clock for dataset sync.
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

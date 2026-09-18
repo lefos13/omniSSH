@@ -73,6 +73,7 @@ pub async fn pf_create_rule(
         last_used_at: None,
         total_bytes: 0,
         created_at: String::new(),
+        updated_at: String::new(),
     })
 }
 

@@ -458,6 +458,47 @@ pub(crate) fn migrate_host_to_vault(
     }
     Ok(())
 }
+
+/* Store a credential that arrived from outside the app (a dataset pull)
+ * directly as vault ciphertext, without the keychain detour that
+ * `migrate_host_to_vault` exists for.
+ *
+ * The migration path has to read the secret from the keychain because that is
+ * where it already lives. A pulled secret is in memory, so routing it through
+ * the keychain would write the plaintext into a second OS-managed store only to
+ * delete it a moment later — extra authorization prompts on macOS, and a
+ * window where the secret exists somewhere the user never asked for.
+ *
+ * Write order matches the migration: ciphertext, then the storage marker, with
+ * the marker rollback if it fails, then a best-effort purge of any stale
+ * keychain copy so the resolver cannot fall back to an older secret.
+ */
+pub(crate) fn store_host_credential_in_vault(
+    db: &HostDb,
+    state: &LocalVault,
+    host_id: &str,
+    credential: &StoredCredential,
+) -> Result<(), VaultError> {
+    let _operation = state.begin_operation()?;
+    let key = state.session_key()?;
+
+    let (nonce, ciphertext) = encrypt_credential(&key, host_id, credential)?;
+    let blob = pack_credential_blob(&nonce, &ciphertext)?;
+
+    db.save_local_vault_credential(host_id, &blob)?;
+    if let Err(error) = db.set_credential_storage(host_id, CredentialStorage::LocalVault) {
+        let _ = db.delete_local_vault_credential(host_id);
+        return Err(error.into());
+    }
+
+    /* A leftover keychain entry for this host is not a failure — the resolver
+     * branches on the marker and would never read it — but it is a stale copy
+     * of a secret, so it goes. */
+    if let Err(error) = super::delete_credential(host_id) {
+        tracing::warn!(host_id = %host_id, error = %error, "stale keychain credential could not be removed");
+    }
+    Ok(())
+}
 /* Decrypt and reveal a host password after verifying the master password.
  * The operation derives the key dynamically from the supplied master password
  * and verifies it against stored metadata, enforcing a fresh proof of knowledge
@@ -830,6 +871,83 @@ pub async fn local_vault_reveal_password(
 
 #[cfg(test)]
 mod tests {
+    /* A credential that arrives from outside the app (a dataset pull) is
+     * encrypted straight into the vault: no keychain hop, the marker matches
+     * where the secret actually is, and any stale keychain copy is purged so
+     * the resolver cannot fall back to an older secret. */
+    #[test]
+    fn store_host_credential_in_vault_writes_ciphertext_and_purges_the_keychain() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let db = HostDb::new(directory.path()).unwrap();
+        let vault = LocalVault::new();
+        vault.set_session_key([3; 32]).unwrap();
+
+        let host = password_host("pulled-1");
+        db.save_groups_and_hosts_transaction(&[], std::slice::from_ref(&host))
+            .unwrap();
+        // A leftover keychain secret from an earlier life of this host id.
+        crate::vault::save_credential(
+            "pulled-1",
+            &StoredCredential::Password {
+                password: "stale-keychain-secret".to_string(),
+            },
+        )
+        .unwrap();
+
+        store_host_credential_in_vault(
+            &db,
+            &vault,
+            "pulled-1",
+            &StoredCredential::Password {
+                password: "pulled-secret".to_string(),
+            },
+        )
+        .expect("store directly in the vault");
+
+        let saved = db.get_host("pulled-1").unwrap().unwrap();
+        assert_eq!(saved.credential_storage, CredentialStorage::LocalVault);
+        assert!(db.get_local_vault_credential("pulled-1").unwrap().is_some());
+        assert!(
+            crate::vault::get_credential("pulled-1").is_err(),
+            "the stale keychain copy must not survive"
+        );
+
+        match &resolve_host_credential(&db, &vault, "pulled-1", CredentialStorage::LocalVault)
+            .expect("resolve from the vault")
+        {
+            StoredCredential::Password { password } => assert_eq!(password, "pulled-secret"),
+            other => panic!("unexpected credential: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn store_host_credential_in_vault_fails_closed_while_locked() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let db = HostDb::new(directory.path()).unwrap();
+        let vault = LocalVault::new();
+
+        let host = password_host("pulled-2");
+        db.save_groups_and_hosts_transaction(&[], std::slice::from_ref(&host))
+            .unwrap();
+
+        let error = store_host_credential_in_vault(
+            &db,
+            &vault,
+            "pulled-2",
+            &StoredCredential::Password {
+                password: "pulled-secret".to_string(),
+            },
+        )
+        .expect_err("a locked vault has no session key");
+        assert!(matches!(error, VaultError::LocalVaultLocked));
+
+        /* Nothing may be written on the failure path: a vault marker without
+         * ciphertext would make the host unusable until it is re-saved. */
+        let saved = db.get_host("pulled-2").unwrap().unwrap();
+        assert_eq!(saved.credential_storage, CredentialStorage::Keychain);
+        assert!(db.get_local_vault_credential("pulled-2").unwrap().is_none());
+    }
+
     #[test]
     fn migrate_hosts_to_vault_happy_path() {
         let db_path = tempfile::tempdir().unwrap().path().join("test.db");

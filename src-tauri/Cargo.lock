@@ -121,6 +121,7 @@ dependencies = [
  "rusty-leveldb",
  "serde",
  "serde_json",
+ "sha2",
  "ssh2-config",
  "tauri",
  "tauri-build",

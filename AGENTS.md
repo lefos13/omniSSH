@@ -106,6 +106,12 @@ New E2E specs belong in `tests/e2e/specs/NN-name.spec.ts`, use helpers from `tes
 
 ## Working practices
 
+- Git identity: both this repo and the `omnissh-web` submodule use a LOCAL git
+  identity (`lefos13 <71150524+lefos13@users.noreply.github.com>`). Never rely on
+  the global `user.name`/`user.email` — verify with
+  `git config user.name && git config user.email` (and the same inside
+  `omnissh-web/`) before committing. Vercel deployments reject commits authored
+  by any other identity.
 - Check for more-specific `AGENTS.md` files before editing a subdirectory; nearer instructions override this file.
 - Inspect nearby implementation and tests before introducing a new pattern.
 - Preserve unrelated working-tree changes and keep edits scoped to the request.

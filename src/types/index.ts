@@ -97,3 +97,26 @@ export type {
   TerminalHighlightRule,
 } from "./terminal";
 
+export type {
+  SyncEndpointInput,
+  SyncConnectionTest,
+  ExistingDataset,
+  SyncErrorKind,
+  SyncErrorPayload,
+  SyncContentKind,
+  SyncContentFlags,
+  SyncRole,
+  SyncScopeMode,
+  SyncDatasetSummary,
+  SyncDatasetInput,
+  SyncDatasetSecrets,
+  SyncSaveOutcome,
+  SyncPushPreflight,
+  SyncPushOutcome,
+  SyncAppliedCounts,
+  SyncPullOutcome,
+  SyncConflictEntry,
+  SyncPhase,
+  SyncStatusSnapshot,
+} from "./sync";
+
