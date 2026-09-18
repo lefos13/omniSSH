@@ -3656,16 +3656,27 @@ impl HostDb {
 pub struct ResetKeys {
     pub host_ids: Vec<String>,
     pub s3_ids: Vec<String>,
-    /* Sync datasets own two keychain entries each (`sync:{id}:server` and
-     * `sync:{id}:passphrase`), so their ids come back from a reset too —
-     * otherwise a cleared app would leave a server password and a dataset
-     * passphrase behind for datasets that no longer exist. */
+    /* Sync datasets own several keychain entries each — the endpoint credential,
+     * the dataset passphrase, and the owner signing key, enumerated by
+     * `sync::secrets::dataset_secret_keys` — so their ids come back from a reset
+     * too. Otherwise a cleared app would leave those secrets behind for datasets
+     * that no longer exist, and a fourth per-dataset secret would be missed by a
+     * hand-written list here. */
     pub sync_dataset_ids: Vec<String>,
 }
 
-/// Tables copied wholesale during a snapshot restore. `_meta` (schema marker)
-/// is intentionally kept, and `snippets_fts*` shadow tables are excluded — they
-/// are rebuilt by the snippets triggers as rows are inserted.
+/* Tables copied wholesale during a snapshot restore: the user's data plus the
+ * sync tables that describe this machine's datasets and its merge base. No
+ * secret is ever carried by a copied table — host and S3 credentials travel in
+ * the backup's own credential map, and a dataset's server credential, passphrase,
+ * and owner signing key live only in the OS keychain — so restoring a backup on
+ * another machine recreates the dataset rows and leaves them asking for their
+ * secrets again.
+ *
+ * Machine-local, derived, and schema tables are deliberately left out. The test
+ * module's `NON_COPYABLE_TABLES` / `NON_COPYABLE_PREFIXES` name each of them and
+ * why, and `every_live_table_is_classified_for_snapshot_restore` fails when a
+ * new table appears in neither list. */
 const COPYABLE_TABLES: &[&str] = &[
     "host_groups",
     "saved_hosts",
@@ -3679,6 +3690,12 @@ const COPYABLE_TABLES: &[&str] = &[
     "app_settings",
     "local_vault_metadata",
     "local_vault_credentials",
+    "sync_datasets",
+    "sync_dataset_members",
+    "sync_record_state",
+    "sync_conflicts",
+    "sync_tombstones",
+    "sync_detached",
 ];
 
 /// Column names of `table` in declaration order, read from the live schema.
@@ -4130,6 +4147,9 @@ mod tests {
             detected_at: String::new(),
         }])
         .expect("conflict");
+        db.set_sync_dataset_members("ds-1", &[(SyncEntityType::Group, "grp-1".to_string())])
+            .expect("members");
+        db.detach_sync_host("ds-1", "host-1").expect("detach");
         let keys = db.factory_reset().expect("factory_reset");
         assert_eq!(keys.host_ids, vec!["host-1".to_string()]);
         assert!(keys.s3_ids.is_empty());
@@ -4147,6 +4167,10 @@ mod tests {
             .is_none());
         assert!(db.list_sync_datasets().expect("datasets").is_empty());
         assert!(db
+            .list_sync_dataset_members("ds-1")
+            .expect("members")
+            .is_empty());
+        assert!(db
             .list_sync_record_state("ds-1")
             .expect("record state")
             .is_empty());
@@ -4160,6 +4184,10 @@ mod tests {
             .list_sync_tombstones(None)
             .expect("tombstones")
             .is_empty());
+        // Detach opt-outs are gone with the dataset they belonged to.
+        assert!(!db
+            .is_sync_detached("ds-1", SyncEntityType::Host, "host-1")
+            .expect("detached"));
 
         // The schema survives the wipe — a fresh insert still works (i.e. the
         // DB is reset to first-launch state, not corrupted/dropped).
@@ -4241,6 +4269,94 @@ mod tests {
         assert!(matches!(err, DbError::Validation(_) | DbError::Sqlite(_)));
         // Live DB is untouched / usable.
         assert!(dst.list_hosts().expect("list").is_empty());
+    }
+
+    /* Live tables a snapshot restore deliberately leaves alone, with the reason
+     * each one is not copyable. `every_live_table_is_classified_for_snapshot_restore`
+     * requires every live table to appear here or in `COPYABLE_TABLES`, so a new
+     * table cannot be silently dropped from a backup. */
+    const NON_COPYABLE_TABLES: &[(&str, &str)] = &[
+        (
+            "_meta",
+            "schema marker of the running installation, validated then discarded",
+        ),
+        (
+            "sqlite_sequence",
+            "AUTOINCREMENT bookkeeping, maintained by SQLite as rows are inserted",
+        ),
+        (
+            "vault_cleanup_queue",
+            "queue of this machine's keychain entries to purge; the keys it names exist only here",
+        ),
+    ];
+
+    /* `snippets_fts` and its `_data` / `_idx` / `_docsize` / `_config` shadow
+     * tables: the FTS5 index is rebuilt by the snippets triggers as rows copy. */
+    const NON_COPYABLE_PREFIXES: &[(&str, &str)] = &[(
+        "snippets_fts",
+        "FTS5 index rebuilt by the snippets triggers",
+    )];
+
+    /// Every table the live schema defines, including FTS5 shadow tables and
+    /// SQLite's own bookkeeping tables.
+    fn live_tables(db: &HostDb) -> Vec<String> {
+        let conn = db.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+            .unwrap();
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0)).unwrap();
+        rows.collect::<Result<Vec<_>, _>>().unwrap()
+    }
+
+    #[test]
+    fn every_live_table_is_classified_for_snapshot_restore() {
+        let (db, _dir) = test_db();
+        let tables = live_tables(&db);
+        assert!(
+            tables.len() > 20,
+            "the live schema should be enumerated, got {tables:?}"
+        );
+        for table in tables {
+            let copyable = COPYABLE_TABLES.contains(&table.as_str());
+            let excluded = NON_COPYABLE_TABLES.iter().any(|(name, _)| *name == table)
+                || NON_COPYABLE_PREFIXES
+                    .iter()
+                    .any(|(prefix, _)| table.starts_with(prefix));
+            assert!(
+                copyable || excluded,
+                "table `{table}` is in neither COPYABLE_TABLES nor the documented exclusion \
+                 list: decide whether a restore copies it and record that here"
+            );
+            assert!(
+                !(copyable && excluded),
+                "table `{table}` is listed as both copyable and not copyable"
+            );
+        }
+    }
+
+    #[test]
+    fn every_sync_table_is_copied_by_a_snapshot_restore() {
+        let (db, _dir) = test_db();
+        let sync_tables: Vec<String> = live_tables(&db)
+            .into_iter()
+            .filter(|table| table.starts_with("sync_"))
+            .collect();
+        assert!(
+            !sync_tables.is_empty(),
+            "the sync tables from migrations 21-23 should exist"
+        );
+        /* Datasets, their scope, the merge base, the conflict log, pending
+         * tombstones, and detach opt-outs describe a remote this user owns, so a
+         * restore on another machine recreates them. No secret travels with them
+         * — the endpoint credential, passphrase, and owner signing key live in
+         * the keychain — which is why a restored dataset reports
+         * `hasServerSecret` / `hasPassphrase` false and asks for them again. */
+        for table in &sync_tables {
+            assert!(
+                COPYABLE_TABLES.contains(&table.as_str()),
+                "sync table `{table}` is missing from COPYABLE_TABLES: a restore must recreate it"
+            );
+        }
     }
 
     #[test]
@@ -5707,6 +5823,7 @@ mod tests {
             "sync_record_state",
             "sync_conflicts",
             "sync_tombstones",
+            "sync_detached",
         ] {
             for column in table_columns(&conn, table).expect("table columns") {
                 let lowered = column.to_lowercase();

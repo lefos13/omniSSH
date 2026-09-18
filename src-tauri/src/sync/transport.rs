@@ -126,7 +126,10 @@ pub struct RemoteStore {
 
 impl RemoteStore {
     /// Connect, open an SFTP channel, and resolve the dataset root.
-    #[instrument(skip(ssh, endpoint), fields(host = %endpoint.host, port = endpoint.port))]
+    ///
+    /// The span deliberately records no host, port, or path: a sync log line
+    /// must not identify the server or the directory the user chose.
+    #[instrument(skip(ssh, endpoint))]
     pub async fn connect(ssh: &SshManager, endpoint: &SyncEndpoint) -> Result<Self, SyncError> {
         let session_id = ssh
             .connect_no_pty(endpoint.host_config(), None)
@@ -529,15 +532,15 @@ async fn read_optional(sftp: &SftpSession, path: &str) -> Result<Option<Vec<u8>>
         return Ok(None);
     };
     if attrs.file_type() == FileType::Dir {
-        return Err(SyncError::Transport(format!(
-            "{path} is a directory, not a dataset object"
-        )));
+        return Err(SyncError::Transport(
+            "a dataset object is a directory, not a file".to_string(),
+        ));
     }
     // The size is server-reported, so it is a cheap pre-check only; the read
     // loop below enforces the same ceiling on the bytes actually delivered.
     if attrs.size.unwrap_or(0) > MAX_OBJECT_BYTES {
         return Err(SyncError::Transport(format!(
-            "{path} is larger than the {MAX_OBJECT_BYTES}-byte dataset limit"
+            "a dataset object is larger than the {MAX_OBJECT_BYTES}-byte limit"
         )));
     }
 
@@ -551,13 +554,13 @@ async fn read_optional(sftp: &SftpSession, path: &str) -> Result<Option<Vec<u8>>
         let read = file
             .read(&mut buf)
             .await
-            .map_err(|e| SyncError::Transport(format!("could not read {path}: {e}")))?;
+            .map_err(|e| SyncError::Transport(format!("could not read a dataset object: {e}")))?;
         if read == 0 {
             break;
         }
         if out.len() as u64 + read as u64 > MAX_OBJECT_BYTES {
             return Err(SyncError::Transport(format!(
-                "{path} is larger than the {MAX_OBJECT_BYTES}-byte dataset limit"
+                "a dataset object is larger than the {MAX_OBJECT_BYTES}-byte limit"
             )));
         }
         out.extend_from_slice(&buf[..read]);
@@ -572,13 +575,13 @@ async fn write_all(sftp: &SftpSession, path: &str, bytes: &[u8]) -> Result<(), S
             OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::TRUNCATE,
         )
         .await
-        .map_err(|e| SyncError::Transport(format!("could not write {path}: {e}")))?;
+        .map_err(|e| SyncError::Transport(format!("could not open a dataset object: {e}")))?;
     file.write_all(bytes)
         .await
-        .map_err(|e| SyncError::Transport(format!("could not write {path}: {e}")))?;
+        .map_err(|e| SyncError::Transport(format!("could not write a dataset object: {e}")))?;
     file.shutdown()
         .await
-        .map_err(|e| SyncError::Transport(format!("could not flush {path}: {e}")))?;
+        .map_err(|e| SyncError::Transport(format!("could not flush a dataset object: {e}")))?;
     Ok(())
 }
 

@@ -41,8 +41,8 @@ unit-testable and the transport/merge tasks build on a fixed contract.
       never reach the payload.
 
 **Verification:**
-- [ ] `cargo test --manifest-path src-tauri/Cargo.toml sync::codec`
-- [ ] `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings`
+- [x] `cargo test --manifest-path src-tauri/Cargo.toml sync::codec`
+- [x] `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings`
 - [ ] Manual check: a sealed fixture byte-dump shows no host label, username, or
       hostname in plaintext.
 
@@ -359,9 +359,9 @@ push after local mutations, visible status, and errors a user can act on.
 
 ## Checkpoint A: Phase 1 complete (after Tasks 1-6)
 
-- [ ] `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings`,
+- [x] `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings`,
       `cargo test --manifest-path src-tauri/Cargo.toml` all clean
-- [ ] `pnpm test` and `pnpm build` clean
+- [x] `pnpm test` and `pnpm build` clean
 - [ ] New E2E target `sshd-sync` (linuxserver/openssh, full SFTP, `testuser/testpass`,
       dedicated dataset dir) added to `tests/e2e/docker-compose.yml` and the
       entrypoint's readiness wait
@@ -383,19 +383,19 @@ push after local mutations, visible status, and errors a user can act on.
 state. Schema already supports it (Task 2).
 
 **Acceptance criteria:**
-- [ ] Settings ▸ Sync lists datasets with add/edit/remove; each row shows name,
+- [x] Settings ▸ Sync lists datasets with add/edit/remove; each row shows name,
       endpoint, role, last sync, and per-row Push/Pull actions.
-- [ ] Secrets are namespaced per dataset (`sync:{datasetId}:server`,
+- [x] Secrets are namespaced per dataset (`sync:{datasetId}:server`,
       `sync:{datasetId}:passphrase`); removing a dataset deletes its secrets and its
       `sync_record_state` / `sync_conflicts` rows, and leaves local hosts intact.
-- [ ] Two datasets pointing at the same endpoint but different remote paths sync
+- [x] Two datasets pointing at the same endpoint but different remote paths sync
       independently: a push to one never mutates the other's remote objects or
       record state.
-- [ ] Removing a dataset does not delete synced hosts locally (confirmed by a test).
+- [x] Removing a dataset does not delete synced hosts locally (confirmed by a test).
 
 **Verification:**
-- [ ] `cargo test --manifest-path src-tauri/Cargo.toml sync::datasets`
-- [ ] `pnpm exec vitest run src/components/settings/__tests__/SettingsPage.sync.test.tsx`
+- [x] `cargo test --manifest-path src-tauri/Cargo.toml sync::datasets`
+- [x] `pnpm exec vitest run src/components/settings/__tests__/SettingsPage.sync.test.tsx`
 - [ ] Manual check: two datasets against `sshd-sync` under `/config/ds-a` and
       `/config/ds-b`; push/pull each, verify isolation over `sftp`.
 
@@ -416,20 +416,20 @@ groups, or an explicit host selection. Required for the "one dataset per
 customer" workflow.
 
 **Acceptance criteria:**
-- [ ] `scope_mode` ∈ {`all`, `groups`, `hosts`} with membership rows in
+- [x] `scope_mode` ∈ {`all`, `groups`, `hosts`} with membership rows in
       `sync_dataset_members`; the dataset editor offers group and host pickers with
       a live count of in-scope hosts.
-- [ ] Push includes exactly the in-scope hosts plus the groups they reference (a
+- [x] Push includes exactly the in-scope hosts plus the groups they reference (a
       referenced group is always carried so `group_id` never dangles after a pull).
-- [ ] A host in two datasets is pushed to both and pulls without duplication (same
+- [x] A host in two datasets is pushed to both and pulls without duplication (same
       id, LWW applies per dataset with independent `sync_record_state`).
-- [ ] Removing a host from a dataset's scope emits a scope-removal record so other
+- [x] Removing a host from a dataset's scope emits a scope-removal record so other
       clients drop it from that dataset without deleting the local host, and this is
       distinguishable from a real delete (tombstone).
 
 **Verification:**
-- [ ] `cargo test --manifest-path src-tauri/Cargo.toml sync::scope`
-- [ ] `pnpm exec vitest run src/components/settings/__tests__/SettingsPage.sync.test.tsx`
+- [x] `cargo test --manifest-path src-tauri/Cargo.toml sync::scope`
+- [x] `pnpm exec vitest run src/components/settings/__tests__/SettingsPage.sync.test.tsx`
 - [ ] Manual check: group-scoped dataset pushes only that group's hosts, verified by
       pulling on a wiped profile.
 
@@ -450,25 +450,25 @@ verify against a pinned fingerprint and cannot push, and the UI is honest that
 write prevention belongs to the server.
 
 **Acceptance criteria:**
-- [ ] Owner role generates an ed25519 keypair stored in keychain/App Vault
+- [x] Owner role generates an ed25519 keypair stored in keychain/App Vault
       (`sync:{datasetId}:signing`); `dataset.meta.json` carries a detached signature
       over `(formatVersion, datasetId, generation, payloadSha256, updatedAt)`.
-- [ ] Joining pins `ownerFingerprint` on first successful pull; a later bundle whose
+- [x] Joining pins `ownerFingerprint` on first successful pull; a later bundle whose
       signature is absent, invalid, or signed by another key is **rejected** with
       "this dataset was signed by a different owner", and nothing is applied.
-- [ ] Member role: `sync_push` returns a `RoleDenied` error and the UI offers no push
+- [x] Member role: `sync_push` returns a `RoleDenied` error and the UI offers no push
       affordance; a role change to owner requires the signing key to be present.
-- [ ] Preflight write probe: when the role is member and the remote is writable, the
+- [x] Preflight write probe: when the role is member and the remote is writable, the
       UI warns that the server is not enforcing read-only, with the remote-side fix
       (read-only SSH account / `chmod`) stated in the panel text and README.
-- [ ] Passphrase rotation by the owner rewraps DK and bumps generation; members
+- [x] Passphrase rotation by the owner rewraps DK and bumps generation; members
       pulling with the old passphrase get "wrong dataset passphrase", not a corrupt
       apply.
 
 **Verification:**
-- [ ] `cargo test --manifest-path src-tauri/Cargo.toml sync::signing`
+- [x] `cargo test --manifest-path src-tauri/Cargo.toml sync::signing`
       (valid, tampered payload, foreign key, missing signature, rotation)
-- [ ] `pnpm exec vitest run src/components/settings/__tests__/SettingsPage.sync.test.tsx`
+- [x] `pnpm exec vitest run src/components/settings/__tests__/SettingsPage.sync.test.tsx`
 - [ ] Manual check: owner profile pushes; member profile (same container, read-only
       account) pulls successfully and cannot push; hand-edited
       `dataset.meta.json` is rejected.
@@ -490,20 +490,20 @@ one integration owner).
 (AD-9) and give an explicit escape hatch.
 
 **Acceptance criteria:**
-- [ ] Hosts with `sync_record_state.managed = 1` for a member-role dataset show a
+- [x] Hosts with `sync_record_state.managed = 1` for a member-role dataset show a
       "managed by <dataset>" badge and their editor fields are disabled, with a
       visible reason.
-- [ ] A save attempt on a managed host is blocked in the backend too
+- [x] A save attempt on a managed host is blocked in the backend too
       (`save_host` returns a typed error), not only in the UI.
-- [ ] **Detach from dataset** clears the managed flag and the record's sync state
+- [x] **Detach from dataset** clears the managed flag and the record's sync state
       after a confirm dialog, leaving the host locally editable; a later pull does
       not silently re-manage it without the user re-adding it.
-- [ ] Owner-role datasets do not mark hosts read-only (the owner is the source of
+- [x] Owner-role datasets do not mark hosts read-only (the owner is the source of
       truth).
 
 **Verification:**
-- [ ] `cargo test --manifest-path src-tauri/Cargo.toml db::tests` (managed-host save rejection)
-- [ ] `pnpm exec vitest run src/components/dashboard/HostEditModal.managed.test.tsx`
+- [x] `cargo test --manifest-path src-tauri/Cargo.toml db::tests` (managed-host save rejection)
+- [x] `pnpm exec vitest run src/components/dashboard/HostEditModal.managed.test.tsx`
 - [ ] Manual check: member profile cannot edit a pulled host, detach restores editing.
 
 **Dependencies:** Task 9.
@@ -536,19 +536,19 @@ one integration owner).
 `history/` generations.
 
 **Acceptance criteria:**
-- [ ] `sync_list_history(datasetId)` lists retained generations with timestamp,
+- [x] `sync_list_history(datasetId)` lists retained generations with timestamp,
       writer client id, and record counts (metadata only, no decrypt required for
       the listing).
-- [ ] `sync_rollback(datasetId, generation)` pulls that generation, applies it as a
+- [x] `sync_rollback(datasetId, generation)` pulls that generation, applies it as a
       normal merge (so local-only records survive), and publishes a **new** generation
       rather than rewriting history.
-- [ ] Rollback is owner-only and refuses when the passphrase does not match the
+- [x] Rollback is owner-only and refuses when the passphrase does not match the
       target generation's wrap.
-- [ ] UI lists history under the dataset with a confirm dialog naming what will change.
+- [x] UI lists history under the dataset with a confirm dialog naming what will change.
 
 **Verification:**
-- [ ] `cargo test --manifest-path src-tauri/Cargo.toml sync::history`
-- [ ] Manual check: push A, push B, roll back to A, verify a new generation exists
+- [x] `cargo test --manifest-path src-tauri/Cargo.toml sync::history`
+- [x] Manual check: push A, push B, roll back to A, verify a new generation exists
       and hosts match A.
 
 **Dependencies:** Task 7 (parallel with Tasks 8-10).
@@ -567,23 +567,23 @@ one integration owner).
 surfaces and document the feature, including the remote-side permission model.
 
 **Acceptance criteria:**
-- [ ] `COPYABLE_TABLES` includes every `sync_*` table, with a test that enumerates
+- [x] `COPYABLE_TABLES` includes every `sync_*` table, with a test that enumerates
       the live schema and fails when a table is missing from the list.
-- [ ] `factory_reset` / `ResetKeys` purge every `sync:{datasetId}:*` secret; a test
+- [x] `factory_reset` / `ResetKeys` purge every `sync:{datasetId}:*` secret; a test
       asserts no sync secret namespace survives a reset.
-- [ ] Restoring a backup on another machine restores dataset rows without secrets
+- [x] Restoring a backup on another machine restores dataset rows without secrets
       and the UI prompts for the server secret and passphrase instead of failing
       opaquely.
-- [ ] README (feature + comparison table note that sync is self-hosted and
+- [x] README (feature + comparison table note that sync is self-hosted and
       zero-cloud), `CHANGELOG.md` entry, and `docs/sync-datasets.md` covering remote
       layout, key hierarchy, role model, the server-side read-only requirement, and
       recovery steps.
-- [ ] Scaffolding, probe files, and throwaway scripts from earlier tasks removed.
+- [x] Scaffolding, probe files, and throwaway scripts from earlier tasks removed.
 
 **Verification:**
-- [ ] `cargo test --manifest-path src-tauri/Cargo.toml db::tests backup::tests`
+- [x] `cargo test --manifest-path src-tauri/Cargo.toml db::tests backup::tests`
 - [ ] `pnpm test`, `pnpm build`, `make e2e`
-- [ ] Manual check: `grep` the new modules to confirm no `tracing` field carries a
+- [x] Manual check: `grep` the new modules to confirm no `tracing` field carries a
       secret, hostname, path, or command.
 
 **Dependencies:** Tasks 10, 11.
@@ -599,8 +599,8 @@ surfaces and document the feature, including the remote-side permission model.
 ## Checkpoint C: Complete
 
 - [ ] Every acceptance criterion above met
-- [ ] `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings`,
+- [x] `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings`,
       `cargo test --manifest-path src-tauri/Cargo.toml`, `pnpm test`, `pnpm build`,
       `make e2e` all green
-- [ ] No secret, host, path, or command in logs/telemetry
+- [x] No secret, host, path, or command in logs/telemetry
 - [ ] Ready for review

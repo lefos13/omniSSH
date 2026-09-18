@@ -26,6 +26,7 @@ use super::dataset::{
     delete_dataset, list_datasets, save_dataset, SyncDatasetInput, SyncDatasetSecrets,
     SyncDatasetSummary, SyncSaveOutcome,
 };
+use super::history::{list_history, rollback, SyncHistoryListing, SyncRollbackOutcome};
 use super::meta::{DatasetMeta, ExistingDataset};
 use super::pull::{pull, SyncPullOutcome};
 use super::push::{
@@ -114,7 +115,7 @@ pub struct SyncConnectionTest {
 /// Connect to a sync endpoint, probe the dataset path, and report what is
 /// there — without creating, modifying, or overwriting anything.
 #[tauri::command(rename_all = "camelCase")]
-#[instrument(skip(endpoint, ssh), fields(host = %endpoint.host, port = endpoint.port.unwrap_or(22)))]
+#[instrument(skip(endpoint, ssh))]
 pub async fn sync_test_connection(
     endpoint: SyncEndpointInput,
     ssh: State<'_, SshManager>,
@@ -150,7 +151,7 @@ pub async fn sync_test_connection(
 /// Create or update a dataset. Verifies the passphrase against the remote when
 /// a dataset is already published at the path (join), otherwise creates one.
 #[tauri::command(rename_all = "camelCase")]
-#[instrument(skip(dataset, secrets, ssh, db), fields(host = %dataset.host))]
+#[instrument(skip(dataset, secrets, ssh, db), fields(dataset_id = dataset.id.as_deref().unwrap_or("new")))]
 pub async fn sync_save_dataset(
     dataset: SyncDatasetInput,
     secrets: SyncDatasetSecrets,
@@ -285,6 +286,36 @@ pub async fn sync_pull(
     let db = Arc::clone(&db);
     let local_vault = Arc::clone(&local_vault);
     pull(ssh.inner(), &db, &local_vault, &dataset_id).await
+}
+
+/// Retained generations of a dataset, newest first. Metadata only: this reads
+/// the plaintext metadata copies in `history/`, so it neither downloads nor
+/// decrypts a bundle and never asks for the passphrase.
+#[tauri::command(rename_all = "camelCase")]
+#[instrument(skip(ssh, db), fields(dataset_id = %dataset_id))]
+pub async fn sync_list_history(
+    dataset_id: String,
+    ssh: State<'_, SshManager>,
+    db: State<'_, Arc<HostDb>>,
+) -> Result<SyncHistoryListing, SyncError> {
+    list_history(ssh.inner(), &db, &dataset_id).await
+}
+
+/* Rollback is owner-only and never rewrites history: the retained generation is
+ * applied as a normal merge (so records made since are kept) and the merged
+ * result is published as a new generation. */
+#[tauri::command(rename_all = "camelCase")]
+#[instrument(skip(ssh, db, local_vault), fields(dataset_id = %dataset_id, generation = generation))]
+pub async fn sync_rollback(
+    dataset_id: String,
+    generation: u64,
+    ssh: State<'_, SshManager>,
+    db: State<'_, Arc<HostDb>>,
+    local_vault: State<'_, Arc<LocalVault>>,
+) -> Result<SyncRollbackOutcome, SyncError> {
+    let db = Arc::clone(&db);
+    let local_vault = Arc::clone(&local_vault);
+    rollback(ssh.inner(), &db, &local_vault, &dataset_id, generation).await
 }
 
 /// Rotate a dataset's passphrase: rewrap the dataset key under the new

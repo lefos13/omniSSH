@@ -375,6 +375,8 @@ pub fn run() {
             sync::commands::sync_push_preflight,
             sync::commands::sync_push,
             sync::commands::sync_pull,
+            sync::commands::sync_list_history,
+            sync::commands::sync_rollback,
             sync::commands::sync_rotate_passphrase,
             sync::commands::sync_detach_host,
             sync::commands::sync_reattach_host,

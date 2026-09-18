@@ -23,10 +23,12 @@ import type {
   SyncDatasetSummary,
   SyncEndpointInput,
   SyncErrorPayload,
+  SyncHistoryListing,
   SyncManagedBy,
   SyncPullOutcome,
   SyncPushOutcome,
   SyncPushPreflight,
+  SyncRollbackOutcome,
   SyncRotateOutcome,
   SyncSaveOutcome,
   SyncScopeMode,
@@ -122,6 +124,19 @@ const CLEAR_DATASET_ERROR = { datasetError: null, datasetErrorKind: null } as co
 /** Conflict rows a dataset row lists; the backend keeps the newest first (AD-5). */
 export const CONFLICT_LIMIT = 20;
 
+/* Any operation that moves the remote's generation (push, pull, rotation,
+ * rollback) makes a loaded listing stale — including its "current generation" —
+ * so the cached copy is dropped and the row asks the server again when the user
+ * opens it. */
+function withoutHistory(
+  history: Record<string, SyncHistoryListing>,
+  datasetId: string,
+): Record<string, SyncHistoryListing> {
+  const next = { ...history };
+  delete next[datasetId];
+  return next;
+}
+
 interface SyncState {
   endpoint: SyncEndpointDraft;
   testing: boolean;
@@ -148,6 +163,15 @@ interface SyncState {
   pullResult: SyncPullOutcome | null;
   /** Conflict log of the dataset pulled last, newest first. */
   conflicts: SyncConflictEntry[];
+  /** Retained generations per dataset id, newest first. Read on demand: the
+   * listing costs a connection, so it is not fetched for every saved row. */
+  history: Record<string, SyncHistoryListing>;
+  /** Dataset id whose history is being read. */
+  historyLoading: string | null;
+  /** Dataset id with a rollback in flight; its row disables every action. */
+  rollingBack: string | null;
+  /** Result of the last rollback, until another dataset action replaces it. */
+  rollbackResult: SyncRollbackOutcome | null;
   /** Live phase per dataset, as last reported by the backend scheduler. */
   statuses: Record<string, SyncStatusSnapshot>;
   datasetError: string | null;
@@ -189,6 +213,14 @@ interface SyncState {
   detachHost: (datasetId: string, hostId: string) => Promise<void>;
   /* Removes a detach opt-out so the next pull may manage the host again. */
   reattachHost: (datasetId: string, hostId: string) => Promise<void>;
+  /* Reads the generations the server still retains, newest first. Metadata
+   * only: it needs no passphrase and downloads no bundle. */
+  loadHistory: (datasetId: string) => Promise<SyncHistoryListing>;
+  /** Drops a loaded listing without asking the server again. */
+  clearHistory: (datasetId: string) => void;
+  /* Applies a retained generation as a normal merge, then publishes the merged
+   * result as a new generation. Owner only; the backend refuses the rest. */
+  rollback: (datasetId: string, generation: number) => Promise<SyncRollbackOutcome>;
 }
 
 export const useSyncStore = create<SyncState>((set, get) => ({
@@ -208,6 +240,10 @@ export const useSyncStore = create<SyncState>((set, get) => ({
   pulling: null,
   pullResult: null,
   conflicts: [],
+  history: {},
+  historyLoading: null,
+  rollingBack: null,
+  rollbackResult: null,
   statuses: {},
   datasetError: null,
   datasetErrorKind: null,
@@ -401,6 +437,10 @@ export const useSyncStore = create<SyncState>((set, get) => ({
          * exists, so neither may outlive it in a row that cannot render them. */
         pullResult: state.pullResult?.datasetId === datasetId ? null : state.pullResult,
         conflicts: state.pullResult?.datasetId === datasetId ? [] : state.conflicts,
+        /* Same for the retained-generation listing and the rollback report. */
+        history: withoutHistory(state.history, datasetId),
+        rollbackResult:
+          state.rollbackResult?.datasetId === datasetId ? null : state.rollbackResult,
         /* The scheduler stops reporting a removed dataset, so its last snapshot
          * would otherwise leave a phantom badge in the status bar. */
         statuses: Object.fromEntries(
@@ -435,7 +475,13 @@ export const useSyncStore = create<SyncState>((set, get) => ({
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const outcome = await invoke<SyncPushOutcome>("sync_push", { datasetId });
-      set({ pushing: null, pushResult: outcome });
+      /* A push archives the generation it replaced, so any listing on screen
+       * no longer matches the server. */
+      set((state) => ({
+        pushing: null,
+        pushResult: outcome,
+        history: withoutHistory(state.history, datasetId),
+      }));
       return outcome;
     } catch (error) {
       const failure = syncFailure(error, "Could not push the dataset");
@@ -496,7 +542,13 @@ export const useSyncStore = create<SyncState>((set, get) => ({
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const outcome = await invoke<SyncPullOutcome>("sync_pull", { datasetId });
-      set({ pulling: null, pullResult: outcome });
+      /* The pulled generation moved the remote's head, so a retained-generation
+       * listing on screen describes a state that is no longer current. */
+      set((state) => ({
+        pulling: null,
+        pullResult: outcome,
+        history: withoutHistory(state.history, datasetId),
+      }));
       /* The remote generation moved, so re-read the row instead of patching it;
        * then the conflict log, then the entity stores. The reloads are
        * best-effort: the pull itself already succeeded and its outcome is what
@@ -524,6 +576,8 @@ export const useSyncStore = create<SyncState>((set, get) => ({
         datasetId,
         newPassphrase,
       });
+      /* Rotation publishes a new generation and archives the previous one. */
+      set((state) => ({ history: withoutHistory(state.history, datasetId) }));
       await get().loadDatasets().catch(() => {});
       return outcome;
     } catch (error) {
@@ -558,6 +612,74 @@ export const useSyncStore = create<SyncState>((set, get) => ({
     } catch (error) {
       const failure = syncFailure(error, "Could not re-attach the host to the dataset");
       set({ datasetError: failure.message, datasetErrorKind: failure.kind });
+      throw error;
+    }
+  },
+
+  /*
+   * The retained generations of one dataset. The read is metadata only — no
+   * passphrase, no bundle — but it still opens a connection, so it happens when
+   * the user asks for it rather than for every saved row when Settings opens.
+   */
+  loadHistory: async (datasetId) => {
+    set({ historyLoading: datasetId, ...CLEAR_DATASET_ERROR });
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const listing = await invoke<SyncHistoryListing>("sync_list_history", { datasetId });
+      set((state) => ({
+        historyLoading: null,
+        history: { ...state.history, [datasetId]: listing },
+      }));
+      return listing;
+    } catch (error) {
+      const failure = syncFailure(error, "Could not read this dataset's history");
+      set({ historyLoading: null, datasetError: failure.message, datasetErrorKind: failure.kind });
+      throw error;
+    }
+  },
+
+  /* Hiding the list is not a reason to reconnect, so the loaded listing stays
+   * in the map and the row simply stops rendering it. */
+  clearHistory: (datasetId) =>
+    set((state) => ({ history: withoutHistory(state.history, datasetId) })),
+
+  /*
+   * Rollback applies a retained generation as a normal merge and publishes the
+   * merged result as a new generation, so everything a pull refreshes is
+   * refreshed here as well — plus the listing that named the generation, which
+   * now has one more entry.
+   */
+  rollback: async (datasetId, generation) => {
+    set({
+      rollingBack: datasetId,
+      rollbackResult: null,
+      conflicts: [],
+      ...CLEAR_DATASET_ERROR,
+    });
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const outcome = await invoke<SyncRollbackOutcome>("sync_rollback", {
+        datasetId,
+        generation,
+      });
+      set((state) => ({
+        rollingBack: null,
+        rollbackResult: outcome,
+        history: withoutHistory(state.history, datasetId),
+      }));
+      /* Best-effort, like a pull: the rollback itself already succeeded and its
+       * outcome is what the user asked for. */
+      await get().loadDatasets().catch(() => {});
+      await get().loadConflicts(datasetId).catch(() => {});
+      await get().loadHistory(datasetId).catch(() => {});
+      await Promise.all([
+        useHostsStore.getState().loadHosts(),
+        useGroupsStore.getState().loadGroups(),
+      ]).catch(() => {});
+      return outcome;
+    } catch (error) {
+      const failure = syncFailure(error, "Could not roll the dataset back");
+      set({ rollingBack: null, datasetError: failure.message, datasetErrorKind: failure.kind });
       throw error;
     }
   },

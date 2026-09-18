@@ -5,10 +5,10 @@ import { useSettingsStore } from "../../stores/settings-store";
 import { CustomSelect, type SelectOption } from "../shared/CustomSelect";
 import { useUpdaterStore } from "../../stores/updater-store";
 import { toast } from "../../stores/toast-store";
-import { RefreshCw, CheckCircle2, AlertCircle, Palette, SquareTerminal, ArrowUpDown, Info, ExternalLink, Check, FileCode, Plus, Trash2, FolderOpen, Star, Search, Database, Download, Upload, ShieldCheck, KeyRound, Puzzle, Pencil, Globe, Server, Save, AlertTriangle } from "lucide-react";
+import { RefreshCw, CheckCircle2, AlertCircle, Palette, SquareTerminal, ArrowUpDown, Info, ExternalLink, Check, FileCode, Plus, Trash2, FolderOpen, Star, Search, Database, Download, Upload, ShieldCheck, KeyRound, Puzzle, Pencil, Globe, Server, Save, AlertTriangle, History } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { CursorStyle, ThemeMode, EditorConfig, PasteButton, DoubleClickAction } from "../../stores/settings-store";
-import type { BackupPreflightSummary, BulkMigrationResult, CredentialStorage, MigrationPreflightSummary, TerminalHighlightRule, SyncConflictEntry, SyncContentFlags, SyncContentKind, SyncDatasetInput, SyncDatasetSecrets, SyncDatasetSummary, SyncErrorKind, SyncPhase, SyncPullOutcome, SyncPushOutcome, SyncRole, SyncSaveOutcome, SyncScopeMode, SyncStatusSnapshot } from "../../types";
+import type { BackupPreflightSummary, BulkMigrationResult, CredentialStorage, MigrationPreflightSummary, TerminalHighlightRule, SyncAppliedCounts, SyncConflictEntry, SyncContentFlags, SyncContentKind, SyncDatasetInput, SyncDatasetSecrets, SyncDatasetSummary, SyncErrorKind, SyncHistoryCounts, SyncHistoryEntry, SyncPhase, SyncPushOutcome, SyncRole, SyncSaveOutcome, SyncScopeMode, SyncStatusSnapshot } from "../../types";
 import { useLocalVaultStore } from "../../stores/local-vault-store";
 import { useHostsStore } from "../../stores/hosts-store";
 import { useGroupsStore } from "../../stores/groups-store";
@@ -1099,40 +1099,61 @@ function describePush(outcome: SyncPushOutcome): string {
   return parts.length > 0 ? parts.join(" · ") : "Nothing had changed since the last push.";
 }
 
-/*
- * Count line for a pull summary. Only what the merge actually wrote is listed:
- * a content kind that did not change is dropped, and the deletions and
- * credentials the pull carried are named for what they are so "12 hosts" is
- * never mistaken for the whole dataset.
- */
-function describePull(outcome: SyncPullOutcome): string {
+/* Count line for what a merge wrote locally. Shared by the pull report and the
+ * rollback report, which applies a retained generation through that same
+ * merge: a content kind that did not change is dropped, and the deletions and
+ * credentials carried are named for what they are so "12 hosts" is never
+ * mistaken for the whole dataset. */
+function describeAppliedCounts(
+  applied: SyncAppliedCounts,
+  deleted: number,
+  credentialsApplied: number,
+): string {
   const counts: [number, string][] = [
-    [outcome.applied.hosts, "hosts"],
-    [outcome.applied.groups, "groups"],
-    [outcome.applied.snippets, "snippets"],
-    [outcome.applied.snippetFolders, "snippet folders"],
-    [outcome.applied.portForwards, "port forwards"],
-    [outcome.applied.s3Connections, "S3 connections"],
-    [outcome.applied.hostPlugins, "plugins"],
-    [outcome.deleted, "deletions"],
-    [outcome.credentialsApplied, "credentials"],
+    [applied.hosts, "hosts"],
+    [applied.groups, "groups"],
+    [applied.snippets, "snippets"],
+    [applied.snippetFolders, "snippet folders"],
+    [applied.portForwards, "port forwards"],
+    [applied.s3Connections, "S3 connections"],
+    [applied.hostPlugins, "plugins"],
+    [deleted, "deletions"],
+    [credentialsApplied, "credentials"],
   ];
   const parts = counts.filter(([count]) => count > 0).map(([count, label]) => `${count} ${label}`);
-  if (outcome.applied.appSettings) parts.push("app settings");
+  if (applied.appSettings) parts.push("app settings");
   return parts.length > 0 ? parts.join(" · ") : "Nothing had changed since the last sync.";
 }
 
-/* The two numbers that explain what a pull refused to overwrite. Both are
+/* The two numbers that explain what a merge refused to overwrite. Both are
  * silent at zero, because "kept 0 local edits" reads like a warning. */
-function describePullPreserved(outcome: SyncPullOutcome): string[] {
+function describePreserved(keptLocal: number, conflicts: number): string[] {
   const parts: string[] = [];
-  if (outcome.keptLocal > 0) {
-    parts.push(`kept ${outcome.keptLocal} local edit${outcome.keptLocal === 1 ? "" : "s"}`);
+  if (keptLocal > 0) {
+    parts.push(`kept ${keptLocal} local edit${keptLocal === 1 ? "" : "s"}`);
   }
-  if (outcome.conflicts > 0) {
-    parts.push(`${outcome.conflicts} conflict${outcome.conflicts === 1 ? "" : "s"}`);
+  if (conflicts > 0) {
+    parts.push(`${conflicts} conflict${conflicts === 1 ? "" : "s"}`);
   }
   return parts;
+}
+
+/*
+ * What a dataset still needs before it can talk to its endpoint again. A backup
+ * carries no secrets, so a dataset restored on another machine comes back with
+ * its rows and its keychain entries missing; without this the only symptom would
+ * be a push or pull that fails on a keychain lookup the user cannot see.
+ */
+function describeMissingDatasetSecrets(dataset: SyncDatasetSummary): string | null {
+  const missing: string[] = [];
+  if (!dataset.hasServerSecret) {
+    missing.push(dataset.authType === "privateKey" ? "its private-key passphrase" : "its server password");
+  }
+  if (!dataset.hasPassphrase) {
+    missing.push("its dataset passphrase");
+  }
+  if (missing.length === 0) return null;
+  return missing.length === 1 ? missing[0] : `${missing[0]} and ${missing[1]}`;
 }
 
 /*
@@ -1173,6 +1194,197 @@ function SyncConflictLog({ conflicts }: { conflicts: SyncConflictEntry[] }) {
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+/* What one retained generation held, in the same vocabulary the push and pull
+ * reports use. Counts that were never recorded (a generation published before
+ * they were written) are reported as unknown rather than as zero. */
+function describeHistoryCounts(counts: SyncHistoryCounts): string {
+  const named: [number, string][] = [
+    [counts.hosts, "hosts"],
+    [counts.groups, "groups"],
+    [counts.snippets, "snippets"],
+    [counts.snippetFolders, "snippet folders"],
+    [counts.portForwards, "port forwards"],
+    [counts.s3Connections, "S3 connections"],
+    [counts.hostPlugins, "plugins"],
+    [counts.credentialsIncluded, "credentials"],
+    [counts.tombstones, "deletions"],
+  ];
+  const parts = named.filter(([count]) => count > 0).map(([count, label]) => `${count} ${label}`);
+  if (counts.appSettings) parts.push("app settings");
+  if (counts.scopeRemovals > 0) {
+    const noun = counts.scopeRemovals === 1 ? "host" : "hosts";
+    parts.push(`${counts.scopeRemovals} ${noun} left the scope`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : "nothing";
+}
+
+/* The contents of one retained generation, as the list and the confirm dialog
+ * phrase it: named counts when the metadata carries them, otherwise an honest
+ * "not recorded" rather than a misleading zero. */
+function describeHistoryEntry(entry: SyncHistoryEntry): string {
+  return entry.recordCounts
+    ? describeHistoryCounts(entry.recordCounts)
+    : "record counts were not recorded for it";
+}
+
+/*
+ * Retained generations of one dataset (Task 11). Reading them is metadata only
+ * — no passphrase, no bundle download — but it still opens a connection, so the
+ * list loads when the user asks for it instead of for every saved row.
+ *
+ * Rolling back is offered per generation and confirmed first: it names what the
+ * target generation holds, states that records made since are kept, and states
+ * that the result is published as a new generation rather than replacing the
+ * one on the server.
+ */
+function SyncHistoryPanel({ dataset, busy }: { dataset: SyncDatasetSummary; busy: boolean }) {
+  const listing = useSyncStore((state) => state.history[dataset.id]);
+  const loading = useSyncStore((state) => state.historyLoading) === dataset.id;
+  const rollbackResult = useSyncStore((state) => state.rollbackResult);
+  const loadHistory = useSyncStore((state) => state.loadHistory);
+  const clearHistory = useSyncStore((state) => state.clearHistory);
+  const rollback = useSyncStore((state) => state.rollback);
+  const [confirm, setConfirm] = useState<SyncHistoryEntry | null>(null);
+
+  const toggle = useCallback(() => {
+    if (listing) {
+      clearHistory(dataset.id);
+      return;
+    }
+    void loadHistory(dataset.id).catch(() => { /* the dataset card renders the failure */ });
+  }, [clearHistory, dataset.id, listing, loadHistory]);
+
+  const runRollback = useCallback(async () => {
+    const target = confirm;
+    setConfirm(null);
+    if (!target) return;
+    try {
+      await rollback(dataset.id, target.generation);
+    } catch { /* the dataset card renders the failure */ }
+  }, [confirm, dataset.id, rollback]);
+
+  const result = rollbackResult?.datasetId === dataset.id ? rollbackResult : null;
+  const preserved = result ? describePreserved(result.keptLocal, result.conflicts) : [];
+
+  return (
+    <div
+      data-testid="settings-sync-history"
+      className="mt-2 px-3 py-2.5 rounded-lg bg-bg-base border border-border/60 text-[length:var(--text-xs)] text-text-secondary"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className={LABEL_CLASS}>Generation history</p>
+          <p className={DESC_CLASS}>
+            Every publish keeps the generation it replaces, so a bad push can be undone.
+          </p>
+        </div>
+        <button
+          type="button"
+          data-testid="settings-sync-history-toggle"
+          onClick={toggle}
+          disabled={busy || loading}
+          className={BTN_SECONDARY}
+        >
+          {loading ? "Loading…" : listing ? "Hide history" : "Show history"}
+        </button>
+      </div>
+
+      {listing && (
+        <>
+          {/* Generation 0 means nothing is published yet, which the empty list
+              below already says; don't claim a generation exists. */}
+          {listing.currentGeneration !== null && (
+            <p className="mt-2">
+              Generation {listing.currentGeneration} is published now. Rolling back to an
+              earlier one applies it here as a merge and publishes the result as a new
+              generation — nothing already on the server is replaced.
+            </p>
+          )}
+          {listing.entries.length === 0 ? (
+            <p data-testid="settings-sync-history-empty" className="mt-1">
+              No earlier generation is retained on the server yet.
+            </p>
+          ) : (
+            <ul className="mt-2 space-y-1.5">
+              {listing.entries.map((entry) => (
+                <li
+                  key={entry.generation}
+                  data-testid={`settings-sync-history-${entry.generation}`}
+                  className="flex items-start justify-between gap-3"
+                >
+                  <span className="min-w-0">
+                    <span className="font-mono text-text-primary">
+                      generation {entry.generation}
+                    </span>
+                    <span className="block">
+                      {describeHistoryEntry(entry)}
+                      {entry.signed ? " · signed by the owner" : ""}
+                    </span>
+                    <span className="block text-text-muted">
+                      {entry.updatedAt
+                        ? `published ${relativeTime(entry.updatedAt)}`
+                        : "publish time unknown"}
+                      {entry.writerClientId ? ` · written by ${entry.writerClientId}` : ""}
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    data-testid={`settings-sync-rollback-${entry.generation}`}
+                    onClick={() => setConfirm(entry)}
+                    disabled={busy}
+                    className={BTN_SECONDARY}
+                    aria-label={`Roll the dataset “${dataset.name}” back to generation ${entry.generation}`}
+                  >
+                    <History size={13} strokeWidth={2} /> Roll back…
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+
+      {result && (
+        <div
+          data-testid="settings-sync-rollback-result"
+          role="status"
+          className="mt-2 px-3 py-2.5 rounded-lg bg-bg-surface border border-border/60"
+        >
+          <p className="flex items-center gap-1.5 text-status-success">
+            <CheckCircle2 size={13} strokeWidth={2} /> Rolled back to generation{" "}
+            {result.rolledBackTo} and published generation {result.generation}.
+          </p>
+          <p className="mt-1">{describePush(result.published)}</p>
+          <p className="mt-1">
+            Applied to this computer:{" "}
+            {describeAppliedCounts(result.applied, result.deleted, result.credentialsApplied)}
+          </p>
+          {preserved.length > 0 && <p className="mt-1">{preserved.join(" · ")}</p>}
+          <p className="mt-1 text-text-muted">
+            Local records made since generation {result.rolledBackTo} were kept and travel with
+            generation {result.generation}; other computers pick it up on their next pull.
+          </p>
+        </div>
+      )}
+
+      <ConfirmDangerDialog
+        open={confirm !== null}
+        title="Roll this dataset back?"
+        message={
+          confirm
+            ? `“${dataset.name}” will apply generation ${confirm.generation} (${describeHistoryEntry(confirm)}${
+                confirm.updatedAt ? `, published ${relativeTime(confirm.updatedAt)}` : ""
+              }). Records you created or changed since then are kept, and the merged result is published as a new generation — generation ${dataset.lastGeneration} stays on the server and nothing is overwritten. Other computers keep working until their next pull.`
+            : ""
+        }
+        confirmLabel="Roll back"
+        onConfirm={() => void runRollback()}
+        onCancel={() => setConfirm(null)}
+      />
     </div>
   );
 }
@@ -1536,7 +1748,7 @@ function SyncSettings() {
   const {
     endpoint, testing, testResult, error, errorKind, setEndpoint, testConnection,
     datasets, datasetsLoading, saving, saveOutcome, pushing, pushResult, preflight,
-    pulling, pullResult, conflicts, statuses,
+    pulling, pullResult, conflicts, rollingBack, statuses,
     datasetError, datasetErrorKind,
     loadDatasets, saveDataset, clearSaveOutcome, clearDatasetError, deleteDataset, loadPreflight, push, pull,
     probeWritability, loadStatus, subscribeSyncStatus,
@@ -2274,15 +2486,18 @@ function SyncSettings() {
           )}
 
           {datasets.map((dataset) => {
-            /* One claim at a time per row: a push and a pull both write the same
-             * records, so the row disables both buttons while either runs. */
-            const busy = pushing === dataset.id || pulling === dataset.id;
+            /* One claim at a time per row: a push, a pull, and a rollback all
+             * write the same records, so the row disables its buttons while any
+             * of them runs. */
+            const busy = pushing === dataset.id || pulling === dataset.id
+              || rollingBack === dataset.id;
             const blocked = preflight?.datasetId === dataset.id
               && preflight.includeCredentials
               && (preflight.vaultLocked || preflight.credentialsBlocked > 0);
             const outcome = pushResult?.datasetId === dataset.id ? pushResult : null;
             const pulled = pullResult?.datasetId === dataset.id ? pullResult : null;
-            const preserved = pulled ? describePullPreserved(pulled) : [];
+            const missingSecret = describeMissingDatasetSecrets(dataset);
+            const preserved = pulled ? describePreserved(pulled.keptLocal, pulled.conflicts) : [];
             const showConflicts = pulled !== null && (pulled.conflicts > 0 || conflicts.length > 0);
             return (
               <div
@@ -2353,6 +2568,28 @@ function SyncSettings() {
                     ? `last synced ${relativeTime(dataset.lastSyncedAt)}`
                     : "never synced"}
                 </p>
+
+                {/* Secrets never travel in a backup, so a dataset restored on
+                    another machine arrives without the keychain entries it
+                    needs. Name them here; the alternative is a push or pull
+                    failing on a keychain lookup the user cannot see. */}
+                {missingSecret && (
+                  <div
+                    data-testid={`settings-sync-needs-secret-${dataset.id}`}
+                    className="flex items-start gap-2 mt-2 px-3 py-2.5 rounded-lg bg-status-warning/10 border border-status-warning/30"
+                  >
+                    <AlertTriangle
+                      size={13}
+                      strokeWidth={2}
+                      className="text-status-warning shrink-0 mt-0.5"
+                    />
+                    <span className="text-[length:var(--text-xs)] text-text-secondary">
+                      This machine is missing {missingSecret} for this dataset. A backup carries
+                      no secrets, so a dataset restored from one comes back without them — open
+                      Edit, enter {missingSecret}, and save to sync again.
+                    </span>
+                  </div>
+                )}
 
                 {/* What the dataset actually carries, not what its form last
                     said: a group that gained a host since the save is counted
@@ -2456,7 +2693,9 @@ function SyncSettings() {
                     <p className="flex items-center gap-1.5 text-status-success">
                       <CheckCircle2 size={13} strokeWidth={2} /> Pulled generation {pulled.generation}.
                     </p>
-                    <p className="mt-1">{describePull(pulled)}</p>
+                    <p className="mt-1">
+                      {describeAppliedCounts(pulled.applied, pulled.deleted, pulled.credentialsApplied)}
+                    </p>
                     {pulled.publishedByAnotherMachine && (
                       <p data-testid="settings-sync-other-writer" className="mt-1">
                         This update came from another computer.
@@ -2467,6 +2706,12 @@ function SyncSettings() {
                 )}
 
                 {showConflicts && <SyncConflictLog conflicts={conflicts} />}
+
+                {/* Only an owner can act on history: rolling back publishes a
+                    new generation, which the backend refuses for a member. */}
+                {dataset.role === "owner" && (
+                  <SyncHistoryPanel dataset={dataset} busy={busy} />
+                )}
 
                 <SyncScheduleControls dataset={dataset} />
               </div>

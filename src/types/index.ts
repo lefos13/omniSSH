@@ -116,6 +116,10 @@ export type {
   SyncAppliedCounts,
   SyncPullOutcome,
   SyncConflictEntry,
+  SyncHistoryCounts,
+  SyncHistoryEntry,
+  SyncHistoryListing,
+  SyncRollbackOutcome,
   SyncPhase,
   SyncStatusSnapshot,
 } from "./sync";

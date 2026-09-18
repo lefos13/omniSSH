@@ -526,6 +526,36 @@ mod tests {
         (db, dir)
     }
 
+    /// A dataset row with every persisted field set, so a restore can be judged
+    /// on the whole row rather than on its id alone.
+    fn sample_sync_dataset(id: &str) -> crate::db::SyncDataset {
+        crate::db::SyncDataset {
+            id: id.to_string(),
+            name: "Restored dataset".to_string(),
+            host: "192.0.2.10".to_string(),
+            port: 2222,
+            username: "syncuser".to_string(),
+            auth_type: "password".to_string(),
+            remote_path: "/srv/omnissh".to_string(),
+            role: "owner".to_string(),
+            content_flags: r#"{"hosts":true,"groups":true}"#.to_string(),
+            scope_mode: "all".to_string(),
+            auto_sync: true,
+            pull_interval_secs: 900,
+            push_debounce_secs: 15,
+            owner_fingerprint: Some("SHA256:owner".to_string()),
+            kdf_salt: Some(vec![1, 2, 3, 4]),
+            kdf_m_kib: Some(65536),
+            kdf_t: Some(3),
+            kdf_p: Some(1),
+            wrapped_key: Some(vec![9, 8, 7]),
+            last_generation: 7,
+            last_synced_at: Some("2026-09-01T00:00:00".to_string()),
+            created_at: "2026-01-01T00:00:00".to_string(),
+            updated_at: "2026-01-01T00:00:00".to_string(),
+        }
+    }
+
     fn decoded_credentials(password: &str, container: &[u8]) -> BTreeMap<String, StoredCredential> {
         let (plaintext, compression) = open(password, container).expect("open backup");
         assert_eq!(compression, COMPRESSION_GZIP);
@@ -687,6 +717,157 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir1);
         let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    /* A backup is a machine's data, not its keychain. Restoring one on another
+     * machine must recreate the datasets — with their scope, merge base, pending
+     * deletes, and detach opt-outs — while bringing none of their secrets, so a
+     * restored dataset reports the missing secret and the UI asks for it again
+     * instead of the next push failing on a lookup the user cannot see. Host and
+     * S3 credentials are the exception: they travel in the backup, keyed by row
+     * id, and are written back to this machine's keychain. */
+    #[test]
+    fn a_restored_backup_recreates_datasets_without_their_secrets() {
+        use crate::db::{SyncConflict, SyncEntityType, SyncRecordState};
+        use crate::sync::secrets;
+        crate::vault::test_keychain::install();
+
+        let (src, src_dir) = test_db();
+        let dataset_id = "ds-restore";
+        src.upsert_sync_dataset(&sample_sync_dataset(dataset_id))
+            .expect("dataset");
+        src.set_sync_dataset_members(dataset_id, &[(SyncEntityType::Group, "g-1".into())])
+            .expect("members");
+        src.upsert_sync_record_state(&[SyncRecordState {
+            dataset_id: dataset_id.into(),
+            entity_type: SyncEntityType::Host,
+            entity_id: "host-live".into(),
+            remote_revision: 3,
+            base_hash: "base-hash".into(),
+            managed: true,
+            synced_at: String::new(),
+        }])
+        .expect("record state");
+        src.record_sync_conflicts(&[SyncConflict {
+            id: 0,
+            dataset_id: dataset_id.into(),
+            entity_type: SyncEntityType::Host,
+            entity_id: "host-live".into(),
+            resolution: "kept the newer remote copy".into(),
+            winner_updated_at: None,
+            loser_updated_at: None,
+            detected_at: String::new(),
+        }])
+        .expect("conflict");
+        src.save_host(&sample_host("host-live", CredentialStorage::Keychain))
+            .expect("live host");
+        src.save_host(&sample_host("host-gone", CredentialStorage::Keychain))
+            .expect("doomed host");
+        src.delete_host("host-gone").expect("delete doomed host");
+        src.detach_sync_host(dataset_id, "host-detached")
+            .expect("detach");
+        src.save_s3_connection(
+            "s3-restore",
+            "Bucket",
+            "aws",
+            "us-east-1",
+            None,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("s3 connection");
+
+        // This machine holds the endpoint secrets; the other machine never did.
+        for key in secrets::dataset_secret_keys(dataset_id) {
+            crate::vault::save_credential(
+                &key,
+                &StoredCredential::Password {
+                    password: "machine-local-secret".to_string(),
+                },
+            )
+            .expect("seed dataset secret");
+        }
+        crate::vault::save_credential(
+            "host-live",
+            &StoredCredential::Password {
+                password: "host-secret".to_string(),
+            },
+        )
+        .expect("seed host secret");
+        crate::vault::save_credential(
+            "s3:s3-restore",
+            &StoredCredential::Password {
+                password: "s3-secret".to_string(),
+            },
+        )
+        .expect("seed s3 secret");
+
+        let backup = build_backup(&src, "restore-pw-1234", true).expect("build_backup");
+
+        // The other machine: no dataset secrets at all, then the restore.
+        secrets::delete_dataset_secrets(dataset_id).expect("purge dataset secrets");
+        crate::vault::delete_credential("host-live").expect("purge host secret");
+        crate::vault::delete_credential("s3:s3-restore").expect("purge s3 secret");
+        let leftover =
+            crate::vault::test_keychain::keys_with_prefix(&format!("sync:{dataset_id}:"));
+        assert!(
+            leftover.is_empty(),
+            "the other machine must hold no dataset secret, found {leftover:?}"
+        );
+
+        let (dst, dst_dir) = test_db();
+        restore_backup(&dst, "restore-pw-1234", &backup).expect("restore_backup");
+
+        let restored = dst
+            .get_sync_dataset(dataset_id)
+            .expect("get dataset")
+            .expect("dataset restored");
+        assert_eq!(restored.name, "Restored dataset");
+        assert_eq!(restored.host, "192.0.2.10");
+        assert_eq!(restored.role, "owner");
+        assert_eq!(restored.last_generation, 7);
+        assert_eq!(
+            dst.list_sync_dataset_members(dataset_id).expect("members"),
+            vec![(SyncEntityType::Group, "g-1".to_string())]
+        );
+        let state = dst.list_sync_record_state(dataset_id).expect("state");
+        assert_eq!(state.len(), 1);
+        assert_eq!(state[0].base_hash, "base-hash");
+        assert!(state[0].managed);
+        assert_eq!(
+            dst.list_sync_conflicts(dataset_id, 10)
+                .expect("conflicts")
+                .len(),
+            1
+        );
+        let tombstones = dst.list_sync_tombstones(None).expect("tombstones");
+        assert_eq!(tombstones.len(), 1);
+        assert_eq!(tombstones[0].entity_type, SyncEntityType::Host);
+        assert_eq!(tombstones[0].entity_id, "host-gone");
+        assert!(dst
+            .is_sync_detached(dataset_id, SyncEntityType::Host, "host-detached")
+            .expect("detached"));
+
+        // None of the dataset's secrets came back with the rows...
+        assert!(!secrets::has_server_secret(dataset_id));
+        assert!(!secrets::has_passphrase(dataset_id));
+        assert!(!secrets::has_signing_key(dataset_id));
+        assert!(
+            crate::vault::test_keychain::keys_with_prefix(&format!("sync:{dataset_id}:"))
+                .is_empty()
+        );
+        // ...while the credentials the backup does carry were written back.
+        assert!(crate::vault::has_credential("host-live"));
+        assert!(crate::vault::has_credential("s3:s3-restore"));
+
+        crate::vault::delete_credential("host-live").expect("cleanup");
+        crate::vault::delete_credential("s3:s3-restore").expect("cleanup");
+        let _ = std::fs::remove_dir_all(src_dir);
+        let _ = std::fs::remove_dir_all(dst_dir);
     }
 
     #[test]

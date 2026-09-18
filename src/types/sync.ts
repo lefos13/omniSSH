@@ -268,6 +268,67 @@ export interface SyncConflictEntry {
   detectedAt: string;
 }
 
+/* ─── History + rollback ────────────────────────────────────────────────────
+ * A push archives the generation it replaces, so a bad publish is recoverable.
+ * The listing is metadata only — no passphrase and no bundle download — and a
+ * rollback applies a retained generation as a normal merge, then publishes the
+ * merged result as a NEW generation rather than rewriting history. */
+
+/** What one retained generation carried, as recorded in its metadata. */
+export interface SyncHistoryCounts {
+  hosts: number;
+  groups: number;
+  snippets: number;
+  snippetFolders: number;
+  portForwards: number;
+  s3Connections: number;
+  hostPlugins: number;
+  appSettings: boolean;
+  /** Deletions the generation published. */
+  tombstones: number;
+  /** Hosts that left the dataset's scope with it. Not deletions. */
+  scopeRemovals: number;
+  credentialsIncluded: number;
+}
+
+/**
+ * One generation still retained in `history/`. The three identifying fields are
+ * null only when that generation's metadata copy is missing or unreadable; its
+ * bundle is still what a rollback would apply.
+ */
+export interface SyncHistoryEntry {
+  generation: number;
+  updatedAt: string | null;
+  writerClientId: string | null;
+  recordCounts: SyncHistoryCounts | null;
+  /** Whether the generation carried an owner signature. */
+  signed: boolean;
+  ownerFingerprint: string | null;
+}
+
+/** Result of `sync_list_history` — newest generation first. */
+export interface SyncHistoryListing {
+  datasetId: string;
+  /** The generation published right now, which is not itself in history. */
+  currentGeneration: number | null;
+  entries: SyncHistoryEntry[];
+}
+
+/** Result of `sync_rollback`: what the merge applied and what it published. */
+export interface SyncRollbackOutcome {
+  datasetId: string;
+  /** The retained generation whose content was applied. */
+  rolledBackTo: number;
+  /** The new generation published with the merged result. */
+  generation: number;
+  applied: SyncAppliedCounts;
+  deleted: number;
+  keptLocal: number;
+  conflicts: number;
+  credentialsApplied: number;
+  published: SyncPushOutcome;
+}
+
 /* ─── Live status ───────────────────────────────────────────────────────────
  * The backend owns sync state: the scheduler knows when a run starts, what it
  * left behind, and whether local edits are still waiting for their debounce.

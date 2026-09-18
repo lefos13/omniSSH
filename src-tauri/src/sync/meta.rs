@@ -13,6 +13,13 @@
  * than clobber. `ownerFingerprint`/`signature` are populated by the owner-role
  * signing work and verified by members; they are optional here so a
  * single-user dataset needs no signing key.
+ *
+ * The same document carries each generation's record counts under
+ * `recordCounts` (Task 11), so the rollback UI can say what a retained
+ * generation holds without downloading or decrypting it. They sit outside
+ * `DatasetMeta` — and therefore outside the signed preimage — deliberately:
+ * counts are advisory display data, a reader that predates the key ignores it,
+ * and an older signature stays valid over the fields it does cover.
  */
 
 use serde::{Deserialize, Serialize};
@@ -55,6 +62,59 @@ pub struct DatasetMeta {
     pub signature: Option<String>,
 }
 
+/// What one published generation carried, per content kind.
+///
+/// Every field is serde-defaulted, so a generation published before this
+/// information existed parses as zeroes rather than failing — and so does a
+/// document written by a build that adds a kind this one does not know.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DatasetRecordCounts {
+    #[serde(default)]
+    pub hosts: usize,
+    #[serde(default)]
+    pub groups: usize,
+    #[serde(default)]
+    pub snippets: usize,
+    #[serde(default)]
+    pub snippet_folders: usize,
+    #[serde(default)]
+    pub port_forwards: usize,
+    #[serde(default)]
+    pub s3_connections: usize,
+    #[serde(default)]
+    pub host_plugins: usize,
+    #[serde(default)]
+    pub app_settings: bool,
+    /// Deletions the generation published.
+    #[serde(default)]
+    pub tombstones: usize,
+    /* Hosts that left the dataset's scope with this generation. Reported apart
+     * from a deletion because the two mean opposite things. */
+    #[serde(default)]
+    pub scope_removals: usize,
+    #[serde(default)]
+    pub credentials_included: usize,
+}
+
+/// The metadata file as written: the typed fields plus the advisory counts.
+#[derive(Serialize)]
+struct MetaDocument<'a> {
+    #[serde(flatten)]
+    meta: &'a DatasetMeta,
+    #[serde(rename = "recordCounts", skip_serializing_if = "Option::is_none")]
+    record_counts: Option<&'a DatasetRecordCounts>,
+}
+
+/// Reads only the counts out of a metadata document, ignoring every other key —
+/// which is also how a reader of an older or newer build reads this file.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CountsDocument {
+    #[serde(default)]
+    record_counts: Option<DatasetRecordCounts>,
+}
+
 impl DatasetMeta {
     /// Parse untrusted metadata bytes.
     pub fn parse(bytes: &[u8]) -> Result<Self, SyncError> {
@@ -76,6 +136,19 @@ impl DatasetMeta {
         serde_json::to_vec_pretty(self).map_err(|e| SyncError::Serialization(e.to_string()))
     }
 
+    /// The same document with this generation's record counts beside the typed
+    /// fields, which is what a publisher writes and a reader of history reads.
+    pub fn to_bytes_with_counts(
+        &self,
+        counts: Option<&DatasetRecordCounts>,
+    ) -> Result<Vec<u8>, SyncError> {
+        serde_json::to_vec_pretty(&MetaDocument {
+            meta: self,
+            record_counts: counts,
+        })
+        .map_err(|e| SyncError::Serialization(e.to_string()))
+    }
+
     /* The signed preimage covers exactly the fields that make a published
      * generation what it is: dataset identity, its position in the chain, the
      * bundle bytes (by digest), and when it was published. It excludes the
@@ -92,6 +165,17 @@ impl DatasetMeta {
         )
         .into_bytes()
     }
+}
+
+/// The record counts carried in a metadata document, when it has any.
+///
+/// Used on the live `dataset.meta.json` and on the `history/<generation>.meta.json`
+/// copies alike: both are the same document, and neither needs a passphrase to
+/// read.
+pub fn record_counts_in(bytes: &[u8]) -> Option<DatasetRecordCounts> {
+    serde_json::from_slice::<CountsDocument>(bytes)
+        .ok()
+        .and_then(|document| document.record_counts)
 }
 
 /// What the UI shows about a dataset already published at a probed path.
@@ -153,6 +237,54 @@ mod tests {
         assert!(!text.contains("ownerFingerprint"));
 
         assert_eq!(DatasetMeta::parse(&bytes).unwrap(), original);
+    }
+
+    /* Record counts travel in the same document without joining the typed
+     * metadata: a reader parses the file as before, and the counts are
+     * readable on their own for the history listing. */
+    #[test]
+    fn record_counts_ride_beside_the_typed_metadata() {
+        let original = meta();
+        let counts = DatasetRecordCounts {
+            hosts: 12,
+            groups: 4,
+            snippets: 7,
+            tombstones: 2,
+            credentials_included: 3,
+            ..DatasetRecordCounts::default()
+        };
+        let bytes = original.to_bytes_with_counts(Some(&counts)).unwrap();
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        assert!(text.contains("\"recordCounts\""));
+        assert!(text.contains("\"hosts\": 12"));
+
+        assert_eq!(DatasetMeta::parse(&bytes).unwrap(), original);
+        assert_eq!(record_counts_in(&bytes), Some(counts));
+
+        // A file written without counts stays a valid document, and reads back
+        // as "no counts" rather than failing the listing.
+        let bare = original.to_bytes().unwrap();
+        assert!(!String::from_utf8(bare.clone())
+            .unwrap()
+            .contains("recordCounts"));
+        assert!(DatasetMeta::parse(&bare).is_ok());
+        assert_eq!(record_counts_in(&bare), None);
+    }
+
+    /* A counts object written by another build may carry kinds this one does
+     * not know, or omit kinds it does; neither may fail the listing. */
+    #[test]
+    fn counts_tolerate_a_document_written_by_another_build() {
+        let document = br#"{
+            "formatVersion": 1,
+            "datasetId": "ds-nova",
+            "generation": 2,
+            "recordCounts": { "hosts": 5, "unknownKind": 9 }
+        }"#;
+        let counts = record_counts_in(document).expect("counts are readable");
+        assert_eq!(counts.hosts, 5);
+        assert_eq!(counts.groups, 0, "a kind this build omits reads as zero");
+        assert_eq!(record_counts_in(b"not a metadata document"), None);
     }
 
     #[test]

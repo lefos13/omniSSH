@@ -47,6 +47,7 @@
 - **S3 Cloud Storage Desktop Browser** compatible with AWS S3, MinIO, Cloudflare R2, Backblaze B2, Wasabi, and DigitalOcean Spaces.
 - **Universal Connection Importer** allowing one-click migration from **OpenSSH** (`~/.ssh/config`), **MobaXterm** session files, and **Termius** local encrypted databases (with zero cloud dependency).
 - **SSH Port Forwarding & Tunnels** for local and remote port redirection with service presets.
+- **Self-Hosted Encrypted Dataset Sync** to publish hosts, groups, snippets, port forwards, and S3 connections to a directory on a server you own — end-to-end encrypted, no account, no cloud.
 - **Zero Cloud, Local-First Security**: No mandatory logins, no telemetry, and credentials securely sealed in your operating system's native keychain.
 
 ---
@@ -64,6 +65,7 @@
 | **Universal Import (OpenSSH, MobaXterm, Termius)** | **Yes** | No | No | No | No | No |
 | **SSH Port Forwarding Rules** | **Yes** | Yes | No | Yes | Yes | No |
 | **Command Snippets & Templates** | **Yes** | Yes | No | Yes | No | No |
+| **Encrypted Dataset Sync (self-hosted)** | **Yes (your own server, zero-cloud)** | Cloud accounts only | No | No | No | No |
 | **Cross-Platform (macOS, Windows, Linux)** | **Yes** | Yes | Windows only | Windows only | Windows only | macOS/Windows |
 | **Zero-Cloud & 100% Offline** | **Yes** | No (Cloud sync) | Yes | Yes | Yes | Yes |
 | **Open Source (MIT)** | **Yes** | No (Proprietary) | Yes (GPL) | No (Freemium) | Yes (MIT) | Yes (GPL) |
@@ -118,7 +120,14 @@
 * **Template Placeholders**: Define dynamic variables using `{{variable_name}}` syntax that prompts for inputs before executing.
 * **Quick Insert**: Palette-accessible drawer inside any active terminal session.
 
-### 🔐 8. Security & Privacy First
+### 🔐 8. Self-Hosted Encrypted Dataset Sync
+* **Your Server, Your Data**: Publish a named dataset to a directory on any SSH server you own — no OmniSSH account, no hosted service, no telemetry. A second machine joins with the endpoint plus the dataset passphrase and pulls the identical host set.
+* **End-to-End Encrypted**: A random dataset key encrypts the payload; that key is wrapped by an Argon2id key derived from a per-dataset passphrase, so the remote directory holds ciphertext and a key wrap that is useless without the passphrase. Credentials are opt-in and travel only inside the encrypted payload.
+* **Owner / Member Roles**: An owner signs each published generation with an ed25519 key that members pin on join; members pull only, and the dataset directory is meant to be read-only for them server-side.
+* **Scoped and Mergeable**: Choose the content kinds (hosts, groups, snippets, port forwards, S3 connections, host plugins, settings) and the scope (all hosts, selected groups, or explicit hosts). Pulls merge per record against the last agreed state, log every conflict instead of merging silently, and keep the last 10 generations for rollback.
+* Full reference: [`docs/sync-datasets.md`](docs/sync-datasets.md).
+
+### 🔐 9. Security & Privacy First
 * **OS-Level Keyring Security**: Passwords and private keys are stored exclusively in your operating system's native secure credential vault (macOS Keychain, Windows Credential Manager, Linux Secret Service).
 * **Zero Telemetry**: No tracking, no external API calls, and no analytics.
 * **Memory Protection**: Sensitive key data is zeroized in memory upon completion of operations.

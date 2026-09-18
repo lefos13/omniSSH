@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### 🚀 Highlights & New Features
+
+#### 1. Self-Hosted Encrypted Dataset Sync
+* **Your Own Server, Zero Cloud**: Settings ▸ Dataset Sync publishes a named dataset to a directory on any SSH server you own. No OmniSSH-hosted service, no account system, no telemetry — a new machine joins with the endpoint and the dataset passphrase and pulls the identical host set.
+* **End-to-End Encrypted Bundle**: A random 32-byte dataset key seals a gzipped record document with AES-256-GCM; that key is wrapped by an Argon2id key derived from a per-dataset passphrase, so the remote holds ciphertext plus a key wrap that is useless without the passphrase. Rotating the passphrase rewraps 32 bytes instead of re-publishing the dataset.
+* **Scoped Content Kinds**: Per-dataset toggles for hosts (with an optional credentials sub-toggle), groups, snippets and folders, port-forward rules, S3 connections (with credentials), per-host plugin config, and app settings. Scope a dataset to all hosts, to selected groups, or to explicit hosts; machine-local tables (connection history, recent paths, the App Vault) are never synced.
+* **Owner / Member Roles**: The owner signs each published generation with an ed25519 key; members pin the fingerprint on join and reject unsigned or foreign-signed metadata. Members are pull-only, and Settings warns when the server still lets a member account write to the dataset path.
+* **Record-Level Merge With a Conflict Log**: Pulls classify every record against the last agreed state, apply remote-only changes, keep local-only edits, and resolve both-changed records by newest `updatedAt` — logging the losing copy instead of merging silently. Two machines editing different records both keep their work.
+* **Generation History and Rollback**: Every publish archives the generation it replaces (the last 10 are kept). Settings lists them and can roll back to one, applying it as a merge and publishing the result as a new generation rather than rewriting history.
+* **Opt-In Automatic Sync**: Per-dataset pull interval and push debounce, both off by default, plus a live status line for in-flight work.
+
+### 🚀 Improvements
+
+#### 1. Dataset Sync Meets Backup, Restore, and Factory Reset
+* **Backups Include Datasets, Secrets Never Do**: A backup restores dataset rows with their scope, merge base, conflict log, pending deletes, and detach opt-outs, but never a dataset's server credential, passphrase, or signing key — those live in the OS keychain. A dataset restored on another machine now says exactly which secret it is missing and prompts for it instead of failing on the next push.
+* **Factory Reset Purges Every Dataset Secret**: A reset removes the dataset's keychain entries by enumerating the keys the sync layer owns, so a future per-dataset secret is covered without touching the reset code. A reset records no tombstones, so it can never publish a wipe to a shared dataset.
+
+### 📚 Documentation
+* **`docs/sync-datasets.md`**: The remote layout, the passphrase → wrapped dataset key → payload key hierarchy, the owner/member model including signing and fingerprint pinning, the server-side read-only requirement for members, and recovery steps for a lost passphrase, a lost owner signing key, a bad push, a retired machine, a restored backup, and a factory reset.
+
+---
+
 ## [1.5.0] - 2026-09-18
 
 ### 🚀 Improvements

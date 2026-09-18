@@ -6,7 +6,7 @@ use tracing::instrument;
 
 use super::{
     ConnectionHistoryEntry, DbError, HostDb, HostGroup, HostPluginConfig, RecentConnection,
-    SavedHost,
+    ResetKeys, SavedHost,
 };
 
 /// Persist (insert or update) a host entry.
@@ -342,24 +342,7 @@ pub async fn factory_reset(
     let local_vault = Arc::clone(&local_vault);
     task::spawn_blocking(move || {
         let keys = db.factory_reset()?;
-        // Purge secrets from the keychain. Best-effort: a missing entry is fine,
-        // and one bad key shouldn't abort the rest — the rows are already gone.
-        for host_id in &keys.host_ids {
-            if let Err(e) = crate::vault::delete_credential(host_id) {
-                tracing::warn!(host_id = %host_id, error = %e, "factory reset: keychain purge failed");
-            }
-        }
-        for s3_id in &keys.s3_ids {
-            let key = format!("s3:{s3_id}");
-            if let Err(e) = crate::vault::delete_credential(&key) {
-                tracing::warn!(key = %key, error = %e, "factory reset: keychain purge failed");
-            }
-        }
-        for dataset_id in &keys.sync_dataset_ids {
-            if let Err(e) = crate::sync::secrets::delete_dataset_secrets(dataset_id) {
-                tracing::warn!(error = %e, "factory reset: sync secret purge failed");
-            }
-        }
+        purge_reset_secrets(&keys);
         /* Reset removes persisted encrypted values and must also invalidate the
          * in-memory session key before any subsequent first-launch setup. */
         local_vault.lock_session();
@@ -367,4 +350,180 @@ pub async fn factory_reset(
     })
     .await
     .map_err(|e| DbError::InitError(format!("task panicked: {e}")))?
+}
+
+/// Delete every keychain entry the rows removed by [`HostDb::factory_reset`]
+/// owned. Best-effort: a missing entry is fine, and one bad key must not leave
+/// the rest behind — the rows are already gone, so this is the last chance to
+/// remove them.
+///
+/// The dataset ids come from the reset and expand through
+/// `sync::secrets::dataset_secret_keys`, so a per-dataset secret added later is
+/// purged without touching this function. Split out of the command so the purge
+/// contract is testable without a Tauri runtime or a real OS keychain.
+pub(crate) fn purge_reset_secrets(keys: &ResetKeys) {
+    for host_id in &keys.host_ids {
+        if let Err(e) = crate::vault::delete_credential(host_id) {
+            tracing::warn!(host_id = %host_id, error = %e, "factory reset: keychain purge failed");
+        }
+    }
+    for s3_id in &keys.s3_ids {
+        let key = format!("s3:{s3_id}");
+        if let Err(e) = crate::vault::delete_credential(&key) {
+            tracing::warn!(key = %key, error = %e, "factory reset: keychain purge failed");
+        }
+    }
+    for dataset_id in &keys.sync_dataset_ids {
+        if let Err(e) = crate::sync::secrets::delete_dataset_secrets(dataset_id) {
+            tracing::warn!(error = %e, "factory reset: sync secret purge failed");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::SyncDataset;
+    use crate::sync::secrets;
+    use crate::vault::{test_keychain, StoredCredential};
+
+    fn test_db() -> (HostDb, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("anyscp-cmd-{}", uuid::Uuid::new_v4()));
+        let db = HostDb::new(&dir).expect("test db");
+        (db, dir)
+    }
+
+    fn dataset(id: &str) -> SyncDataset {
+        SyncDataset {
+            id: id.to_string(),
+            name: format!("Dataset {id}"),
+            host: "192.0.2.10".to_string(),
+            port: 2222,
+            username: "syncuser".to_string(),
+            auth_type: "password".to_string(),
+            remote_path: "/srv/omnissh".to_string(),
+            role: "owner".to_string(),
+            content_flags: "{}".to_string(),
+            scope_mode: "all".to_string(),
+            auto_sync: false,
+            pull_interval_secs: 0,
+            push_debounce_secs: 0,
+            owner_fingerprint: None,
+            kdf_salt: None,
+            kdf_m_kib: None,
+            kdf_t: None,
+            kdf_p: None,
+            wrapped_key: None,
+            last_generation: 0,
+            last_synced_at: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    fn sample_host(id: &str) -> crate::db::SavedHost {
+        crate::db::SavedHost {
+            id: id.to_string(),
+            label: format!("Host {id}"),
+            host: "192.0.2.1".to_string(),
+            port: 22,
+            username: "alice".to_string(),
+            auth_type: "password".to_string(),
+            credential_storage: crate::db::CredentialStorage::Keychain,
+            group_id: None,
+            created_at: "2026-01-01T00:00:00".to_string(),
+            updated_at: "2026-01-01T00:00:00".to_string(),
+            key_path: None,
+            color: None,
+            notes: None,
+            environment: None,
+            os_type: None,
+            startup_command: None,
+            proxy_jump: None,
+            proxy_jump_host_id: None,
+            start_directory: None,
+            keep_alive_interval: None,
+            default_shell: None,
+            font_size: None,
+            terminal_theme: None,
+            last_connected_at: None,
+            connection_count: Some(0),
+        }
+    }
+
+    fn seed_secret(key: &str) {
+        crate::vault::save_credential(
+            key,
+            &StoredCredential::Password {
+                password: "secret-value".to_string(),
+            },
+        )
+        .expect("seed credential");
+    }
+
+    /* A reset must not leave a dataset's secrets in the keychain: the dataset row
+     * is gone, so nothing can ever use or rotate them again. Coverage comes from
+     * `dataset_secret_keys`, so the assertion is made against the whole
+     * `sync:{id}:` namespace rather than the keys a test happened to enumerate —
+     * a fourth per-dataset secret is caught by construction rather than by editing
+     * this test. */
+    #[test]
+    fn factory_reset_purges_every_sync_secret_namespace() {
+        test_keychain::install();
+        let (db, dir) = test_db();
+        let dataset_id = format!("ds-{}", uuid::Uuid::new_v4());
+        db.upsert_sync_dataset(&dataset(&dataset_id))
+            .expect("upsert dataset");
+        db.save_host(&sample_host("host-purge")).expect("save host");
+        db.save_s3_connection(
+            "s3-purge",
+            "Bucket",
+            "aws",
+            "us-east-1",
+            None,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("save s3 connection");
+
+        for key in secrets::dataset_secret_keys(&dataset_id) {
+            seed_secret(&key);
+        }
+        seed_secret("host-purge");
+        seed_secret("s3:s3-purge");
+
+        let keys = db.factory_reset().expect("factory_reset");
+        assert_eq!(keys.sync_dataset_ids, vec![dataset_id.clone()]);
+        purge_reset_secrets(&keys);
+
+        assert!(
+            test_keychain::keys_with_prefix(&format!("sync:{dataset_id}:")).is_empty(),
+            "no sync secret namespace may survive a reset: {:?}",
+            test_keychain::keys_with_prefix(&format!("sync:{dataset_id}:"))
+        );
+        for key in secrets::dataset_secret_keys(&dataset_id) {
+            assert!(!crate::vault::has_credential(&key), "{key} survived");
+        }
+        // The other keychain namespaces a reset owns are purged too.
+        assert!(!crate::vault::has_credential("host-purge"));
+        assert!(!crate::vault::has_credential("s3:s3-purge"));
+
+        // A second purge (removing an already-absent dataset) stays quiet.
+        purge_reset_secrets(&keys);
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_reset_without_datasets_purges_nothing() {
+        test_keychain::install();
+        // No dataset rows: the reset reports no ids, so no sync key is touched.
+        let keys = ResetKeys::default();
+        assert!(keys.sync_dataset_ids.is_empty());
+        purge_reset_secrets(&keys);
+    }
 }

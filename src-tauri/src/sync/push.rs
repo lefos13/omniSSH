@@ -31,7 +31,7 @@ use crate::vault::LocalVault;
 use super::codec::{payload_digest, seal_payload, unwrap_dataset_key};
 use super::collect::{collect, credential_preflight, CollectStats};
 use super::dataset::{endpoint_for, pack_wrapped_key, row_wrap, SyncContentFlags};
-use super::meta::{DatasetMeta, META_FORMAT_VERSION};
+use super::meta::{record_counts_in, DatasetMeta, DatasetRecordCounts, META_FORMAT_VERSION};
 use super::scope::{self, ResolvedScope};
 use super::secrets;
 use super::signing;
@@ -307,15 +307,12 @@ async fn rotate(
     store.ensure_root().await?;
     store.acquire_lock(LOCK_STALE_AFTER).await?;
 
-    let remote_meta = match store.read(META_FILE).await? {
-        Some(bytes) => Some(DatasetMeta::parse(&bytes)?),
-        None => None,
-    };
-    let remote_meta = remote_meta.ok_or_else(|| {
-        SyncError::NotFound(
+    let Some(remote_meta_bytes) = store.read(META_FILE).await? else {
+        return Err(SyncError::NotFound(
             "nothing has been published to this dataset yet — push before rotating".into(),
-        )
-    })?;
+        ));
+    };
+    let remote_meta = DatasetMeta::parse(&remote_meta_bytes)?;
     if remote_meta.dataset_id != dataset_id {
         return Err(SyncError::Conflict(format!(
             "a different dataset ({}) is published at this path; point this dataset at another directory",
@@ -354,16 +351,14 @@ async fn rotate(
     meta.owner_fingerprint = Some(owner_fingerprint.clone());
     meta.owner_pubkey = Some(signing::public_key_b64(&owner_key));
     meta.signature = Some(signature);
-    let meta_bytes = meta.to_bytes()?;
+    /* The payload is untouched, so the generation keeps the record counts it
+     * was published with — read back off the document being replaced. */
+    let counts = record_counts_in(&remote_meta_bytes);
+    let meta_bytes = meta.to_bytes_with_counts(counts.as_ref())?;
 
     if let Some(previous_bundle) = store.read(DATASET_FILE).await? {
-        let previous_meta_bytes = remote_meta.to_bytes()?;
         store
-            .archive_generation(
-                remote_meta.generation,
-                &previous_bundle,
-                &previous_meta_bytes,
-            )
+            .archive_generation(remote_meta.generation, &previous_bundle, &remote_meta_bytes)
             .await?;
     }
     store.write_atomic(META_FILE, &meta_bytes).await?;
@@ -381,6 +376,25 @@ struct Published {
     /* The owner fingerprint the published generation is signed with, so the
      * row keeps the pin it advertises to joining members. */
     owner_fingerprint: String,
+}
+
+/* What the published document records about its own generation, so the history
+ * listing can report it later without a passphrase (Task 11). These are the
+ * same numbers `SyncPushOutcome` reports to the pusher. */
+fn record_counts(stats: &CollectStats) -> DatasetRecordCounts {
+    DatasetRecordCounts {
+        hosts: stats.hosts,
+        groups: stats.groups,
+        snippets: stats.snippets,
+        snippet_folders: stats.snippet_folders,
+        port_forwards: stats.port_forwards,
+        s3_connections: stats.s3_connections,
+        host_plugins: stats.host_plugins,
+        app_settings: stats.app_settings,
+        tombstones: stats.tombstones,
+        scope_removals: stats.scope_removals,
+        credentials_included: stats.credentials_included,
+    }
 }
 
 /* The owner key for one publish (Task 9, AD-8). A signed remote demands the
@@ -437,8 +451,11 @@ async fn publish(
     store.ensure_root().await?;
     store.acquire_lock(LOCK_STALE_AFTER).await?;
 
-    let remote_meta = match store.read(META_FILE).await? {
-        Some(bytes) => Some(DatasetMeta::parse(&bytes)?),
+    /* The bytes are kept beside the parsed form: the generation being replaced
+     * is archived exactly as it was published, record counts included. */
+    let remote_meta_bytes = store.read(META_FILE).await?;
+    let remote_meta = match remote_meta_bytes.as_deref() {
+        Some(bytes) => Some(DatasetMeta::parse(bytes)?),
         None => None,
     };
 
@@ -511,19 +528,22 @@ async fn publish(
     meta.owner_fingerprint = Some(owner_fingerprint.clone());
     meta.owner_pubkey = Some(signing::public_key_b64(&owner_key));
     meta.signature = Some(signature);
-    let meta_bytes = meta.to_bytes()?;
+    /* The counts belong to the document, not to the signature: they tell the
+     * rollback listing what this generation holds without a passphrase. */
+    let meta_bytes = meta.to_bytes_with_counts(Some(&record_counts(&collected.stats)))?;
 
     /* Archive the generation being replaced before overwriting it, so a bad
      * push is recoverable from `history/` (Task 11) rather than lost. */
-    if let (Some(previous_meta), Some(previous_bundle)) =
-        (remote_meta.as_ref(), store.read(DATASET_FILE).await?)
-    {
-        let previous_meta_bytes = previous_meta.to_bytes()?;
+    if let (Some(previous_meta), Some(previous_meta_bytes), Some(previous_bundle)) = (
+        remote_meta.as_ref(),
+        remote_meta_bytes.as_deref(),
+        store.read(DATASET_FILE).await?,
+    ) {
         store
             .archive_generation(
                 previous_meta.generation,
                 &previous_bundle,
-                &previous_meta_bytes,
+                previous_meta_bytes,
             )
             .await?;
     }
@@ -609,9 +629,12 @@ mod tests {
  *     lscr.io/linuxserver/openssh-server:latest
  *   OMNISSH_SYNC_TEST_HOST=127.0.0.1 OMNISSH_SYNC_TEST_PORT=2299 \
  *     cargo test --lib sync::push::live -- --nocapture --test-threads=1
+ *
+ * The fixture is `pub(crate)` because `sync::history::live` drives the same
+ * dataset through push → history → rollback against the same server.
  */
 #[cfg(test)]
-mod live {
+pub(crate) mod live {
     use super::*;
     use crate::db::{CredentialStorage, HostGroup, SavedHost, SyncDataset};
     use crate::sync::codec::{open_payload, unwrap_dataset_key};
@@ -621,18 +644,18 @@ mod live {
     use crate::types::session::AuthMethod;
     use crate::vault::StoredCredential;
 
-    const PASSPHRASE: &str = "live-dataset-passphrase";
+    pub(crate) const PASSPHRASE: &str = "live-dataset-passphrase";
 
-    struct Fixture {
-        db: Arc<HostDb>,
-        vault: Arc<LocalVault>,
-        ssh: SshManager,
-        dataset_id: String,
-        root: String,
+    pub(crate) struct Fixture {
+        pub(crate) db: Arc<HostDb>,
+        pub(crate) vault: Arc<LocalVault>,
+        pub(crate) ssh: SshManager,
+        pub(crate) dataset_id: String,
+        pub(crate) root: String,
         _dir: tempfile::TempDir,
     }
 
-    fn fixture() -> Option<Fixture> {
+    pub(crate) fn fixture() -> Option<Fixture> {
         let host = std::env::var("OMNISSH_SYNC_TEST_HOST").ok()?;
         let port: u16 = std::env::var("OMNISSH_SYNC_TEST_PORT")
             .ok()
@@ -736,7 +759,7 @@ mod live {
         })
     }
 
-    fn endpoint(fixture: &Fixture) -> SyncEndpoint {
+    pub(crate) fn endpoint(fixture: &Fixture) -> SyncEndpoint {
         SyncEndpoint {
             host: std::env::var("OMNISSH_SYNC_TEST_HOST").unwrap_or_default(),
             port: std::env::var("OMNISSH_SYNC_TEST_PORT")

@@ -347,7 +347,13 @@ fn credential_target_for(
     }
 }
 
-fn apply(
+/// Merge a decoded payload into the local database and record the resulting
+/// base state.
+///
+/// `sync::history::rollback` reuses this exact entry point, so a rollback is
+/// the same merge a pull performs — records this machine created or changed
+/// since the applied generation are kept, not erased.
+pub(super) fn apply(
     db: &HostDb,
     local_vault: &LocalVault,
     dataset_id: &str,
@@ -516,6 +522,10 @@ fn apply(
                 Decision::KeepLocal { .. } => state.kept_local += 1,
             }
         }
+        /* Hosts are the kind most often edited on two machines, so losing their
+         * resolutions would empty the conflict log for exactly the records the
+         * log exists for. Every other kind below records the same way. */
+        state.conflicts.extend(merged.plan.conflicts);
     }
 
     // ── Snippet folders, then snippets ───────────────────────────────────────
@@ -986,6 +996,40 @@ mod tests {
         }
     }
 
+    /* A dataset row as the pull path reads it; shared by the tests below. */
+    fn dataset_row(id: &str, role: &str, dir: &tempfile::TempDir) -> HostDb {
+        use crate::sync::dataset::SyncContentFlags;
+
+        let db = HostDb::new(dir.path()).expect("temp database");
+        db.upsert_sync_dataset(&SyncDataset {
+            id: id.into(),
+            name: "NOVA".into(),
+            host: "10.0.0.9".into(),
+            port: 2222,
+            username: "sync".into(),
+            auth_type: "password".into(),
+            remote_path: format!("/srv/omnissh/{id}"),
+            role: role.into(),
+            content_flags: SyncContentFlags::default().to_json().unwrap(),
+            scope_mode: "{\"mode\":\"all\"}".into(),
+            auto_sync: false,
+            pull_interval_secs: 0,
+            push_debounce_secs: 0,
+            owner_fingerprint: None,
+            kdf_salt: None,
+            kdf_m_kib: None,
+            kdf_t: None,
+            kdf_p: None,
+            wrapped_key: None,
+            last_generation: 0,
+            last_synced_at: None,
+            created_at: "2026-09-01T00:00:00Z".into(),
+            updated_at: "2026-09-01T00:00:00Z".into(),
+        })
+        .expect("dataset row");
+        db
+    }
+
     #[test]
     fn member_pull_marks_hosts_managed_owner_pull_does_not() {
         use crate::sync::codec::{Record, SyncPayload};
@@ -1001,37 +1045,6 @@ mod tests {
                 credential: None,
                 data,
             }
-        }
-
-        fn dataset_row(id: &str, role: &str, dir: &tempfile::TempDir) -> HostDb {
-            let db = HostDb::new(dir.path()).expect("temp database");
-            db.upsert_sync_dataset(&SyncDataset {
-                id: id.into(),
-                name: "NOVA".into(),
-                host: "10.0.0.9".into(),
-                port: 2222,
-                username: "sync".into(),
-                auth_type: "password".into(),
-                remote_path: format!("/srv/omnissh/{id}"),
-                role: role.into(),
-                content_flags: SyncContentFlags::default().to_json().unwrap(),
-                scope_mode: "{\"mode\":\"all\"}".into(),
-                auto_sync: false,
-                pull_interval_secs: 0,
-                push_debounce_secs: 0,
-                owner_fingerprint: None,
-                kdf_salt: None,
-                kdf_m_kib: None,
-                kdf_t: None,
-                kdf_p: None,
-                wrapped_key: None,
-                last_generation: 0,
-                last_synced_at: None,
-                created_at: "2026-09-01T00:00:00Z".into(),
-                updated_at: "2026-09-01T00:00:00Z".into(),
-            })
-            .expect("dataset row");
-            db
         }
 
         fn payload() -> SyncPayload {
@@ -1061,6 +1074,76 @@ mod tests {
         let states = owner_db.list_sync_record_state("ds-x").expect("state");
         assert_eq!(states.len(), 1);
         assert!(!states[0].managed, "owner pulls keep managed=false");
+    }
+
+    /* A host edited on two machines is the case the conflict log exists for, so
+     * the resolution the merge picks must reach both the outcome and the log.
+     * The host section once applied its decisions without recording the
+     * conflicts (every other kind did), which the live two-machine suite caught
+     * and this pins down offline. */
+    #[test]
+    fn a_both_changed_host_is_counted_and_logged_as_a_conflict() {
+        use crate::db::SyncRecordState;
+        use crate::sync::codec::{content_digest, Record, SyncPayload};
+        use crate::sync::dataset::SyncContentFlags;
+
+        let directory = tempfile::tempdir().expect("temp dir");
+        let db = dataset_row("ds-x", "owner", &directory);
+        let vault = LocalVault::new();
+        let flags = SyncContentFlags::default();
+
+        /* The base state the last sync agreed on: the published copy, recorded
+         * exactly as the pull that received it would have recorded it. */
+        db.save_host(&tests_host("h-1")).expect("host");
+        let agreed = db.get_host("h-1").unwrap().expect("stored host");
+        db.upsert_sync_record_state(&[SyncRecordState {
+            dataset_id: "ds-x".into(),
+            entity_type: SyncEntityType::Host,
+            entity_id: "h-1".into(),
+            remote_revision: 3,
+            base_hash: content_digest(&agreed).unwrap(),
+            managed: false,
+            synced_at: String::new(),
+        }])
+        .expect("base state");
+
+        // Both sides move; the remote copy is the newer statement.
+        let mut local_edit = agreed.clone();
+        local_edit.label = "renamed-here".into();
+        db.save_host(&local_edit).expect("local edit");
+        let local_updated_at = db.get_host("h-1").unwrap().expect("stored host").updated_at;
+
+        let mut remote_edit = tests_host("h-1");
+        remote_edit.label = "renamed-there".into();
+        remote_edit.updated_at = "2099-01-01T00:00:00Z".into();
+        let mut payload = SyncPayload::new("ds-x", 4);
+        payload.sections.hosts = Some(vec![Record {
+            id: "h-1".into(),
+            revision: 4,
+            updated_at: remote_edit.updated_at.clone(),
+            deleted: false,
+            credential: None,
+            data: remote_edit,
+        }]);
+        payload.sections.groups = Some(vec![]);
+
+        let outcome = apply(&db, &vault, "ds-x", 4, flags, false, payload).expect("apply");
+        assert_eq!(outcome.applied.hosts, 1, "the newer copy wins");
+        assert_eq!(outcome.conflicts, 1, "the losing copy is reported");
+        assert_eq!(
+            db.get_host("h-1").unwrap().expect("host").label,
+            "renamed-there"
+        );
+
+        let logged = db.list_sync_conflicts("ds-x", 10).expect("conflict log");
+        assert_eq!(logged.len(), 1);
+        assert_eq!(logged[0].entity_id, "h-1");
+        assert_eq!(logged[0].entity_type, SyncEntityType::Host);
+        assert_eq!(logged[0].resolution, "kept the newer remote copy");
+        assert_eq!(
+            logged[0].loser_updated_at.as_deref(),
+            Some(local_updated_at.as_str())
+        );
     }
 
     #[test]

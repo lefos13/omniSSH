@@ -71,80 +71,21 @@ mod tests {
     use super::*;
     use crate::import::termius::crypto::decrypt;
     use crate::import::termius::envelope::HEADER;
-    use keyring::credential::{
-        Credential, CredentialApi, CredentialBuilderApi, CredentialPersistence,
-    };
-    use std::collections::HashMap;
-    use std::sync::{LazyLock, Mutex, Once};
+    use crate::vault::test_keychain;
+    use std::sync::{LazyLock, Mutex};
     use xsalsa20poly1305::{
         aead::{Aead, KeyInit},
         Key, Nonce, XSalsa20Poly1305,
     };
 
-    type MockStore = HashMap<(String, String), Vec<u8>>;
-    static MOCK_STORE: LazyLock<Mutex<MockStore>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+    /* These tests read and write OS-keychain entries directly. They install the
+     * crate-wide in-memory store instead of a private one: `keyring`'s builder is
+     * process-global, so two fakes in one test binary race, and whichever
+     * installed last would receive the entries the other one wrote. */
     static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-    #[derive(Debug)]
-    struct MemCredential {
-        key: (String, String),
-    }
-
-    impl CredentialApi for MemCredential {
-        fn set_secret(&self, secret: &[u8]) -> keyring::Result<()> {
-            MOCK_STORE
-                .lock()
-                .unwrap()
-                .insert(self.key.clone(), secret.to_vec());
-            Ok(())
-        }
-
-        fn get_secret(&self) -> keyring::Result<Vec<u8>> {
-            MOCK_STORE
-                .lock()
-                .unwrap()
-                .get(&self.key)
-                .cloned()
-                .ok_or(keyring::Error::NoEntry)
-        }
-
-        fn delete_credential(&self) -> keyring::Result<()> {
-            MOCK_STORE.lock().unwrap().remove(&self.key);
-            Ok(())
-        }
-
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-    }
-
-    #[derive(Debug)]
-    struct MemBuilder;
-
-    impl CredentialBuilderApi for MemBuilder {
-        fn build(
-            &self,
-            _: Option<&str>,
-            service: &str,
-            user: &str,
-        ) -> keyring::Result<Box<Credential>> {
-            Ok(Box::new(MemCredential {
-                key: (service.to_owned(), user.to_owned()),
-            }))
-        }
-
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-
-        fn persistence(&self) -> CredentialPersistence {
-            CredentialPersistence::UntilDelete
-        }
-    }
-
     fn init_mock_keystore() {
-        static ONCE: Once = Once::new();
-        ONCE.call_once(|| keyring::set_default_credential_builder(Box::new(MemBuilder)));
+        test_keychain::install();
     }
 
     fn clear_candidates() {

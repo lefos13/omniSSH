@@ -23,6 +23,7 @@ pub mod dataset;
  * `sync::datasets` selects exactly these. */
 #[cfg(test)]
 mod datasets;
+pub mod history;
 pub mod merge;
 pub mod meta;
 pub mod pull;

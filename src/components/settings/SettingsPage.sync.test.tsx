@@ -14,9 +14,11 @@ import type {
   SyncConflictEntry,
   SyncConnectionTest,
   SyncDatasetSummary,
+  SyncHistoryListing,
   SyncPullOutcome,
   SyncPushOutcome,
   SyncPushPreflight,
+  SyncRollbackOutcome,
   SyncSaveOutcome,
   SyncStatusSnapshot,
 } from "../../types/sync";
@@ -259,6 +261,79 @@ const conflictEntry: SyncConflictEntry = {
   detectedAt: "2026-09-18T12:00:05Z",
 };
 
+/* Two retained generations, one of them without the counts a generation
+ * published by an older build does not carry, plus the generation published
+ * now (which is never itself in history). */
+const historyListing: SyncHistoryListing = {
+  datasetId: "ds-1",
+  currentGeneration: 12,
+  entries: [
+    {
+      generation: 11,
+      updatedAt: new Date(Date.now() - 3_600_000).toISOString(),
+      writerClientId: "client-b",
+      recordCounts: {
+        hosts: 11,
+        groups: 4,
+        snippets: 0,
+        snippetFolders: 0,
+        portForwards: 0,
+        s3Connections: 0,
+        hostPlugins: 0,
+        appSettings: false,
+        tombstones: 2,
+        scopeRemovals: 0,
+        credentialsIncluded: 3,
+      },
+      signed: true,
+      ownerFingerprint: "a".repeat(64),
+    },
+    {
+      generation: 9,
+      updatedAt: null,
+      writerClientId: null,
+      recordCounts: null,
+      signed: false,
+      ownerFingerprint: null,
+    },
+  ],
+};
+
+const rollbackOutcome: SyncRollbackOutcome = {
+  datasetId: "ds-1",
+  rolledBackTo: 11,
+  generation: 13,
+  applied: {
+    hosts: 4,
+    groups: 1,
+    snippets: 0,
+    snippetFolders: 0,
+    portForwards: 0,
+    s3Connections: 0,
+    hostPlugins: 0,
+    appSettings: false,
+  },
+  deleted: 1,
+  keptLocal: 2,
+  conflicts: 1,
+  credentialsApplied: 3,
+  published: {
+    datasetId: "ds-1",
+    generation: 13,
+    hosts: 12,
+    groups: 4,
+    snippets: 0,
+    snippetFolders: 0,
+    portForwards: 0,
+    s3Connections: 0,
+    hostPlugins: 0,
+    appSettings: false,
+    tombstones: 0,
+    scopeRemovals: 0,
+    credentialsIncluded: 3,
+  },
+};
+
 /* A pull is followed by three reloads inside the store (dataset list, conflict
  * log, hosts and groups), so every pull test answers those commands as well —
  * otherwise the refresh cannot be distinguished from a failure. */
@@ -308,6 +383,10 @@ describe("SettingsPage dataset sync", () => {
       pulling: null,
       pullResult: null,
       conflicts: [],
+      history: {},
+      historyLoading: null,
+      rollingBack: null,
+      rollbackResult: null,
       statuses: {},
       datasetError: null,
       datasetErrorKind: null,
@@ -669,6 +748,40 @@ describe("SettingsPage dataset sync", () => {
     expect(note).toHaveTextContent("press Push now");
     // A dataset that has published something says nothing extra.
     expect(screen.queryByTestId("settings-sync-unpublished-ds-1")).not.toBeInTheDocument();
+  });
+
+  it("names exactly which of a restored dataset's secrets are missing", async () => {
+    mockCommands({
+      sync_list_datasets: () => [
+        { ...savedDataset, id: "ds-none", name: "Both missing", hasServerSecret: false, hasPassphrase: false },
+        { ...savedDataset, id: "ds-pass", name: "No passphrase", hasPassphrase: false },
+        {
+          ...savedDataset,
+          id: "ds-server",
+          name: "No endpoint secret",
+          authType: "privateKey",
+          hasServerSecret: false,
+        },
+        { ...savedDataset, id: "ds-ok", name: "Complete" },
+      ],
+    });
+    await openSyncSection();
+
+    /* A backup carries no secrets, so a dataset restored on another machine
+     * comes back with keychain entries missing; the row must say which ones
+     * instead of leaving the next push to fail on an invisible lookup. */
+    const both = await screen.findByTestId("settings-sync-needs-secret-ds-none");
+    expect(both).toHaveTextContent("its server password and its dataset passphrase");
+    expect(both).toHaveTextContent("A backup carries no secrets");
+    expect(both).toHaveTextContent("open Edit");
+    expect(screen.getByTestId("settings-sync-needs-secret-ds-pass")).toHaveTextContent(
+      "its dataset passphrase",
+    );
+    const keyAuth = screen.getByTestId("settings-sync-needs-secret-ds-server");
+    expect(keyAuth).toHaveTextContent("its private-key passphrase");
+    expect(keyAuth).not.toHaveTextContent("server password");
+    // A dataset that holds both secrets says nothing on its row.
+    expect(screen.queryByTestId("settings-sync-needs-secret-ds-ok")).not.toBeInTheDocument();
   });
 
   it("renders a notFound failure exactly once, without a hint that repeats it", async () => {
@@ -1451,5 +1564,102 @@ describe("SettingsPage dataset sync", () => {
     expect(screen.getByTestId("settings-sync-name")).toHaveValue("");
     expect(commandCalls("sync_delete_dataset")[0][1]).toEqual({ datasetId: "ds-1" });
     expect(commandCalls("delete_host")).toHaveLength(0);
+  });
+
+  /*
+   * Retained generations (Task 11). The listing is metadata only, so the row
+   * must be able to show it without a passphrase ever being involved, and a
+   * rollback must be confirmed with what it will change before it publishes.
+   */
+  it("lists the retained generations from metadata alone, newest first", async () => {
+    mockCommands({
+      sync_list_datasets: () => [savedDataset],
+      sync_list_history: () => historyListing,
+    });
+    await openSyncSection();
+
+    const card = await screen.findByTestId("settings-sync-dataset-ds-1");
+    fireEvent.click(within(card).getByTestId("settings-sync-history-toggle"));
+
+    /* No passphrase is sent: the listing reads the plaintext metadata copies. */
+    await waitFor(() => expect(commandCalls("sync_list_history")).toHaveLength(1));
+    expect(commandCalls("sync_list_history")[0][1]).toEqual({ datasetId: "ds-1" });
+
+    const newest = await within(card).findByTestId("settings-sync-history-11");
+    expect(card).toHaveTextContent("Generation 12 is published now");
+    expect(newest).toHaveTextContent("11 hosts");
+    expect(newest).toHaveTextContent("2 deletions");
+    expect(newest).toHaveTextContent("3 credentials");
+    expect(newest).toHaveTextContent("signed by the owner");
+    expect(newest).toHaveTextContent("written by client-b");
+    // Newest first, and the older generation is still offered.
+    const older = within(card).getByTestId("settings-sync-history-9");
+    expect(older).toHaveTextContent("record counts were not recorded for it");
+    expect(older).toHaveTextContent("publish time unknown");
+    expect(
+      newest.compareDocumentPosition(older) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(within(card).getByTestId("settings-sync-rollback-11")).toBeInTheDocument();
+  });
+
+  it("confirms what a rollback will change and reports the generation it published", async () => {
+    mockCommands({
+      sync_list_datasets: () => [savedDataset],
+      sync_list_history: () => historyListing,
+      sync_rollback: () => rollbackOutcome,
+      sync_list_conflicts: () => [],
+      list_hosts: () => [],
+      list_groups: () => [],
+    });
+    await openSyncSection();
+
+    const card = await screen.findByTestId("settings-sync-dataset-ds-1");
+    fireEvent.click(within(card).getByTestId("settings-sync-history-toggle"));
+    fireEvent.click(await within(card).findByTestId("settings-sync-rollback-11"));
+
+    const dialog = await screen.findByRole("dialog", { name: "Roll this dataset back?" });
+    // The dialog names the target's contents and what rolling back does not do.
+    expect(dialog).toHaveTextContent("generation 11");
+    expect(dialog).toHaveTextContent("11 hosts · 4 groups · 3 credentials · 2 deletions");
+    expect(dialog).toHaveTextContent("Records you created or changed since then are kept");
+    expect(dialog).toHaveTextContent("generation 12 stays on the server");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Roll back" }));
+
+    await waitFor(() => expect(commandCalls("sync_rollback")).toHaveLength(1));
+    expect(commandCalls("sync_rollback")[0][1]).toEqual({ datasetId: "ds-1", generation: 11 });
+    const result = await within(card).findByTestId("settings-sync-rollback-result");
+    expect(result).toHaveTextContent("Rolled back to generation 11 and published generation 13");
+    expect(result).toHaveTextContent("12 hosts");
+    // What the merge kept and what it resolved, reported like a pull's outcome.
+    expect(result).toHaveTextContent("kept 2 local edits · 1 conflict");
+    /* A rollback merges and publishes, so the listing is re-read: the new
+     * generation is on the server now, and the one it replaced is archived. */
+    await waitFor(() => expect(commandCalls("sync_list_history")).toHaveLength(2));
+  });
+
+  it("reports a history read that failed without pretending the list is empty", async () => {
+    mockCommands({
+      sync_list_datasets: () => [savedDataset],
+      sync_list_history: () => {
+        throw { kind: "unreachable", message: "sync endpoint unreachable" };
+      },
+    });
+    await openSyncSection();
+
+    const card = await screen.findByTestId("settings-sync-dataset-ds-1");
+    fireEvent.click(within(card).getByTestId("settings-sync-history-toggle"));
+
+    const error = await screen.findByTestId("settings-sync-dataset-error");
+    expect(error).toHaveTextContent("sync endpoint unreachable");
+    expect(within(card).queryByTestId("settings-sync-history-11")).not.toBeInTheDocument();
+  });
+
+  it("offers no generation history on a member row, which cannot publish a rollback", async () => {
+    mockCommands({ sync_list_datasets: () => [{ ...savedDataset, role: "member" }] });
+    await openSyncSection();
+
+    const card = await screen.findByTestId("settings-sync-dataset-ds-1");
+    expect(within(card).queryByTestId("settings-sync-history")).not.toBeInTheDocument();
+    expect(within(card).queryByTestId("settings-sync-history-toggle")).not.toBeInTheDocument();
   });
 });
