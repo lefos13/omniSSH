@@ -173,18 +173,16 @@ export async function saveSyncDataset(opts: {
         { timeout: SYNC_FORM_TIMEOUT, timeoutMsg: "the dataset save reported neither an outcome nor an error" },
     );
     const text = (await isVisible(outcome)) ? (await (await $(outcome)).getText()).trim() : null;
-    if (text) {
-        const closeBtn = await $("[data-testid='settings-sync-modal-close']");
-        if (await closeBtn.isExisting()) {
-            await closeBtn.click();
-        } else {
-            await browser.keys(["Escape"]);
-        }
-        await browser.waitUntil(async () => !(await isVisible("[data-testid='settings-sync-host']")), {
-            timeout: 5_000,
-            timeoutMsg: "the dataset modal did not close after saving",
-        });
+    const closeBtn = await $("[data-testid='settings-sync-modal-close']");
+    if (await closeBtn.isExisting()) {
+        await closeBtn.click();
+    } else {
+        await browser.keys(["Escape"]);
     }
+    await browser.waitUntil(async () => !(await isVisible("[data-testid='settings-sync-host']")), {
+        timeout: 5_000,
+        timeoutMsg: "the dataset modal did not close after saving",
+    });
     return text;
 }
 
