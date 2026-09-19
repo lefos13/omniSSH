@@ -102,8 +102,6 @@ ed25519-dalek = "2"
 # mostly zero-filled pages, so this shrinks the file ~10-50x. Pure-Rust backend.
 flate2 = "1"
 
-# Telemetry
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 dirs = "6"
 
 # Read Chromium IndexedDB's on-disk LevelDB without opening it read-write.

@@ -93,11 +93,7 @@ pub async fn ssh_disconnect(
 ) -> Result<(), SshError> {
     close_dependent_protocol_sessions(&session_id, &state, &sftp_manager, &scp_manager).await;
 
-    let result = state.disconnect(&session_id, app_handle).await;
-    if result.is_ok() {
-        crate::telemetry::capture("ssh_disconnected", serde_json::json!({}));
-    }
-    result
+    state.disconnect(&session_id, app_handle).await
 }
 
 #[tauri::command]
@@ -127,11 +123,7 @@ pub async fn ssh_split_session(
     state: State<'_, SshManager>,
     app_handle: AppHandle,
 ) -> Result<SessionId, SshError> {
-    let result = state.split_session(&source_session_id, app_handle).await;
-    if result.is_ok() {
-        crate::telemetry::capture("ssh_split_pane", serde_json::json!({}));
-    }
-    result
+    state.split_session(&source_session_id, app_handle).await
 }
 
 /// Output of a single hidden exec on an existing SSH session.
@@ -764,26 +756,7 @@ pub async fn connect_saved_host(
     .await
     .map_err(|e| SshError::IoError(format!("task panicked: {e}")))??;
 
-    let auth_type = auth_method_label(&config.auth_method).to_string();
-    let session_id = state.connect(config, app_handle, attempt_id).await?;
-
-    crate::telemetry::capture(
-        "ssh_connected",
-        serde_json::json!({
-            "auth_type": auth_type,
-        }),
-    );
-
-    Ok(session_id)
-}
-
-/// Short label for an AuthMethod variant, used for telemetry only.
-fn auth_method_label(auth: &AuthMethod) -> &'static str {
-    match auth {
-        AuthMethod::Password { .. } => "password",
-        AuthMethod::PrivateKey { .. } => "privateKey",
-        AuthMethod::PrivateKeyData { .. } => "privateKeyData",
-    }
+    state.connect(config, app_handle, attempt_id).await
 }
 
 /* Select the persisted credential source before reading any secret. Local-vault

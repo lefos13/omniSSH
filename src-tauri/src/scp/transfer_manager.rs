@@ -626,32 +626,11 @@ async fn execute_transfer(
         }
     };
 
-    let (direction, total_bytes, files_total, bytes_done) = jobs
-        .get(job_id)
-        .map(|j| {
-            (
-                j.direction.clone(),
-                j.total_bytes,
-                j.files_total,
-                j.bytes_transferred,
-            )
-        })
-        .unwrap_or((TransferDirection::Upload, 0, 0, 0));
-
     match result {
         Ok(()) => {
             if let Some(mut job) = jobs.get_mut(job_id) {
                 job.bytes_transferred = job.total_bytes;
             }
-            crate::telemetry::capture(
-                "transfer_completed",
-                serde_json::json!({
-                    "protocol": "scp",
-                    "direction": if direction == TransferDirection::Upload { "upload" } else { "download" },
-                    "total_bytes": total_bytes,
-                    "files_total": files_total,
-                }),
-            );
             set_job_status(
                 jobs,
                 finished_order,
@@ -670,15 +649,6 @@ async fn execute_transfer(
             app_handle,
         ),
         Err(e) => {
-            crate::telemetry::capture(
-                "transfer_failed",
-                serde_json::json!({
-                    "protocol": "scp",
-                    "direction": if direction == TransferDirection::Upload { "upload" } else { "download" },
-                    "bytes_transferred": bytes_done,
-                    "total_bytes": total_bytes,
-                }),
-            );
             set_job_status(
                 jobs,
                 finished_order,

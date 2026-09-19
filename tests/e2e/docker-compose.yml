@@ -392,9 +392,6 @@ services:
       MINIO_BUCKET: anyscp-test
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
-      # Don't ship test-run noise to PostHog. Read by src-tauri/src/telemetry.rs;
-      # `init()` is a no-op when this is set, so no events are emitted.
-      ANYSCP_DISABLE_TELEMETRY: "1"
       # Force-rebuild the binary on every run: set to 1
       E2E_FORCE_BUILD: ""
       # WDIO log level

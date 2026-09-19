@@ -113,10 +113,6 @@ pub async fn scp_open(
     match registration {
         Ok(flavor) => {
             tracing::info!(scp_session_id = %scp_id, flavor = %flavor.as_str(), "SCP session opened");
-            crate::telemetry::capture(
-                "scp_opened",
-                serde_json::json!({ "flavor": flavor.as_str() }),
-            );
             Ok(scp_id)
         }
         Err(ProtocolOpenError::Disconnecting) | Err(ProtocolOpenError::Rejected(None)) => Err(
@@ -156,7 +152,6 @@ pub async fn scp_close(
             .await;
     }
     tracing::info!(scp_session_id = %scp_session_id, "SCP session closed");
-    crate::telemetry::capture("scp_closed", serde_json::json!({}));
     Ok(())
 }
 
@@ -211,11 +206,7 @@ pub async fn scp_mkdir(
     scp_manager: State<'_, Arc<ScpManager>>,
 ) -> Result<(), ScpError> {
     let handle = handle_for(&scp_manager, &scp_session_id)?;
-    let result = exec::mkdir_p(handle, &path).await;
-    if result.is_ok() {
-        crate::telemetry::capture("scp_dir_created", serde_json::json!({}));
-    }
-    result
+    exec::mkdir_p(handle, &path).await
 }
 
 #[tauri::command]
@@ -226,11 +217,7 @@ pub async fn scp_create_file(
     scp_manager: State<'_, Arc<ScpManager>>,
 ) -> Result<(), ScpError> {
     let handle = handle_for(&scp_manager, &scp_session_id)?;
-    let result = exec::touch(handle, &path).await;
-    if result.is_ok() {
-        crate::telemetry::capture("scp_file_created", serde_json::json!({}));
-    }
-    result
+    exec::touch(handle, &path).await
 }
 
 #[tauri::command]
@@ -242,11 +229,7 @@ pub async fn scp_delete(
     scp_manager: State<'_, Arc<ScpManager>>,
 ) -> Result<(), ScpError> {
     let handle = handle_for(&scp_manager, &scp_session_id)?;
-    let result = exec::remove(handle, &path, is_dir).await;
-    if result.is_ok() {
-        crate::telemetry::capture("scp_entry_deleted", serde_json::json!({ "is_dir": is_dir }));
-    }
-    result
+    exec::remove(handle, &path, is_dir).await
 }
 
 #[tauri::command]
@@ -258,11 +241,7 @@ pub async fn scp_rename(
     scp_manager: State<'_, Arc<ScpManager>>,
 ) -> Result<(), ScpError> {
     let handle = handle_for(&scp_manager, &scp_session_id)?;
-    let result = exec::rename(handle, &old_path, &new_path).await;
-    if result.is_ok() {
-        crate::telemetry::capture("scp_entry_renamed", serde_json::json!({}));
-    }
-    result
+    exec::rename(handle, &old_path, &new_path).await
 }
 
 /// Change the Unix permission bits (chmod) of a remote path by exec'ing
@@ -276,11 +255,7 @@ pub async fn scp_chmod(
     scp_manager: State<'_, Arc<ScpManager>>,
 ) -> Result<(), ScpError> {
     let handle = handle_for(&scp_manager, &scp_session_id)?;
-    let result = exec::chmod(handle, &path, mode).await;
-    if result.is_ok() {
-        crate::telemetry::capture("scp_chmod", serde_json::json!({}));
-    }
-    result
+    exec::chmod(handle, &path, mode).await
 }
 
 /// Recursively chmod a directory tree via `chmod -R`. Per-file errors are
@@ -297,10 +272,6 @@ pub async fn scp_chmod_recursive(
 ) -> Result<crate::sftp::ChmodSummary, ScpError> {
     let handle = handle_for(&scp_manager, &scp_session_id)?;
     let errors = exec::chmod_recursive(handle, &path, mode).await?;
-    crate::telemetry::capture(
-        "scp_chmod_recursive",
-        serde_json::json!({ "errors": errors.len() }),
-    );
     Ok(crate::sftp::ChmodSummary { applied: 0, errors })
 }
 
@@ -345,10 +316,6 @@ pub async fn scp_move_entries(
         new_paths.push(dest);
     }
 
-    crate::telemetry::capture(
-        "scp_entries_moved",
-        serde_json::json!({ "count": source_paths.len() }),
-    );
     Ok(new_paths)
 }
 
@@ -376,10 +343,6 @@ pub async fn scp_copy_entries(
         new_paths.push(dest);
     }
 
-    crate::telemetry::capture(
-        "scp_entries_copied",
-        serde_json::json!({ "count": source_paths.len() }),
-    );
     Ok(new_paths)
 }
 
@@ -565,11 +528,6 @@ pub async fn scp_edit_external(
         })?;
     crate::editors::launch(&editor, &local_path).map_err(ScpError::LocalIoError)?;
 
-    crate::telemetry::capture(
-        "edit_external",
-        serde_json::json!({ "source": "scp", "editor": editor.name }),
-    );
-
     // 3. Watch for saves and re-upload (best-effort, 30-minute window).
     let handle_bg = handle.clone();
     let remote_path_bg = remote_path.clone();
@@ -656,18 +614,10 @@ pub async fn scp_enqueue_upload(
     remote_dir: String,
     transfer_manager: State<'_, Arc<ScpTransferManager>>,
 ) -> Result<Vec<String>, ScpError> {
-    let file_count = local_paths.len();
     let paths: Vec<PathBuf> = local_paths.into_iter().map(PathBuf::from).collect();
-    let result = transfer_manager
+    transfer_manager
         .enqueue_upload(scp_session_id, paths, remote_dir)
-        .await;
-    if result.is_ok() {
-        crate::telemetry::capture(
-            "scp_upload_enqueued",
-            serde_json::json!({ "file_count": file_count }),
-        );
-    }
-    result
+        .await
 }
 
 #[tauri::command]
@@ -678,17 +628,9 @@ pub async fn scp_enqueue_download(
     local_dir: String,
     transfer_manager: State<'_, Arc<ScpTransferManager>>,
 ) -> Result<Vec<String>, ScpError> {
-    let file_count = remote_paths.len();
-    let result = transfer_manager
+    transfer_manager
         .enqueue_download(scp_session_id, remote_paths, PathBuf::from(local_dir))
-        .await;
-    if result.is_ok() {
-        crate::telemetry::capture(
-            "scp_download_enqueued",
-            serde_json::json!({ "file_count": file_count }),
-        );
-    }
-    result
+        .await
 }
 
 #[tauri::command]

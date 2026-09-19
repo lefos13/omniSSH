@@ -48,7 +48,6 @@ pub async fn backup_export(
          * failed credential read cannot leave a silently incomplete backup. */
         let bytes = build_backup(&db, &password, include_credentials)?;
         std::fs::write(&path, bytes).map_err(|e| BackupError::Io(e.to_string()))?;
-        crate::telemetry::capture("backup_exported", serde_json::json!({}));
         Ok::<(), BackupError>(())
     })
     .await
@@ -76,7 +75,6 @@ pub async fn backup_import(
         /* The restored metadata may belong to a different master password;
          * discard any pre-import session key before the next connection. */
         local_vault.lock_session();
-        crate::telemetry::capture("backup_imported", serde_json::json!({}));
         Ok::<(), BackupError>(())
     })
     .await

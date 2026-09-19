@@ -102,7 +102,7 @@ pub fn parse_ssh_config(
     // Pre-scan for Host block names
     let host_aliases = extract_host_aliases(&config_path)?;
 
-    /* Keep import telemetry useful without exposing the user-selected config
+    /* Keep import logs useful without exposing the user-selected config
      * path, which can contain usernames or other machine-specific details. */
     info!(hosts = host_aliases.len(), "Parsed SSH config");
 

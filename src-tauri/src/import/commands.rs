@@ -222,13 +222,7 @@ pub async fn import_save_ssh_hosts(
     credential_storage: Option<crate::db::CredentialStorage>,
     db: State<'_, Arc<HostDb>>,
 ) -> Result<ImportResult, DbError> {
-    save_imported_hosts_command(
-        entries,
-        credential_storage,
-        Arc::clone(&db),
-        "ssh_config_imported",
-    )
-    .await
+    save_imported_hosts_command(entries, credential_storage, Arc::clone(&db)).await
 }
 
 /// Parse a MobaXterm `.mxtsessions` or `MobaXterm.ini` file and return a
@@ -256,20 +250,14 @@ pub async fn import_parse_mobaxterm(
 /// persistence contract.
 #[tauri::command]
 /* MobaXterm previews can carry key paths, startup commands, notes, and proxy
- * provenance, so the command span and telemetry must contain counts only. */
+ * provenance, so the command span must contain counts only. */
 #[instrument(skip(entries, db))]
 pub async fn import_save_mobaxterm_hosts(
     entries: Vec<SshConfigImportEntry>,
     credential_storage: Option<crate::db::CredentialStorage>,
     db: State<'_, Arc<HostDb>>,
 ) -> Result<ImportResult, DbError> {
-    save_imported_hosts_command(
-        entries,
-        credential_storage,
-        Arc::clone(&db),
-        "mobaxterm_imported",
-    )
-    .await
+    save_imported_hosts_command(entries, credential_storage, Arc::clone(&db)).await
 }
 
 /* Keep source-specific IPC commands thin while preserving a single save path
@@ -278,19 +266,10 @@ async fn save_imported_hosts_command(
     entries: Vec<SshConfigImportEntry>,
     credential_storage: Option<crate::db::CredentialStorage>,
     db: Arc<HostDb>,
-    telemetry_event: &'static str,
 ) -> Result<ImportResult, DbError> {
-    let host_count = entries.len();
-    let result =
-        task::spawn_blocking(move || save_imported_hosts(&db, &entries, credential_storage))
-            .await
-            .map_err(|e| DbError::InitError(format!("task panicked: {e}")))?;
-
-    crate::telemetry::capture(
-        telemetry_event,
-        serde_json::json!({ "host_count": host_count }),
-    );
-    result
+    task::spawn_blocking(move || save_imported_hosts(&db, &entries, credential_storage))
+        .await
+        .map_err(|e| DbError::InitError(format!("task panicked: {e}")))?
 }
 
 /* Preview duplicate detection must fail closed when the host index cannot be

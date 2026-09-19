@@ -788,34 +788,11 @@ async fn execute_transfer(
         }
     };
 
-    // Snapshot job metrics before setting terminal status.
-    let (job_direction, job_total_bytes, job_files_total, job_bytes_transferred) = {
-        if let Some(job) = jobs.get(job_id) {
-            (
-                job.direction.clone(),
-                job.total_bytes,
-                job.files_total,
-                job.bytes_transferred,
-            )
-        } else {
-            (TransferDirection::Upload, 0, 0, 0)
-        }
-    };
-
     match result {
         Ok(()) => {
             if let Some(mut job) = jobs.get_mut(job_id) {
                 job.bytes_transferred = job.total_bytes;
             }
-            crate::telemetry::capture(
-                "transfer_completed",
-                serde_json::json!({
-                    "protocol": "sftp",
-                    "direction": if job_direction == TransferDirection::Upload { "upload" } else { "download" },
-                    "total_bytes": job_total_bytes,
-                    "files_total": job_files_total,
-                }),
-            );
             set_job_status(
                 jobs,
                 finished_order,
@@ -834,15 +811,6 @@ async fn execute_transfer(
             app_handle,
         ),
         Err(e) => {
-            crate::telemetry::capture(
-                "transfer_failed",
-                serde_json::json!({
-                    "protocol": "sftp",
-                    "direction": if job_direction == TransferDirection::Upload { "upload" } else { "download" },
-                    "bytes_transferred": job_bytes_transferred,
-                    "total_bytes": job_total_bytes,
-                }),
-            );
             set_job_status(
                 jobs,
                 finished_order,

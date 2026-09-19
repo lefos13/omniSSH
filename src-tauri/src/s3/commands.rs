@@ -83,13 +83,6 @@ pub async fn s3_connect(
     let _ =
         tokio::task::spawn_blocking(move || crate::vault::save_credential(&vault_key, &cred)).await;
 
-    crate::telemetry::capture(
-        "s3_connected",
-        serde_json::json!({
-            "provider": provider,
-        }),
-    );
-
     Ok(session_id)
 }
 
@@ -153,10 +146,6 @@ pub async fn s3_save_connection(
     let _ =
         tokio::task::spawn_blocking(move || crate::vault::save_credential(&vault_key, &cred)).await;
 
-    crate::telemetry::capture(
-        "s3_connection_saved",
-        serde_json::json!({ "provider": provider }),
-    );
     Ok(id)
 }
 
@@ -274,7 +263,6 @@ pub async fn s3_delete_connection(
     let vault_key = format!("s3:{}", id);
     let _ = tokio::task::spawn_blocking(move || crate::vault::delete_credential(&vault_key)).await;
 
-    crate::telemetry::capture("s3_connection_deleted", serde_json::json!({}));
     Ok(())
 }
 
@@ -333,8 +321,6 @@ pub async fn s3_reconnect(
         &secret_key,
         conn.path_style,
     )?;
-
-    crate::telemetry::capture("s3_reconnected", serde_json::json!({}));
 
     Ok(())
 }
@@ -490,7 +476,6 @@ pub async fn s3_delete_object(
         .delete_object(&key)
         .await
         .map_err(|e| S3Error::OperationError(format!("Delete failed: {e}")))?;
-    crate::telemetry::capture("s3_object_deleted", serde_json::json!({}));
     Ok(())
 }
 
@@ -513,10 +498,6 @@ pub async fn s3_delete_objects(
         }
     }
 
-    crate::telemetry::capture(
-        "s3_objects_deleted_batch",
-        serde_json::json!({ "count": deleted }),
-    );
     Ok(deleted)
 }
 
@@ -539,7 +520,6 @@ pub async fn s3_create_folder(
         .await
         .map_err(|e| S3Error::OperationError(format!("Create folder failed: {e}")))?;
 
-    crate::telemetry::capture("s3_folder_created", serde_json::json!({}));
     Ok(())
 }
 
@@ -558,10 +538,6 @@ pub async fn s3_presign_url(
         .await
         .map_err(|e| S3Error::OperationError(format!("Presign failed: {e}")))?;
 
-    crate::telemetry::capture(
-        "s3_presign_url_generated",
-        serde_json::json!({ "expiry_secs": expiry_secs }),
-    );
     Ok(url)
 }
 
@@ -662,7 +638,6 @@ pub async fn s3_create_file(
         .put_object(&key, &[])
         .await
         .map_err(|e| S3Error::OperationError(format!("Create file failed: {e}")))?;
-    crate::telemetry::capture("s3_file_created", serde_json::json!({}));
     Ok(())
 }
 
@@ -795,7 +770,6 @@ pub async fn s3_delete_prefix(
         }
     }
 
-    crate::telemetry::capture("s3_prefix_deleted", serde_json::json!({ "count": deleted }));
     Ok(deleted)
 }
 
@@ -811,22 +785,14 @@ pub async fn s3_enqueue_upload(
     prefix: String,
     s3_transfer_manager: State<'_, Arc<S3TransferManager>>,
 ) -> Result<Vec<String>, S3Error> {
-    let file_count = local_paths.len();
     let paths: Vec<std::path::PathBuf> = local_paths
         .into_iter()
         .map(std::path::PathBuf::from)
         .collect();
 
-    let result = s3_transfer_manager
+    s3_transfer_manager
         .enqueue_upload(s3_session_id, paths, prefix)
-        .await;
-    if result.is_ok() {
-        crate::telemetry::capture(
-            "s3_upload_enqueued",
-            serde_json::json!({ "file_count": file_count }),
-        );
-    }
-    result
+        .await
 }
 
 /// Enqueue one or more S3 object keys for download to `local_dir`.
@@ -839,17 +805,9 @@ pub async fn s3_enqueue_download(
     local_dir: String,
     s3_transfer_manager: State<'_, Arc<S3TransferManager>>,
 ) -> Result<Vec<String>, S3Error> {
-    let file_count = keys.len();
-    let result = s3_transfer_manager
+    s3_transfer_manager
         .enqueue_download(s3_session_id, keys, std::path::PathBuf::from(local_dir))
-        .await;
-    if result.is_ok() {
-        crate::telemetry::capture(
-            "s3_download_enqueued",
-            serde_json::json!({ "file_count": file_count }),
-        );
-    }
-    result
+        .await
 }
 
 /// Download a single object to an explicit local path through the transfer
@@ -864,16 +822,9 @@ pub async fn s3_enqueue_download_as(
     local_path: String,
     s3_transfer_manager: State<'_, Arc<S3TransferManager>>,
 ) -> Result<String, S3Error> {
-    let result = s3_transfer_manager
+    s3_transfer_manager
         .enqueue_download_to(s3_session_id, key, std::path::PathBuf::from(local_path))
-        .await;
-    if result.is_ok() {
-        crate::telemetry::capture(
-            "s3_download_enqueued",
-            serde_json::json!({ "file_count": 1 }),
-        );
-    }
-    result
+        .await
 }
 
 /// Cancel a queued or in-progress S3 transfer.
@@ -966,11 +917,6 @@ pub async fn s3_edit_external(
             S3Error::IoError("No editor found. Add one in Settings → Editors.".to_string())
         })?;
     crate::editors::launch(&editor, &local_path).map_err(S3Error::IoError)?;
-
-    crate::telemetry::capture(
-        "edit_external",
-        serde_json::json!({ "source": "s3", "editor": editor.name }),
-    );
 
     // 3. Watch for file saves and re-upload on each save.
     let key_bg = key.clone();

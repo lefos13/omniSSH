@@ -176,7 +176,7 @@ pub async fn list_recent_connections(
 /// Record that `path` was visited for a host, keeping only the newest five.
 ///
 /// `path` is deliberately kept out of `#[instrument]`: host filesystem paths
-/// must never reach logs or telemetry.
+/// must never reach logs.
 #[tauri::command]
 #[instrument(skip(state))]
 pub async fn record_recent_path(

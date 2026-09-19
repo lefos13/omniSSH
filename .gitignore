@@ -12,6 +12,7 @@ node_modules
 dist
 dist-ssr
 *.local
+.agents
 
 # CI-only e2e build cache (cargo registry / target / node_modules host binds)
 .e2e-cache/

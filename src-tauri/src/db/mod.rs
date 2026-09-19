@@ -1812,7 +1812,7 @@ impl HostDb {
     /// top of the MRU list and pruning the list to the newest 5 entries.
     ///
     /// Paths are deliberately excluded from tracing fields: host filesystem
-    /// paths must never reach logs or telemetry.
+    /// paths must never reach logs.
     #[instrument(skip(self))]
     pub fn record_recent_path(
         &self,

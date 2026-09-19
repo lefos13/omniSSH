@@ -6,7 +6,7 @@
  * parent derivation, and symlink classification. All filesystem I/O is
  * performed within `tokio::task::spawn_blocking` to avoid blocking the async
  * runtime executor. Error messages are sanitized and path-free to prevent
- * leaking local filesystem structure in logs and telemetry.
+ * leaking local filesystem structure in logs.
  */
 
 use serde::{Deserialize, Serialize};

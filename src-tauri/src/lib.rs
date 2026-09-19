@@ -12,7 +12,6 @@ mod sftp;
 mod snippets;
 mod ssh;
 pub mod sync;
-pub mod telemetry;
 pub mod transfer_common;
 mod types;
 mod vault;
@@ -248,8 +247,6 @@ pub fn run() {
             ));
             app.manage(s3_manager);
             app.manage(s3_transfer_manager);
-
-            telemetry::init();
 
             Ok(())
         })

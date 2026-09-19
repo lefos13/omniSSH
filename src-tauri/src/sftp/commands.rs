@@ -245,7 +245,6 @@ pub async fn sftp_open(
 
     let sudo = use_sudo.unwrap_or(false);
     tracing::info!(sftp_session_id = %sftp_id, sudo, "SFTP session opened");
-    crate::telemetry::capture("sftp_opened", serde_json::json!({ "sudo": sudo }));
     Ok(sftp_id)
 }
 
@@ -278,7 +277,6 @@ pub async fn sftp_close(
     }
 
     tracing::info!(sftp_session_id = %sftp_session_id, "SFTP session closed");
-    crate::telemetry::capture("sftp_closed", serde_json::json!({}));
     Ok(())
 }
 
@@ -413,11 +411,7 @@ pub async fn sftp_mkdir(
     };
 
     let sftp = sftp_arc.lock().await;
-    let result = mkdir_p(&sftp, &path).await;
-    if result.is_ok() {
-        crate::telemetry::capture("sftp_dir_created", serde_json::json!({}));
-    }
-    result
+    mkdir_p(&sftp, &path).await
 }
 
 /// Create an empty remote file (touch).
@@ -450,7 +444,6 @@ pub async fn sftp_create_file(
         .await
         .map_err(|e| SftpError::RemoteIoError(e.to_string()))?;
     drop(file);
-    crate::telemetry::capture("sftp_file_created", serde_json::json!({}));
     Ok(())
 }
 
@@ -469,20 +462,13 @@ pub async fn sftp_delete(
     };
 
     let sftp = sftp_arc.lock().await;
-    let result = if is_dir {
+    if is_dir {
         delete_dir_recursive(&sftp, &path).await
     } else {
         sftp.remove_file(&path)
             .await
             .map_err(|e| SftpError::RemoteIoError(e.to_string()))
-    };
-    if result.is_ok() {
-        crate::telemetry::capture(
-            "sftp_entry_deleted",
-            serde_json::json!({ "is_dir": is_dir }),
-        );
     }
-    result
 }
 
 /// Rename (or move) a remote path.
@@ -500,14 +486,9 @@ pub async fn sftp_rename(
     };
 
     let sftp = sftp_arc.lock().await;
-    let result = sftp
-        .rename(&old_path, &new_path)
+    sftp.rename(&old_path, &new_path)
         .await
-        .map_err(|e| SftpError::RemoteIoError(e.to_string()));
-    if result.is_ok() {
-        crate::telemetry::capture("sftp_entry_renamed", serde_json::json!({}));
-    }
-    result
+        .map_err(|e| SftpError::RemoteIoError(e.to_string()))
 }
 
 /// Change the Unix permission bits (chmod) of a remote path via SFTP `setstat`.
@@ -529,16 +510,10 @@ pub async fn sftp_chmod(
     };
 
     let sftp = sftp_arc.lock().await;
-    match apply_chmod_one(&sftp, &path, mode & 0o7777).await {
-        Ok(clean) => {
-            crate::telemetry::capture(
-                "sftp_chmod",
-                serde_json::json!({ "false_positive": !clean }),
-            );
-            Ok(())
-        }
-        Err(msg) => Err(SftpError::RemoteIoError(msg)),
-    }
+    apply_chmod_one(&sftp, &path, mode & 0o7777)
+        .await
+        .map(|_| ())
+        .map_err(SftpError::RemoteIoError)
 }
 
 /// Build the `setstat` attributes for a chmod: ONLY the permission bits are
@@ -697,10 +672,6 @@ pub async fn sftp_chmod_recursive(
         }
     }
 
-    crate::telemetry::capture(
-        "sftp_chmod_recursive",
-        serde_json::json!({ "applied": applied, "errors": errors.len() }),
-    );
     Ok(ChmodSummary { applied, errors })
 }
 
@@ -1511,11 +1482,6 @@ pub async fn sftp_edit_external(
         })?;
     crate::editors::launch(&editor, &local_path).map_err(SftpError::LocalIoError)?;
 
-    crate::telemetry::capture(
-        "edit_external",
-        serde_json::json!({ "source": "sftp", "editor": editor.name }),
-    );
-
     // 3. Watch for file saves and re-upload on each save
     let sftp_arc_bg = sftp_arc.clone();
     let remote_path_bg = remote_path.clone();
@@ -1817,10 +1783,6 @@ pub async fn sftp_move_entries(
         new_paths.push(dest);
     }
 
-    crate::telemetry::capture(
-        "sftp_entries_moved",
-        serde_json::json!({ "count": source_paths.len() }),
-    );
     Ok(new_paths)
 }
 
@@ -1868,10 +1830,6 @@ pub async fn sftp_copy_entries(
         new_paths.push(dest);
     }
 
-    crate::telemetry::capture(
-        "sftp_entries_copied",
-        serde_json::json!({ "count": source_paths.len() }),
-    );
     Ok(new_paths)
 }
 
@@ -1890,18 +1848,10 @@ pub async fn sftp_enqueue_upload(
     remote_dir: String,
     transfer_manager: State<'_, Arc<TransferManager>>,
 ) -> Result<Vec<String>, SftpError> {
-    let file_count = local_paths.len();
     let paths: Vec<PathBuf> = local_paths.into_iter().map(PathBuf::from).collect();
-    let result = transfer_manager
+    transfer_manager
         .enqueue_upload(sftp_session_id, paths, remote_dir)
-        .await;
-    if result.is_ok() {
-        crate::telemetry::capture(
-            "sftp_upload_enqueued",
-            serde_json::json!({ "file_count": file_count }),
-        );
-    }
-    result
+        .await
 }
 
 /// Enqueue one or more remote paths for download to a local directory.
@@ -1915,17 +1865,9 @@ pub async fn sftp_enqueue_download(
     local_dir: String,
     transfer_manager: State<'_, Arc<TransferManager>>,
 ) -> Result<Vec<String>, SftpError> {
-    let file_count = remote_paths.len();
-    let result = transfer_manager
+    transfer_manager
         .enqueue_download(sftp_session_id, remote_paths, PathBuf::from(local_dir))
-        .await;
-    if result.is_ok() {
-        crate::telemetry::capture(
-            "sftp_download_enqueued",
-            serde_json::json!({ "file_count": file_count }),
-        );
-    }
-    result
+        .await
 }
 
 /// Re-queue a failed or cancelled transfer, resetting its progress counters.

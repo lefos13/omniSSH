@@ -54,10 +54,6 @@ pub async fn pf_create_rule(
     .await
     .map_err(|e| DbError::InitError(format!("task panicked: {e}")))??;
 
-    crate::telemetry::capture(
-        "tunnel_rule_created",
-        serde_json::json!({ "auto_start": auto_start }),
-    );
     Ok(PortForwardRule {
         id,
         host_id,
@@ -112,13 +108,9 @@ pub async fn pf_update_rule(
 #[instrument(skip(db))]
 pub async fn pf_delete_rule(id: String, db: State<'_, Arc<HostDb>>) -> Result<(), DbError> {
     let db = Arc::clone(&db);
-    let result = task::spawn_blocking(move || db.delete_pf_rule(&id))
+    task::spawn_blocking(move || db.delete_pf_rule(&id))
         .await
-        .map_err(|e| DbError::InitError(format!("task panicked: {e}")))?;
-    if result.is_ok() {
-        crate::telemetry::capture("tunnel_rule_deleted", serde_json::json!({}));
-    }
-    result
+        .map_err(|e| DbError::InitError(format!("task panicked: {e}")))?
 }
 
 #[tauri::command]
@@ -186,8 +178,6 @@ pub async fn pf_start_tunnel(
         )
         .await?;
 
-    crate::telemetry::capture("tunnel_started", serde_json::json!({}));
-
     Ok(status)
 }
 
@@ -197,11 +187,7 @@ pub async fn pf_stop_tunnel(
     rule_id: String,
     pf_manager: State<'_, Arc<PortForwardManager>>,
 ) -> Result<(), crate::types::SshError> {
-    let result = pf_manager.stop_tunnel(&rule_id);
-    if result.is_ok() {
-        crate::telemetry::capture("tunnel_stopped", serde_json::json!({}));
-    }
-    result
+    pf_manager.stop_tunnel(&rule_id)
 }
 
 #[tauri::command]

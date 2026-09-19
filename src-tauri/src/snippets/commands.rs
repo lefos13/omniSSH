@@ -15,13 +15,9 @@ use super::{Snippet, SnippetFolder, SnippetSearchResult};
 #[instrument(skip(state), fields(id = %snippet.id))]
 pub async fn save_snippet(snippet: Snippet, state: State<'_, Arc<HostDb>>) -> Result<(), DbError> {
     let db = Arc::clone(&state);
-    let result = task::spawn_blocking(move || db.save_snippet(&snippet))
+    task::spawn_blocking(move || db.save_snippet(&snippet))
         .await
-        .map_err(|e| DbError::InitError(format!("task panicked: {e}")))?;
-    if result.is_ok() {
-        crate::telemetry::capture("snippet_saved", serde_json::json!({}));
-    }
-    result
+        .map_err(|e| DbError::InitError(format!("task panicked: {e}")))?
 }
 
 /// Look up a single snippet by its UUID string.  Returns `None` when not found.
@@ -58,13 +54,9 @@ pub async fn list_snippets(
 #[instrument(skip(state), fields(id = %id))]
 pub async fn delete_snippet(id: String, state: State<'_, Arc<HostDb>>) -> Result<(), DbError> {
     let db = Arc::clone(&state);
-    let result = task::spawn_blocking(move || db.delete_snippet(&id))
+    task::spawn_blocking(move || db.delete_snippet(&id))
         .await
-        .map_err(|e| DbError::InitError(format!("task panicked: {e}")))?;
-    if result.is_ok() {
-        crate::telemetry::capture("snippet_deleted", serde_json::json!({}));
-    }
-    result
+        .map_err(|e| DbError::InitError(format!("task panicked: {e}")))?
 }
 
 /// Full-text search over snippets using the FTS5 index.
@@ -161,8 +153,6 @@ pub async fn snippet_execute(
         let db = Arc::clone(&db);
         let _ = task::spawn_blocking(move || db.record_snippet_use(&sid)).await;
     }
-
-    crate::telemetry::capture("snippet_executed", serde_json::json!({}));
 
     Ok(())
 }
