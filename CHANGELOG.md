@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-09-19
+
 ### 🚀 Highlights & New Features
 
 #### 1. Self-Hosted Encrypted Dataset Sync
@@ -28,6 +30,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 📚 Documentation
 * **`docs/sync-datasets.md`**: The remote layout, the passphrase → wrapped dataset key → payload key hierarchy, the owner/member model including signing and fingerprint pinning, the server-side read-only requirement for members, and recovery steps for a lost passphrase, a lost owner signing key, a bad push, a retired machine, a restored backup, and a factory reset.
+
+### 🐛 Fixes
+
+#### 1. SSH Connections on IPv6-Only / NAT64 Networks
+* **Literal IPv4 Hosts Connect Through NAT64**: Hosts stored as raw IPv4 addresses failed outright behind phone tethering and carrier NAT64, while hostnames worked — a confusing split. The direct connection now falls back to an RFC 7050-discovered NAT64 prefix only when the failure is an address-family error, so dual-stack machines take exactly the path they always did.
+* **Health Check Follows the Same Fallback**: The dashboard health probe reports what a terminal connection would do instead of contradicting a working session.
+
+#### 2. Managed Hosts Stay Editable Where It Matters
+* **Dataset-Managed Badge and Editor Lock**: Hosts claimed read-only by a member dataset show who manages them; the editor locks synced fields while keeping the local credential editable, and detaching drops one dataset's claim without deleting the host.
 
 ---
 

@@ -136,10 +136,10 @@ export async function saveSyncDataset(opts: {
 }): Promise<string | null> {
     await setField("settings-sync-name", opts.name);
     await setField("settings-sync-passphrase", opts.passphrase);
-    if (opts.includeCredentials) {
+    if (opts.includeCredentials !== undefined) {
         const toggle = await $("[data-testid='settings-sync-content-hostCredentials']");
         await toggle.waitForExist({ timeout: 10_000 });
-        if (!(await toggle.isSelected())) {
+        if ((await toggle.isSelected()) !== opts.includeCredentials) {
             await toggle.click();
         }
     }
