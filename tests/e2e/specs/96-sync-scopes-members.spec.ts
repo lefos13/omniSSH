@@ -28,13 +28,13 @@ import {
 } from "../helpers/host.js";
 import { factoryReset } from "../helpers/backup.js";
 import { clickTabByLabel } from "../helpers/tabs.js";
-import { fillGroupAndSave, openNewGroupModal } from "../helpers/groups.js";
+import { fillGroupAndSave, getGroupId, openNewGroupModal } from "../helpers/groups.js";
 import {
     cleanSyncRemote,
     configureSyncEndpoint,
     openSyncSection,
     saveSyncDataset,
-    syncDatasetAction,
+    datasetCardIds,
     syncDatasetCardAction,
     syncDatasetError,
     SYNC_ENDPOINT,
@@ -107,10 +107,13 @@ async function publishScopedDataset(opts: {
     name: string;
     remotePath: string;
     scope: "all" | "groups" | "hosts";
-    /** Group names (groups mode) or host labels (hosts mode) to tick. */
-    members: string[];
+    /** Group ids (groups mode) or host ids (hosts mode) to tick. */
+    memberIds: string[];
 }): Promise<{ datasetId: string; pushed: string }> {
     await openSyncSection();
+    /* The saved list is not ordered by creation, so the row this save produced
+     * is the id that was not on the list before it. */
+    const before = await datasetCardIds();
     await configureSyncEndpointAt(opts.remotePath);
     const probe = await testSyncConnection();
     expect(probe, "the wiped directory must read as unpublished").to.include("No dataset here yet");
@@ -118,25 +121,14 @@ async function publishScopedDataset(opts: {
     await setScopeRadio(opts.scope);
     if (opts.scope !== "all") {
         const prefix = opts.scope === "groups" ? "groups" : "hosts";
-        for (const member of opts.members) {
-            // The picker checkbox testid embeds the entity id, which the test
-            // does not know — find the row by its rendered name instead.
-            const picker = await $(
-                `[data-testid='settings-sync-scope-picker-${prefix}']`,
-            );
-            await picker.waitForDisplayed({ timeout: 10_000 });
-            const boxes = await picker.$$("input[type='checkbox']");
-            let ticked = false;
-            for (const box of boxes) {
-                const row = await box.parentElement();
-                const text = ((await row.getText()) ?? "").trim();
-                if (text.includes(member)) {
-                    await box.click();
-                    ticked = true;
-                    break;
-                }
-            }
-            expect(ticked, `scope picker must list ${member}`).to.equal(true);
+        /* The picker renders as soon as the radio flips, but its rows arrive
+         * with the groups/hosts load that Settings kicks off on mount — so the
+         * row is addressed by its id and waited for, instead of scanning a list
+         * that may still be empty. */
+        for (const memberId of opts.memberIds) {
+            const box = await $(`[data-testid='settings-sync-scope-${prefix}-${memberId}']`);
+            await box.waitForClickable({ timeout: 15_000 });
+            await box.click();
         }
     }
 
@@ -144,16 +136,22 @@ async function publishScopedDataset(opts: {
     expect(await syncDatasetError()).to.equal(null);
     expect(saved, "saving a new dataset must report its next step").to.include("No dataset is published");
     const ids = await waitForDatasetCards();
-    expect(ids.length).to.be.greaterThan(0);
-    const datasetId = ids[ids.length - 1];
+    const datasetId = ids.find((id) => !before.includes(id));
+    expect(datasetId, "the save must add a dataset row").to.be.a("string");
 
-    const pushed = await syncDatasetAction("push");
-    return { datasetId, pushed };
+    const pushed = await syncDatasetCardAction(datasetId as string, "push");
+    return { datasetId: datasetId as string, pushed };
 }
 
 describe("dataset sync phase 2", () => {
     beforeEach(async () => {
-        await cleanSyncRemote();
+        // Both datasets publish to their own directory under the persistent
+        // volume, so both are wiped before the run reads them as unpublished.
+        await cleanSyncRemote([
+            SYNC_ENDPOINT.remotePath,
+            `${SYNC_ENDPOINT.remotePath}-nova`,
+            `${SYNC_ENDPOINT.remotePath}-full`,
+        ]);
         await resetApp();
         await waitForDashboard();
     });
@@ -175,19 +173,21 @@ describe("dataset sync phase 2", () => {
         ] as const) {
             await openHostEdit(label);
             const { selectHostGroup } = await import("../helpers/host.js");
-            const { getGroupId } = await import("../helpers/groups.js");
             await selectHostGroup(await getGroupId(group));
             await clickSave();
             await waitForModalClosed();
         }
         expect(await hostCardCount()).to.equal(3);
 
-        // Two datasets, two remote paths, one server account.
+        // Two datasets, two remote paths, one server account. The group id is
+        // read here, on the dashboard, because the scope picker addresses rows
+        // by id and Settings renders no group name the test can map back.
+        const novaGroupId = await getGroupId(NOVA_GROUP);
         const scoped = await publishScopedDataset({
             name: "NOVA only",
             remotePath: `${SYNC_ENDPOINT.remotePath}-nova`,
             scope: "groups",
-            members: [NOVA_GROUP],
+            memberIds: [novaGroupId],
         });
         expect(scoped.pushed).to.include("Pushed generation 1");
         expect(await datasetScopeSummary(scoped.datasetId)).to.include("Scope: selected groups");
@@ -196,33 +196,36 @@ describe("dataset sync phase 2", () => {
             name: "Everything",
             remotePath: `${SYNC_ENDPOINT.remotePath}-full`,
             scope: "all",
-            members: [],
+            memberIds: [],
         });
         expect(full.pushed).to.include("Pushed generation 1");
         expect(full.datasetId).to.not.equal(scoped.datasetId);
 
-        // ── Machine B — joins both, pulls both.
+        // ── Machine B — joins both, pulls both. It holds no owner signing
+        // key, so each join is a member join; an owner join of someone else's
+        // signed dataset is refused by design.
         await becomeFreshMachine();
 
         await openSyncSection();
         await configureSyncEndpointAt(`${SYNC_ENDPOINT.remotePath}-nova`);
         expect(await testSyncConnection()).to.include("generation 1");
         expect(
-            await saveSyncDataset({ name: "NOVA only", passphrase: PASSPHRASE }),
+            await saveSyncDataset({ name: "NOVA only", passphrase: PASSPHRASE, role: "member" }),
         ).to.include("Joined the dataset");
-        await waitForDatasetCards();
+        const afterScoped = await waitForDatasetCards();
+        expect(afterScoped.length).to.equal(1);
+        const scopedId = afterScoped[0];
 
         await configureSyncEndpointAt(`${SYNC_ENDPOINT.remotePath}-full`);
         expect(await testSyncConnection()).to.include("generation 1");
         expect(
-            await saveSyncDataset({ name: "Everything", passphrase: PASSPHRASE }),
+            await saveSyncDataset({ name: "Everything", passphrase: PASSPHRASE, role: "member" }),
         ).to.include("Joined the dataset");
         const joinedIds = await waitForDatasetCards();
         expect(joinedIds.length).to.equal(2);
+        const fullId = joinedIds.find((id) => id !== scopedId) as string;
 
         // Pull the scoped dataset first: exactly the NOVA hosts land.
-        const scopedId = joinedIds[0];
-        const fullId = joinedIds[1];
         const scopedPulled = await syncDatasetCardAction(scopedId, "pull");
         expect(scopedPulled).to.include("2 hosts");
 
@@ -232,31 +235,21 @@ describe("dataset sync phase 2", () => {
         await findHostCardByLabel(NOVA_DB);
         expect(await hostCardCount()).to.equal(2);
 
-        // Pull the full dataset: the bank host joins, nothing duplicates.
+        // Pull the full dataset: the bank host joins, nothing duplicates. The
+        // report counts what the merge wrote, not what the bundle carried, and
+        // the scoped pull already wrote the two NOVA hosts.
         await openSyncSection();
         const fullPulled = await syncDatasetCardAction(fullId, "pull");
-        expect(fullPulled).to.include("3 hosts");
+        expect(fullPulled).to.include("1 hosts");
         await clickTabByLabel("Hosts");
         await waitForDashboard();
         expect(await hostCardCount()).to.equal(3);
         await findHostCardByLabel(BANK_CORE);
 
-        // ── Member role — join the scoped dataset as a member on this machine.
-        // The role radio rides on the save: re-save the same endpoint as a
-        // member and the row flips without touching the published bundle.
+        // ── Member role — a member row offers no push affordance: publishing
+        // stays with the machine that holds the owner key.
         await openSyncSection();
-        await configureSyncEndpointAt(`${SYNC_ENDPOINT.remotePath}-nova`);
-        const memberRadio = await $("[data-testid='settings-sync-role-member']");
-        await memberRadio.waitForClickable({ timeout: 10_000 });
-        await memberRadio.click();
-        expect(
-            await saveSyncDataset({ name: "NOVA only", passphrase: PASSPHRASE }),
-        ).to.include("Joined the dataset");
-        const memberIds = await waitForDatasetCards();
-
-        // The member row offers no push affordance.
-        expect(await pushButtonExists(memberIds[0])).to.equal(false);
-        await findHostCardByLabel(BANK_CORE);
+        expect(await pushButtonExists(scopedId)).to.equal(false);
 
 
         // ── Detach — the bank host is untouched by the scoped dataset, so

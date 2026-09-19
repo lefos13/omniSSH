@@ -516,9 +516,14 @@ export function HostEditModal() {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const typedInvoke = invoke as (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
-      const hostId = managed ? (originalHost?.id ?? editingHostId ?? "") : buildHost().id;
-      if (!managed) {
-        await saveHost(buildHost());
+      /* `buildHost()` mints a fresh id for a new host, so it must be called
+       * exactly once: calling it again for the credential would file the
+       * secret under an id no saved row owns, and the host would then connect
+       * with an empty password. */
+      const host = managed ? null : buildHost();
+      const hostId = host ? host.id : (originalHost?.id ?? editingHostId ?? "");
+      if (host) {
+        await saveHost(host);
       }
       await syncVaultCredential(hostId, typedInvoke);
       await applyCredentialStorage(hostId, typedInvoke);

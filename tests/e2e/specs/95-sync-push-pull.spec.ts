@@ -124,7 +124,9 @@ describe("dataset sync", () => {
         const pushed = await publishDataset();
         expect(pushed).to.include("Pushed generation 1");
         expect(pushed, "both hosts must be in the bundle").to.include("2 hosts");
-        expect(pushed, "no credentials travel with the default toggles").to.include("0 credentials");
+        /* The summary drops zero counts, so "no credentials travelled" is the
+         * absence of a credential clause, not a "0 credentials" one. */
+        expect(pushed, "no credentials travel with the default toggles").to.not.include("credential");
 
         // ── Machine B — nothing local, so everything below came off the wire.
         await becomeFreshMachine();
@@ -137,9 +139,13 @@ describe("dataset sync", () => {
         );
         expect(existing).to.include("generation 1");
 
+        /* A machine that did not create the dataset holds no owner signing
+         * key, so the app refuses an owner join and points at the member role
+         * — which is what this machine actually is. */
         const joined = await saveSyncDataset({
             name: DATASET_NAME,
             passphrase: DATASET_PASSPHRASE,
+            role: "member",
         });
         expect(await syncDatasetError()).to.equal(null);
         expect(joined, "joining an existing dataset must be reported as a join").to.include(
@@ -201,6 +207,7 @@ describe("dataset sync", () => {
         const joined = await saveSyncDataset({
             name: DATASET_NAME,
             passphrase: WRONG_PASSPHRASE,
+            role: "member",
         });
         expect(joined, "a wrong passphrase must not be accepted as a join").to.equal(null);
 
@@ -216,8 +223,10 @@ describe("dataset sync", () => {
         expect(await hostCardCount()).to.equal(0);
 
         // And the refusal changed nothing on the server: the dataset is still
-        // there at the generation machine A published.
+        // there at the generation machine A published. Leaving Settings
+        // unmounted the endpoint form, so it is typed again before probing.
         await openSyncSection();
+        await configureSyncEndpoint();
         const stillPublished = await testSyncConnection();
         expect(stillPublished).to.include("A dataset is already published here");
         expect(stillPublished).to.include("generation 1");

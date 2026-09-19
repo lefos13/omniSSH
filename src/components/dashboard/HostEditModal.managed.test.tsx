@@ -2,7 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import type { SavedHost } from "../../types";
-import { HostEditModal } from "./HostEditModal";
+import { HostEditModal, NEW_HOST_ID } from "./HostEditModal";
 import { useUiStore } from "../../stores/ui-store";
 
 /* HostEditModal loads through a dynamic `import("@tauri-apps/api/core")`,
@@ -146,5 +146,38 @@ describe("HostEditModal — managed hosts", () => {
       "save_host",
       expect.anything(),
     );
+  });
+
+  /* Regression: the save path built the host twice, and `buildHost()` mints a
+   * fresh uuid for a new host — so the row landed under one id and its secret
+   * under another, and every later connect came back "server rejected
+   * credentials". The two ids must be the same one. */
+  it("files a new host's credential under the id the row was saved with", async () => {
+    respondWith([]);
+    useUiStore.getState().setEditingHostId(NEW_HOST_ID);
+    render(<HostEditModal />);
+
+    fireEvent.change(screen.getByTestId("host-modal-host"), {
+      target: { value: "10.0.0.9" },
+    });
+    fireEvent.change(screen.getByTestId("host-modal-username"), {
+      target: { value: "alice" },
+    });
+    fireEvent.change(screen.getByTestId("host-modal-password"), {
+      target: { value: "hunter2" },
+    });
+    fireEvent.click(screen.getByTestId("host-modal-save"));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("vault_save_credential", expect.anything()),
+    );
+    const savedHost = invoke.mock.calls.find(([cmd]) => cmd === "save_host")?.[1] as {
+      host: SavedHost;
+    };
+    const savedCredential = invoke.mock.calls.find(
+      ([cmd]) => cmd === "vault_save_credential",
+    )?.[1] as { hostId: string };
+    expect(savedHost.host.id).toBeTruthy();
+    expect(savedCredential.hostId).toBe(savedHost.host.id);
   });
 });

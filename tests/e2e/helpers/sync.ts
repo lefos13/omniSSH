@@ -38,14 +38,18 @@ async function isVisible(selector: string): Promise<boolean> {
 }
 
 /**
- * Delete everything under the dataset directory (and re-create it empty), so
- * the next probe reports "no dataset here yet" and the next push publishes
- * generation 1 again.
+ * Delete everything under the given dataset directories (and re-create them
+ * empty), so the next probe reports "no dataset here yet" and the next push
+ * publishes generation 1 again. A spec that publishes to more than one path
+ * names them all: the dataset volume outlives the run, so a directory left
+ * behind would make the next run read as already published.
  */
-export async function cleanSyncRemote(): Promise<void> {
-    // Single-quoted for the remote shell: the path is ours, but it must survive
-    // a shell either way rather than depending on it being tame.
-    const path = `'${SYNC_ENDPOINT.remotePath.replace(/'/g, "'\\''")}'`;
+export async function cleanSyncRemote(
+    paths: string[] = [SYNC_ENDPOINT.remotePath],
+): Promise<void> {
+    // Single-quoted for the remote shell: the paths are ours, but they must
+    // survive a shell either way rather than depending on being tame.
+    const quoted = paths.map((p) => `'${p.replace(/'/g, "'\\''")}'`).join(" ");
     await new Promise<void>((resolve, reject) => {
         execFile(
             "ssh",
@@ -57,7 +61,7 @@ export async function cleanSyncRemote(): Promise<void> {
                 "-o", "ConnectTimeout=10",
                 "-p", String(SYNC_ENDPOINT.port),
                 `${SYNC_ENDPOINT.username}@${SYNC_ENDPOINT.host}`,
-                `rm -rf ${path} && mkdir -p ${path}`,
+                `rm -rf ${quoted} && mkdir -p ${quoted}`,
             ],
             (error, _stdout, stderr) => {
                 if (error) {
@@ -133,9 +137,17 @@ export async function saveSyncDataset(opts: {
     name: string;
     passphrase: string;
     includeCredentials?: boolean;
+    /* Joining a dataset another machine signed is a member's act: the app
+     * refuses an owner join it holds no signing key for. */
+    role?: "owner" | "member";
 }): Promise<string | null> {
     await setField("settings-sync-name", opts.name);
     await setField("settings-sync-passphrase", opts.passphrase);
+    if (opts.role) {
+        const radio = await $(`[data-testid='settings-sync-role-${opts.role}']`);
+        await radio.waitForClickable({ timeout: 10_000 });
+        await radio.click();
+    }
     if (opts.includeCredentials !== undefined) {
         const toggle = await $("[data-testid='settings-sync-content-hostCredentials']");
         await toggle.waitForExist({ timeout: 10_000 });
