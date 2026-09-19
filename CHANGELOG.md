@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-09-19
+
+### 🚀 Improvements
+
+#### 1. Dataset Sync Operational Hub & Creation Modal
+* **Operational Hub**: Elevated the active dataset dashboard to the top level of Settings ▸ Dataset Sync, featuring generation badges, sync phase indicators, fast push/pull triggers, and generation history.
+* **Focused Modal Dialog (`SyncDatasetModal`)**: Relocated the long creation and editing forms into a dedicated, responsive modal dialog (`max-w-4xl`) with clear sections for endpoint connection, security/role selection, and host scoping.
+* **Parent-Child Publishing Hierarchy**: Redesigned the "What this dataset publishes" section into visual tree groupings with vertical hierarchy guide connectors. Dependent toggles (host credentials, port forwards, host plugins, and S3 credentials) automatically dim and disable when their parent toggle is inactive.
+* **Member Autosync Streamlining**: Datasets configured with the `member` role now omit the push delay debounce control, optimizing automatic sync settings exclusively for scheduled pulls.
+* **Button Whitespace & Layout Alignment**: Modernized modal action buttons with `inline-flex` centering and `whitespace-nowrap` to ensure single-line rendering and proper vertical icon alignment.
+
 ## [1.6.0] - 2026-09-19
 
 ### 🚀 Highlights & New Features

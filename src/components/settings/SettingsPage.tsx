@@ -1,22 +1,23 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { ModalShell, BTN_GHOST, BTN_PRIMARY, BTN_DANGER } from "../shared/ModalShell";
 import { ModalBackdrop } from "../shared/ModalBackdrop";
 import { useSettingsStore } from "../../stores/settings-store";
 import { CustomSelect, type SelectOption } from "../shared/CustomSelect";
 import { useUpdaterStore } from "../../stores/updater-store";
 import { toast } from "../../stores/toast-store";
-import { RefreshCw, CheckCircle2, AlertCircle, Palette, SquareTerminal, ArrowUpDown, Info, ExternalLink, Check, FileCode, Plus, Trash2, FolderOpen, Star, Search, Database, Download, Upload, ShieldCheck, KeyRound, Puzzle, Pencil, Globe, Server, Save, AlertTriangle, History } from "lucide-react";
+import { RefreshCw, CheckCircle2, AlertCircle, Palette, SquareTerminal, ArrowUpDown, Info, ExternalLink, Check, FileCode, Plus, Trash2, FolderOpen, Star, Search, Database, Download, Upload, ShieldCheck, KeyRound, Puzzle, Pencil, Globe, Server, AlertTriangle, History } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { CursorStyle, ThemeMode, EditorConfig, PasteButton, DoubleClickAction } from "../../stores/settings-store";
-import type { BackupPreflightSummary, BulkMigrationResult, CredentialStorage, MigrationPreflightSummary, TerminalHighlightRule, SyncAppliedCounts, SyncConflictEntry, SyncContentFlags, SyncContentKind, SyncDatasetInput, SyncDatasetSecrets, SyncDatasetSummary, SyncErrorKind, SyncHistoryCounts, SyncHistoryEntry, SyncPhase, SyncPushOutcome, SyncRole, SyncSaveOutcome, SyncScopeMode, SyncStatusSnapshot } from "../../types";
+import type { BackupPreflightSummary, BulkMigrationResult, CredentialStorage, MigrationPreflightSummary, TerminalHighlightRule, SyncAppliedCounts, SyncConflictEntry, SyncDatasetSummary, SyncErrorKind, SyncHistoryCounts, SyncHistoryEntry, SyncPhase, SyncPushOutcome, SyncStatusSnapshot } from "../../types";
 import { useLocalVaultStore } from "../../stores/local-vault-store";
 import { useHostsStore } from "../../stores/hosts-store";
 import { useGroupsStore } from "../../stores/groups-store";
-import { DEFAULT_SYNC_CONTENT_FLAGS, DEFAULT_SYNC_ENDPOINT, DEFAULT_SYNC_SCOPE_MODE, useSyncStore } from "../../stores/sync-store";
+import { useSyncStore } from "../../stores/sync-store";
 import type { SyncScheduleInput } from "../../stores/sync-store";
 import { ConfirmDangerDialog } from "../shared/ConfirmDangerDialog";
 import { ChangeVaultPasswordDialog, UnlockVaultDialog } from "../vault";
 import { TerminalHighlightModal } from "./TerminalHighlightModal";
+import { SyncDatasetModal, SyncSaveReport } from "./SyncDatasetModal";
 import { isLightColor } from "../../lib/terminal-highlighter";
 import { relativeTime } from "../../utils/time";
 
@@ -969,111 +970,6 @@ const TRACKER_CATALOG: { id: string; label: string; description: string; interva
 
 // ─── Dataset Sync ─────────────────────────────────────────────────────────────
 
-const MIN_DATASET_PASSPHRASE = 12;
-
-/* One toggle per syncable content kind (AD-11). `parent` marks a kind that is a
- * foreign-key child of another: it can only travel when its parent does, so it
- * is rendered indented and disabled while the parent is off. */
-const CONTENT_TOGGLES: {
-  kind: SyncContentKind;
-  label: string;
-  parent?: SyncContentKind;
-  hint?: string;
-}[] = [
-  { kind: "hosts", label: "Hosts" },
-  {
-    kind: "hostCredentials",
-    label: "Saved host credentials",
-    parent: "hosts",
-    hint: "Passwords and private keys stored for those hosts. Off by default — anyone holding the dataset passphrase can read them.",
-  },
-  {
-    kind: "portForwards",
-    label: "Port-forward rules",
-    parent: "hosts",
-    hint: "Children of your hosts — they travel with the hosts they belong to.",
-  },
-  {
-    kind: "hostPlugins",
-    label: "Host plugins",
-    parent: "hosts",
-    hint: "Children of your hosts — they travel with the hosts they belong to.",
-  },
-  { kind: "groups", label: "Groups" },
-  { kind: "snippets", label: "Snippets" },
-  { kind: "snippetFolders", label: "Snippet folders" },
-  { kind: "s3Connections", label: "S3 connections" },
-  {
-    kind: "s3Credentials",
-    label: "S3 access keys",
-    parent: "s3Connections",
-    hint: "Access keys stored for those connections. Off by default.",
-  },
-  {
-    kind: "appSettings",
-    label: "App settings",
-    hint: "Preferences only — machine-specific keys such as window state stay on this computer.",
-  },
-];
-
-/* Turning a parent off also clears its children: a disabled toggle that still
- * claims a value would only publish a payload the backend rejects anyway. */
-const CONTENT_CHILDREN: Partial<Record<SyncContentKind, SyncContentKind[]>> = {
-  hosts: ["hostCredentials", "portForwards", "hostPlugins"],
-  s3Connections: ["s3Credentials"],
-};
-
-/* How a dataset picks the hosts it carries (Task 8). `all` is the default; the
- * other two need a selection, and the count rendered below the radios says how
- * many hosts that selection resolves to before anything is saved. */
-const SCOPE_MODES: { mode: SyncScopeMode; label: string; hint: string }[] = [
-  { mode: "all", label: "All hosts", hint: "Every host on this computer." },
-  { mode: "groups", label: "Groups", hint: "Every host in the groups you pick." },
-  { mode: "hosts", label: "Specific hosts", hint: "Only the hosts you pick." },
-];
-
-/* One checkbox list, used by both selection modes: a group picker and a host
- * picker differ only in the records they list, so they must not differ in
- * behaviour or accessibility. */
-function ScopePicker({ legend, items, selected, testidPrefix, onToggle }: {
-  legend: string;
-  items: { id: string; name: string }[];
-  selected: string[];
-  testidPrefix: string;
-  onToggle: (id: string, checked: boolean) => void;
-}) {
-  return (
-    <fieldset
-      data-testid={`settings-sync-scope-picker-${testidPrefix}`}
-      className="mt-2 max-h-40 overflow-y-auto rounded-lg border border-border/60 bg-bg-base px-3 py-2"
-    >
-      <legend className={`${LABEL_CLASS} px-1`}>{legend}</legend>
-      {items.length === 0 ? (
-        <p className={DESC_CLASS}>
-          Nothing to pick yet — create it first, then come back to this dataset.
-        </p>
-      ) : (
-        <div className="space-y-1.5">
-          {items.map((item) => (
-            <label key={item.id} className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                data-testid={`settings-sync-scope-${testidPrefix}-${item.id}`}
-                className="w-3.5 h-3.5 shrink-0 rounded border-border text-accent focus:ring-ring cursor-pointer"
-                checked={selected.includes(item.id)}
-                onChange={(e) => onToggle(item.id, e.target.checked)}
-              />
-              <span className="text-[length:var(--text-xs)] text-text-secondary truncate">
-                {item.name}
-              </span>
-            </label>
-          ))}
-        </div>
-      )}
-    </fieldset>
-  );
-}
-
 /* Count line for a push summary; zeros are dropped so it reports what actually
  * travelled. */
 function describePush(outcome: SyncPushOutcome): string {
@@ -1391,48 +1287,6 @@ function SyncHistoryPanel({ dataset, busy }: { dataset: SyncDatasetSummary; busy
 
 /* ─── Save report ───────────────────────────────────────────────────────────
  * "Joined a dataset that is already published here" and "created an empty one
- * here" produce the same row in the saved list but opposite next steps — pull
- * versus push — and reading one for the other is exactly how a mistyped remote
- * path turns into an empty dataset nobody can explain. The saved list already
- * names the row (name, host, path, generation), so this panel names the
- * consequence and the button to press next.
- *
- * The generation is printed only when the server actually reported one, so the
- * panel can never claim a generation that was not seen. */
-function SyncSaveReport({ outcome }: { outcome: SyncSaveOutcome }) {
-  const generation =
-    outcome.joined && outcome.remoteGeneration > 0
-      ? ` (generation ${outcome.remoteGeneration})`
-      : "";
-  return (
-    <div
-      data-testid="settings-sync-save-outcome"
-      role="status"
-      className={[
-        "flex items-start gap-2 mt-3 px-3 py-2.5 rounded-lg border",
-        "text-[length:var(--text-xs)] text-text-secondary",
-        outcome.joined
-          ? "bg-status-success/10 border-status-success/30"
-          : "bg-status-connecting/10 border-status-connecting/30",
-      ].join(" ")}
-    >
-      {outcome.joined ? (
-        <CheckCircle2 size={13} strokeWidth={2} className="text-status-success shrink-0 mt-0.5" />
-      ) : (
-        <AlertTriangle
-          size={13}
-          strokeWidth={2}
-          className="text-status-connecting shrink-0 mt-0.5"
-        />
-      )}
-      <span>
-        {outcome.joined
-          ? `Joined the dataset published at this path${generation}. Press Pull now to bring it in.`
-          : "No dataset is published at this path yet, so a new one was created. Press Push now to publish it."}
-      </span>
-    </div>
-  );
-}
 
 /* ─── Automatic sync (Task 6) ────────────────────────────────────────────────
  * Automatic sync is opt-in per dataset: the master switch starts off, saving a
@@ -1571,14 +1425,18 @@ function SyncScheduleControls({ dataset }: { dataset: SyncDatasetSummary }) {
   );
   const [pushSeconds, setPushSeconds] = useState(() => String(dataset.pushDebounceSecs));
 
+  const isMember = dataset.role === "member";
+
   const pullError = pullIntervalError(pullMinutes);
-  const pushError = pushDebounceError(pushSeconds);
+  const pushError = isMember ? null : pushDebounceError(pushSeconds);
   const pullSecs = pullError === null
     ? (parseCadenceField(pullMinutes) ?? 0) * 60
     : dataset.pullIntervalSecs;
-  const pushSecs = pushError === null
-    ? parseCadenceField(pushSeconds) ?? 0
-    : dataset.pushDebounceSecs;
+  const pushSecs = isMember
+    ? 0
+    : pushError === null
+      ? parseCadenceField(pushSeconds) ?? 0
+      : dataset.pushDebounceSecs;
   const pullMins = pullSecs / 60;
 
   /* The dataset card renders the failure; a schedule change is not worth a toast. */
@@ -1599,7 +1457,7 @@ function SyncScheduleControls({ dataset }: { dataset: SyncDatasetSummary }) {
   };
 
   const commitPush = () => {
-    if (pushError !== null) return;
+    if (isMember || pushError !== null) return;
     const secs = parseCadenceField(pushSeconds) ?? 0;
     if (secs === dataset.pushDebounceSecs) return;
     commit({ autoSync, pullIntervalSecs: pullSecs, pushDebounceSecs: secs });
@@ -1616,14 +1474,18 @@ function SyncScheduleControls({ dataset }: { dataset: SyncDatasetSummary }) {
           <label htmlFor="settings-sync-auto" className={LABEL_CLASS}>Automatic sync</label>
           <p className={DESC_CLASS}>
             {autoSync
-              ? "This dataset syncs on its own using the cadences below."
-              : "Off — this dataset only syncs when you press Pull now or Push now."}
+              ? isMember
+                ? "This dataset pulls on its own using the cadence below."
+                : "This dataset syncs on its own using the cadences below."
+              : isMember
+                ? "Off — this dataset only syncs when you press Pull now."
+                : "Off — this dataset only syncs when you press Pull now or Push now."}
           </p>
         </div>
         <Toggle id="settings-sync-auto" checked={autoSync} onChange={changeAutoSync} />
       </div>
 
-      <div className="grid grid-cols-2 gap-3 mt-3">
+      <div className={`grid ${isMember ? "grid-cols-1 max-w-sm" : "grid-cols-2"} gap-3 mt-3`}>
         <div>
           <label htmlFor="settings-sync-pull-interval" className={FIELD_LABEL_CLASS}>
             Pull every (minutes)
@@ -1661,42 +1523,44 @@ function SyncScheduleControls({ dataset }: { dataset: SyncDatasetSummary }) {
           )}
         </div>
 
-        <div>
-          <label htmlFor="settings-sync-push-debounce" className={FIELD_LABEL_CLASS}>
-            Push delay (seconds)
-          </label>
-          <input
-            id="settings-sync-push-debounce"
-            data-testid="settings-sync-push-debounce"
-            type="number"
-            inputMode="numeric"
-            min={0}
-            max={PUSH_DEBOUNCE_MAX_SECONDS}
-            step={1}
-            disabled={!autoSync}
-            value={pushSeconds}
-            onChange={(e) => setPushSeconds(e.target.value)}
-            onBlur={commitPush}
-            onKeyDown={commitOnEnter(commitPush)}
-            className={TEXT_INPUT_CLASS}
-          />
-          {pushError === null ? (
-            <p className={DESC_CLASS}>
-              {!autoSync
-                ? "Turn automatic sync on to give this dataset a push delay."
-                : pushSecs === 0
-                  ? "0 — only when I click “Push now”."
-                  : `Waits ${pushSecs} second${pushSecs === 1 ? "" : "s"} after your last change before publishing.`}
-            </p>
-          ) : (
-            <p
-              data-testid="settings-sync-push-debounce-error"
-              className="mt-1 text-[length:var(--text-xs)] text-status-error"
-            >
-              {pushError}
-            </p>
-          )}
-        </div>
+        {!isMember && (
+          <div>
+            <label htmlFor="settings-sync-push-debounce" className={FIELD_LABEL_CLASS}>
+              Push delay (seconds)
+            </label>
+            <input
+              id="settings-sync-push-debounce"
+              data-testid="settings-sync-push-debounce"
+              type="number"
+              inputMode="numeric"
+              min={0}
+              max={PUSH_DEBOUNCE_MAX_SECONDS}
+              step={1}
+              disabled={!autoSync}
+              value={pushSeconds}
+              onChange={(e) => setPushSeconds(e.target.value)}
+              onBlur={commitPush}
+              onKeyDown={commitOnEnter(commitPush)}
+              className={TEXT_INPUT_CLASS}
+            />
+            {pushError === null ? (
+              <p className={DESC_CLASS}>
+                {!autoSync
+                  ? "Turn automatic sync on to give this dataset a push delay."
+                  : pushSecs === 0
+                    ? "0 — only when I click “Push now”."
+                    : `Waits ${pushSecs} second${pushSecs === 1 ? "" : "s"} after your last change before publishing.`}
+              </p>
+            ) : (
+              <p
+                data-testid="settings-sync-push-debounce-error"
+                className="mt-1 text-[length:var(--text-xs)] text-status-error"
+              >
+                {pushError}
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Both cadences at 0 means the switch is on but nothing can ever trigger,
@@ -1744,38 +1608,23 @@ function SyncScheduleControls({ dataset }: { dataset: SyncDatasetSummary }) {
  * they need is worse than refusing, so an unreadable secret blocks the run and
  * says which one.
  */
+/*
+ * Dataset Sync section. Displays active datasets, live phase and sync results,
+ * automatic synchronization cadence controls, generation history, and rollback
+ * affordances. Creation and editing are handled in SyncDatasetModal.
+ */
 function SyncSettings() {
   const {
-    endpoint, testing, testResult, error, errorKind, setEndpoint, testConnection,
-    datasets, datasetsLoading, saving, saveOutcome, pushing, pushResult, preflight,
+    datasets, datasetsLoading, saveOutcome, pushing, pushResult, preflight,
     pulling, pullResult, conflicts, rollingBack, statuses,
     datasetError, datasetErrorKind,
-    loadDatasets, saveDataset, clearSaveOutcome, clearDatasetError, deleteDataset, loadPreflight, push, pull,
+    loadDatasets, deleteDataset, loadPreflight, push, pull,
     probeWritability, loadStatus, subscribeSyncStatus,
   } = useSyncStore();
-  const [password, setPassword] = useState("");
-  const [keyPassphrase, setKeyPassphrase] = useState("");
-  const [useKey, setUseKey] = useState(false);
-  const [name, setName] = useState("");
-  const [passphrase, setPassphrase] = useState("");
-  const [formError, setFormError] = useState<string | null>(null);
-  const [contentFlags, setContentFlags] = useState<SyncContentFlags>({
-    ...DEFAULT_SYNC_CONTENT_FLAGS,
-  });
-  const [scopeMode, setScopeMode] = useState<SyncScopeMode>(DEFAULT_SYNC_SCOPE_MODE);
-  const [scopeMemberIds, setScopeMemberIds] = useState<string[]>([]);
-  /* Owners publish; members only pull. A new dataset starts as its owner's —
-   * joining someone else's means switching this to member before saving. */
-  const [role, setRole] = useState<SyncRole>("owner");
-  /* The lists the scope pickers offer, and the source of the live host count. */
-  const groups = useGroupsStore((s) => s.groups);
-  const hosts = useHostsStore((s) => s.hosts);
-  const [confirmRemove, setConfirmRemove] = useState<SyncDatasetSummary | null>(null);
-  /* The saved row the form is currently updating; null means the form is
-   * composing a new dataset. The whole row is kept because everything the form
-   * does not collect — its id, role, and automatic-sync schedule — has to be
-   * sent back on save rather than reset to a default. */
+
+  const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<SyncDatasetSummary | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState<SyncDatasetSummary | null>(null);
 
   /* Loaded once when the section mounts. `loadDatasets` is a stable store
    * action, so this effect cannot re-trigger itself. */
@@ -1816,194 +1665,15 @@ function SyncSettings() {
     };
   }, [loadStatus, subscribeSyncStatus]);
 
-  const runTest = useCallback(async () => {
-    try {
-      await testConnection(useKey ? { keyPassphrase } : { password });
-    } catch { /* surfaced through the store's error state */ }
-  }, [testConnection, useKey, keyPassphrase, password]);
-
-  const toggleContent = useCallback((kind: SyncContentKind, value: boolean) => {
-    clearSaveOutcome();
-    setContentFlags((prev) => {
-      const next: SyncContentFlags = { ...prev, [kind]: value };
-      if (!value) {
-        for (const child of CONTENT_CHILDREN[kind] ?? []) next[child] = false;
-      }
-      return next;
-    });
-  }, [clearSaveOutcome]);
-
-  /* Switching mode drops the previous selection: a host id left over from a
-   * `hosts` scope must never be stored as a group member, and the next save
-   * would refuse it anyway. */
-  const chooseScopeMode = useCallback((mode: SyncScopeMode) => {
-    clearSaveOutcome();
-    setScopeMode(mode);
-    setScopeMemberIds((prev) => (mode === "all" ? [] : prev));
-  }, [clearSaveOutcome]);
-
-  const toggleScopeMember = useCallback((id: string, checked: boolean) => {
-    clearSaveOutcome();
-    setScopeMemberIds((prev) => (checked ? [...prev, id] : prev.filter((member) => member !== id)));
-  }, [clearSaveOutcome]);
-
-  /* The live count: what the current mode would resolve to against the hosts
-   * and groups this computer has right now, before anything is saved. */
-  const scopeCount = useMemo(() => {
-    if (scopeMode === "all") return hosts.length;
-    if (scopeMode === "groups") {
-      return hosts.filter((host) => {
-        const groupId = host.group_id;
-        return groupId !== null && scopeMemberIds.includes(groupId);
-      }).length;
-    }
-    return hosts.filter((host) => scopeMemberIds.includes(host.id)).length;
-  }, [scopeMode, scopeMemberIds, hosts]);
-
-  /* Both selection modes need at least one real record, and the ids are
-   * filtered against the current lists so a deleted group cannot be saved as a
-   * member that resolves to nothing. */
-  const scopeSelection = useMemo(() => {
-    const valid = scopeMode === "groups" ? groups.map((g) => g.id) : hosts.map((h) => h.id);
-    return scopeMemberIds.filter((id) => valid.includes(id));
-  }, [scopeMode, scopeMemberIds, groups, hosts]);
-
-  const scopeError = scopeMode !== "all" && scopeSelection.length === 0
-    ? scopeMode === "groups"
-      ? "Choose at least one group, or switch the scope back to all hosts."
-      : "Choose at least one host, or switch the scope back to all hosts."
-    : null;
-
-  /*
-   * Load a saved row into the form so a typo in the remote path — or any other
-   * field — can be corrected in place instead of deleting the dataset and
-   * publishing a second one. The secrets are deliberately not prefilled: they
-   * are stored in the keychain / App Vault and never travel back to the
-   * frontend, so a save asks for them again by design.
-   */
-  const beginEdit = useCallback((dataset: SyncDatasetSummary) => {
-    setEditing(dataset);
-    setName(dataset.name);
-    setContentFlags({ ...dataset.contentFlags });
-    setScopeMode(dataset.scopeMode);
-    setScopeMemberIds([...dataset.scopeMemberIds]);
-    setUseKey(dataset.authType === "privateKey");
-    setRole(dataset.role);
-    setPassword("");
-    setPassphrase("");
-    setFormError(null);
-    clearSaveOutcome();
-    setEndpoint({
-      host: dataset.host,
-      port: dataset.port,
-      username: dataset.username,
-      remotePath: dataset.remotePath,
-      keyPath: dataset.keyPath ?? "",
-    });
-  }, [clearSaveOutcome, setEndpoint]);
-
-  /* Blank the dataset-specific fields and leave edit mode. The endpoint stays
-   * as typed: the save report names a remote path, and keeping it on screen
-   * leaves the report and the form describing the same place. The cleared name
-   * is also what stops a second click on the primary button from saving the
-   * dataset a second time. */
-  const resetDatasetFields = useCallback(() => {
+  const openAdd = useCallback(() => {
     setEditing(null);
-    setName("");
-    setPassphrase("");
-    setPassword("");
-    setKeyPassphrase("");
-    setFormError(null);
-    setRole("owner");
-    setContentFlags({ ...DEFAULT_SYNC_CONTENT_FLAGS });
-    setScopeMode(DEFAULT_SYNC_SCOPE_MODE);
-    setScopeMemberIds([]);
+    setModalOpen(true);
   }, []);
 
-  const cancelEdit = useCallback(() => {
-    resetDatasetFields();
-    setEndpoint({ ...DEFAULT_SYNC_ENDPOINT });
-    clearSaveOutcome();
-  }, [resetDatasetFields, setEndpoint, clearSaveOutcome]);
-
-  const handleSave = useCallback(async () => {
-    if (!name.trim()) {
-      setFormError("Give the dataset a name so you can tell it apart later.");
-      return;
-    }
-    if (passphrase.length < MIN_DATASET_PASSPHRASE) {
-      setFormError(`Use at least ${MIN_DATASET_PASSPHRASE} characters for the dataset passphrase.`);
-      return;
-    }
-    /* Key auth without a path would silently fall back to password auth inside
-     * the save, so the form asks for the path itself when the row it is editing
-     * could not supply one. */
-    if (useKey && !endpoint.keyPath.trim()) {
-      setFormError("Enter the path to the private key this dataset connects with.");
-      return;
-    }
-    /* A member never publishes, so the scope section is hidden for them and the
-     * backend stores `all` regardless. Send `all` explicitly rather than a
-     * selection the user can no longer see or fix: a stale `hosts` scope with
-     * an empty list would otherwise travel as a meaningless subset. The scope
-     * guard applies to owners only, for the same reason. */
-    if (role !== "member" && scopeError) return;
-    setFormError(null);
-    const effectiveScopeMode: SyncScopeMode = role === "member" ? "all" : scopeMode;
-    const input: SyncDatasetInput = {
-      name: name.trim(),
-      host: endpoint.host,
-      port: endpoint.port,
-      username: endpoint.username,
-      remotePath: endpoint.remotePath,
-      /* Content kinds are not push-only: a pull applies only the kinds this
-       * machine enables, so a member's choice travels like an owner's. */
-      contentFlags,
-      scopeMode: effectiveScopeMode,
-      /* Only ids that still exist are sent: a group deleted since the editor was
-       * opened would otherwise be refused by the save instead of being dropped. */
-      scopeMemberIds: effectiveScopeMode === "all" ? [] : scopeSelection,
-      ...(endpoint.keyPath ? { keyPath: endpoint.keyPath } : {}),
-      /* An update keeps everything the form does not collect: its id (so the
-       * row is replaced, never duplicated) and its automatic-sync schedule —
-       * sending the defaults would silently turn a configured cadence back to
-       * manual. The role rides along because flipping it is a real change. */
-      ...(editing
-        ? {
-            id: editing.id,
-            role,
-            autoSync: editing.autoSync,
-            pullIntervalSecs: editing.pullIntervalSecs,
-            pushDebounceSecs: editing.pushDebounceSecs,
-          }
-        : {
-            role,
-            /* A new dataset never syncs on its own: the switch starts off and
-             * both cadences start at 0, so saving a dataset cannot start
-             * background network activity the user did not ask for. */
-            autoSync: false,
-            pullIntervalSecs: 0,
-            pushDebounceSecs: 0,
-          }),
-    };
-    const secrets: SyncDatasetSecrets = {
-      passphrase,
-      ...(useKey ? { keyPassphrase } : { password }),
-    };
-    try {
-      await saveDataset(input, secrets);
-      await loadDatasets();
-      /* The row is saved, so the form goes back to composing a new dataset.
-       * The outcome stays: it is the only account of what the save just did,
-       * and the dataset it names is now a row below. */
-      resetDatasetFields();
-      toast.success(editing ? "Dataset updated." : "Dataset saved.");
-    } catch { /* the dataset card renders the failure */ }
-  }, [
-    name, passphrase, endpoint, useKey, contentFlags, password, keyPassphrase,
-    editing, saveDataset, loadDatasets, resetDatasetFields, role,
-    scopeMode, scopeSelection, scopeError,
-  ]);
+  const beginEdit = useCallback((dataset: SyncDatasetSummary) => {
+    setEditing(dataset);
+    setModalOpen(true);
+  }, []);
 
   const runPush = useCallback(async (datasetId: string) => {
     try {
@@ -2033,573 +1703,171 @@ function SyncSettings() {
     const dataset = confirmRemove;
     setConfirmRemove(null);
     if (!dataset) return;
-    /* Removing the row currently in the form must also leave edit mode.
-     * Otherwise the next save silently recreates the deleted dataset id. */
-    if (editing?.id === dataset.id) resetDatasetFields();
+    if (editing?.id === dataset.id) {
+      setEditing(null);
+    }
     try {
       await deleteDataset(dataset.id);
       toast.success(`Removed “${dataset.name}”. Your local hosts are untouched.`);
     } catch { /* the dataset card renders the failure */ }
-  }, [confirmRemove, deleteDataset, editing, resetDatasetFields]);
-
-  const passphraseTooShort = passphrase.length > 0 && passphrase.length < MIN_DATASET_PASSPHRASE;
+  }, [confirmRemove, deleteDataset, editing]);
 
   return (
-    <>
-      <SettingsGroup label="Sync server">
-        <div className="px-4 py-3 rounded-xl bg-bg-surface border border-border/50">
-          <p className={LABEL_CLASS}>Your own server</p>
+    <div data-testid="settings-sync-container" className="space-y-4">
+      {/* Top Header */}
+      <div className="flex items-center justify-between pb-3 border-b border-border/50">
+        <div>
+          <p className={LABEL_CLASS}>Active datasets</p>
           <p className={DESC_CLASS}>
-            OmniSSH publishes your hosts as a single encrypted file in a directory on a
-            server you control. Nothing is readable without the dataset passphrase — not
-            even by the server’s administrator.
+            Keep your hosts on a server you own, encrypted end to end.
           </p>
+        </div>
+        <button
+          type="button"
+          data-testid="settings-sync-add"
+          onClick={openAdd}
+          className={BTN_SECONDARY}
+        >
+          <Plus size={13} strokeWidth={2} /> Add dataset
+        </button>
+      </div>
 
-          <div className="grid grid-cols-[1fr_7rem] gap-3 mt-4">
-            <div>
-              <label className={FIELD_LABEL_CLASS} htmlFor="sync-host">Server address</label>
-              <input
-                id="sync-host"
-                data-testid="settings-sync-host"
-                type="text"
-                autoComplete="off"
-                spellCheck={false}
-                placeholder="10.0.0.9 or sync.example.com"
-                value={endpoint.host}
-                onChange={(e) => setEndpoint({ host: e.target.value })}
-                className={TEXT_INPUT_CLASS}
-              />
+      {!modalOpen && saveOutcome && (
+        <div className="relative">
+          <SyncSaveReport outcome={saveOutcome} />
+        </div>
+      )}
+
+      {datasetError && (
+        <p
+          data-testid="settings-sync-dataset-error"
+          className="flex items-start gap-1.5 px-3 py-2 rounded-lg bg-status-error/10 border border-status-error/30 text-[length:var(--text-xs)] text-status-error"
+        >
+          <AlertCircle size={13} strokeWidth={2} className="mt-0.5 shrink-0" />
+          <span>
+            {datasetError}
+            {datasetErrorKind && SYNC_ERROR_HINTS[datasetErrorKind]
+              ? ` ${SYNC_ERROR_HINTS[datasetErrorKind]}`
+              : null}
+          </span>
+        </p>
+      )}
+
+      <div className="space-y-3">
+        {datasetsLoading && datasets.length === 0 && (
+          <p className={DESC_CLASS}>Loading saved datasets…</p>
+        )}
+        {!datasetsLoading && datasets.length === 0 && (
+          <div className="px-6 py-8 rounded-xl bg-bg-surface border border-border/50 text-center space-y-3">
+            <div className="mx-auto w-10 h-10 rounded-xl bg-accent/10 text-accent flex items-center justify-center">
+              <RefreshCw size={20} strokeWidth={2} />
             </div>
-            <div>
-              <label className={FIELD_LABEL_CLASS} htmlFor="sync-port">Port</label>
-              <input
-                id="sync-port"
-                data-testid="settings-sync-port"
-                type="number"
-                min={1}
-                max={65535}
-                value={endpoint.port}
-                onChange={(e) => setEndpoint({ port: Number(e.target.value) || 22 })}
-                className={TEXT_INPUT_CLASS}
-              />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3 mt-3">
-            <div>
-              <label className={FIELD_LABEL_CLASS} htmlFor="sync-username">Username</label>
-              <input
-                id="sync-username"
-                data-testid="settings-sync-username"
-                type="text"
-                autoComplete="off"
-                spellCheck={false}
-                value={endpoint.username}
-                onChange={(e) => setEndpoint({ username: e.target.value })}
-                className={TEXT_INPUT_CLASS}
-              />
-            </div>
-            <div>
-              <label className={FIELD_LABEL_CLASS} htmlFor="sync-path">Remote path</label>
-              <input
-                id="sync-path"
-                data-testid="settings-sync-path"
-                type="text"
-                autoComplete="off"
-                spellCheck={false}
-                placeholder="/srv/omnissh/my-hosts"
-                value={endpoint.remotePath}
-                onChange={(e) => setEndpoint({ remotePath: e.target.value })}
-                className={TEXT_INPUT_CLASS}
-              />
-            </div>
-          </div>
-
-          <div className="mt-3">
-            <div className="flex items-center gap-4 mb-1">
-              <span className={FIELD_LABEL_CLASS}>Authentication</span>
-              <label className="flex items-center gap-1.5 text-[length:var(--text-xs)] text-text-secondary">
-                <input
-                  type="radio"
-                  name="sync-auth"
-                  data-testid="settings-sync-auth-password"
-                  checked={!useKey}
-                  onChange={() => { setUseKey(false); setEndpoint({ keyPath: "" }); }}
-                />
-                Password
-              </label>
-              <label className="flex items-center gap-1.5 text-[length:var(--text-xs)] text-text-secondary">
-                <input
-                  type="radio"
-                  name="sync-auth"
-                  data-testid="settings-sync-auth-key"
-                  checked={useKey}
-                  onChange={() => { setUseKey(true); setPassword(""); }}
-                />
-                Private key
-              </label>
-            </div>
-            {useKey ? (
-              <div className="grid grid-cols-2 gap-3">
-                <input
-                  data-testid="settings-sync-key-path"
-                  type="text"
-                  autoComplete="off"
-                  spellCheck={false}
-                  placeholder="~/.ssh/id_ed25519"
-                  value={endpoint.keyPath}
-                  onChange={(e) => setEndpoint({ keyPath: e.target.value })}
-                  className={TEXT_INPUT_CLASS}
-                  aria-label="Private key path"
-                />
-                <input
-                  data-testid="settings-sync-key-passphrase"
-                  type="password"
-                  autoComplete="off"
-                  placeholder="Key passphrase (optional)"
-                  value={keyPassphrase}
-                  onChange={(e) => setKeyPassphrase(e.target.value)}
-                  className={TEXT_INPUT_CLASS}
-                  aria-label="Private key passphrase"
-                />
-              </div>
-            ) : (
-              <input
-                data-testid="settings-sync-password"
-                type="password"
-                autoComplete="off"
-                placeholder="Server password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className={TEXT_INPUT_CLASS}
-                aria-label="Server password"
-              />
-            )}
-          </div>
-
-          <div className="flex items-center gap-3 mt-4">
-            <button
-              type="button"
-              data-testid="settings-sync-test"
-              onClick={() => void runTest()}
-              disabled={testing}
-              className={BTN_SECONDARY}
-            >
-              <RefreshCw size={13} strokeWidth={2} className={testing ? "animate-spin" : undefined} />
-              {testing ? "Testing…" : "Test connection"}
-            </button>
-            <p className={DESC_CLASS}>
-              Nothing is written to the server — the test only reports what is already there.
-            </p>
-          </div>
-
-          {error && (
-            <p
-              data-testid="settings-sync-test-error"
-              className="flex items-start gap-1.5 mt-3 text-[length:var(--text-xs)] text-status-error"
-            >
-              <AlertCircle size={13} strokeWidth={2} className="mt-0.5 shrink-0" />
-              <span>
-                {error}
-                {errorKind && SYNC_ERROR_HINTS[errorKind]
-                  ? ` ${SYNC_ERROR_HINTS[errorKind]}`
-                  : null}
-              </span>
-            </p>
-          )}
-
-          {testResult && (
-            <div
-              data-testid="settings-sync-test-result"
-              className="mt-3 px-3 py-2.5 rounded-lg bg-bg-base border border-border/60 text-[length:var(--text-xs)] text-text-secondary"
-            >
-              <p className="flex items-center gap-1.5 text-status-success">
-                <CheckCircle2 size={13} strokeWidth={2} /> Connected over SFTP.
+            <div className="max-w-md mx-auto space-y-1">
+              <p className={LABEL_CLASS}>No dataset saved yet</p>
+              <p className={DESC_CLASS}>
+                Publish your hosts, credentials, and settings to an encrypted SFTP directory on a server you own.
               </p>
-              <ul className="mt-1.5 space-y-1">
-                <li>
-                  {testResult.pathExists
-                    ? "Remote path exists."
-                    : "Remote path does not exist yet — it will be created on the first sync."}
-                </li>
-                <li>
-                  {testResult.writable
-                    ? "This account can write to it."
-                    : "This account cannot write to it — you can pull from this dataset but not publish to it."}
-                </li>
-                {testResult.existingDataset ? (
-                  <li data-testid="settings-sync-existing-dataset">
-                    A dataset is already published here: generation{" "}
-                    {testResult.existingDataset.generation}, updated{" "}
-                    {testResult.existingDataset.updatedAt}
-                    {testResult.existingDataset.signed ? ", signed by its owner" : ", unsigned"}.
-                    Syncing with it needs that dataset’s passphrase.
-                  </li>
-                ) : (
-                  <li>No dataset here yet.</li>
-                )}
-                {testResult.metadataError && (
-                  <li className="text-status-error">{testResult.metadataError}</li>
-                )}
-              </ul>
             </div>
-          )}
-        </div>
-      </SettingsGroup>
-
-      <SettingsGroup label="Dataset">
-        <div className="px-4 py-3 rounded-xl bg-bg-surface border border-border/50">
-          {editing && (
-            <p
-              data-testid="settings-sync-editing"
-              className="flex items-start gap-1.5 mb-3 px-3 py-2 rounded-lg bg-status-connecting/10 border border-status-connecting/30 text-[length:var(--text-xs)] text-text-secondary"
-            >
-              <Pencil size={13} strokeWidth={2} className="text-status-connecting shrink-0 mt-0.5" />
-              <span>
-                Editing “{editing.name}” — it is saved as this dataset’s new settings, and
-                whatever is already published on the server is left as it is.
-              </span>
-            </p>
-          )}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className={FIELD_LABEL_CLASS} htmlFor="sync-name">Dataset name</label>
-              <input
-                id="sync-name"
-                data-testid="settings-sync-name"
-                type="text"
-                autoComplete="off"
-                spellCheck={false}
-                placeholder="NOVA"
-                value={name}
-                onChange={(e) => {
-                  setName(e.target.value);
-                  setFormError(null);
-                  clearSaveOutcome();
-                }}
-                className={TEXT_INPUT_CLASS}
-              />
-            </div>
-            <div>
-              <label className={FIELD_LABEL_CLASS} htmlFor="sync-passphrase">Dataset passphrase</label>
-              <input
-                id="sync-passphrase"
-                data-testid="settings-sync-passphrase"
-                type="password"
-                autoComplete="new-password"
-                value={passphrase}
-                onChange={(e) => {
-                  setPassphrase(e.target.value);
-                  setFormError(null);
-                  clearSaveOutcome();
-                }}
-                className={TEXT_INPUT_CLASS}
-              />
-            </div>
-          </div>
-          <p className={DESC_CLASS}>
-            The passphrase encrypts the dataset on this computer — it is never sent to the
-            server, and every other machine needs the same passphrase to read the hosts back.
-            {" "}Every save needs it again: OmniSSH verifies it against the dataset key before
-            storing anything, so an update can never lock you out of what is already published.
-          </p>
-          {(passphraseTooShort || formError) && (
-            <p
-              data-testid="settings-sync-passphrase-error"
-              className="mt-1 text-[length:var(--text-xs)] text-status-error"
-            >
-              {formError
-                ?? `Use at least ${MIN_DATASET_PASSPHRASE} characters for the dataset passphrase.`}
-            </p>
-          )}
-
-          <p className={`${LABEL_CLASS} mt-5`}>Your role in this dataset</p>
-          <div className="mt-2 space-y-1" role="radiogroup" aria-label="Dataset role">
-            {([
-              { value: "owner" as const, label: "Owner — can publish", hint: "First machine to publish; signs each generation." },
-              { value: "member" as const, label: "Member — pull only", hint: "Join someone else's dataset; publishing is refused." },
-            ]).map(({ value, label, hint }) => (
-              <label key={value} className="flex items-start gap-2 cursor-pointer">
-                <input
-                  type="radio"
-                  name="sync-role"
-                  data-testid={`settings-sync-role-${value}`}
-                  className="mt-0.5 w-3.5 h-3.5 shrink-0 border-border text-accent focus:ring-ring cursor-pointer"
-                  checked={role === value}
-                  onChange={() => { setRole(value); clearSaveOutcome(); clearDatasetError(); }}
-                />
-                <span className="text-[length:var(--text-xs)] text-text-secondary">
-                  {label}
-                  <span className="block mt-0.5 text-text-muted">{hint}</span>
-                </span>
-              </label>
-            ))}
-          </div>
-
-          {role === "member" ? (
-            <p data-testid="settings-sync-member-note" className={`${DESC_CLASS} mt-4`}>
-              Members pull what the owner published. Which hosts that is, and which content
-              kinds are published, are the owner&apos;s call — so this form does not ask.
-            </p>
-          ) : (
-          <>
-          <p className={`${LABEL_CLASS} mt-5`}>Which hosts this dataset carries</p>
-          <div className="mt-2 space-y-1" role="radiogroup" aria-label="Dataset scope">
-            {SCOPE_MODES.map(({ mode, label, hint }) => (
-              <label key={mode} className="flex items-start gap-2 cursor-pointer">
-                <input
-                  type="radio"
-                  name="sync-scope"
-                  data-testid={`settings-sync-scope-${mode}`}
-                  className="mt-0.5 w-3.5 h-3.5 shrink-0 border-border text-accent focus:ring-ring cursor-pointer"
-                  checked={scopeMode === mode}
-                  onChange={() => chooseScopeMode(mode)}
-                />
-                <span className="text-[length:var(--text-xs)] text-text-secondary">
-                  {label}
-                  <span className="block mt-0.5 text-text-muted">{hint}</span>
-                </span>
-              </label>
-            ))}
-          </div>
-          {scopeMode === "groups" && (
-            <ScopePicker
-              legend="Groups in this dataset"
-              items={groups.map((group) => ({ id: group.id, name: group.name }))}
-              selected={scopeMemberIds}
-              testidPrefix="groups"
-              onToggle={toggleScopeMember}
-            />
-          )}
-          {scopeMode === "hosts" && (
-            <ScopePicker
-              legend="Hosts in this dataset"
-              items={hosts.map((host) => ({ id: host.id, name: host.label || host.host }))}
-              selected={scopeMemberIds}
-              testidPrefix="hosts"
-              onToggle={toggleScopeMember}
-            />
-          )}
-          <p
-            data-testid="settings-sync-scope-count"
-            aria-live="polite"
-            className={`mt-2 text-[length:var(--text-xs)] ${scopeError ? "text-status-error" : "text-text-muted"}`}
-          >
-            {scopeError
-              ? `This dataset needs a scope. ${scopeError}`
-              : `${scopeCount} host${scopeCount === 1 ? "" : "s"} in scope`}
-          </p>
-          </>
-          )}
-
-          {/* Content kinds are not push-only: a pull applies only the kinds
-              this machine enables, so a member keeps this control even though
-              the owner decides what is published. */}
-          <p className={`${LABEL_CLASS} mt-5`}>
-            {role === "member" ? "What this machine pulls" : "What this dataset publishes"}
-          </p>
-          <div className="mt-2 space-y-2">
-            {CONTENT_TOGGLES.map(({ kind, label, parent, hint }) => {
-              const disabled = parent ? !contentFlags[parent] : false;
-              return (
-                <label
-                  key={kind}
-                  className={`flex items-start gap-2 ${parent ? "ml-6" : ""} ${disabled ? "opacity-50" : ""}`}
-                >
-                  <input
-                    type="checkbox"
-                    data-testid={`settings-sync-content-${kind}`}
-                    className="mt-0.5 w-3.5 h-3.5 shrink-0 rounded border-border text-accent focus:ring-ring cursor-pointer disabled:opacity-50 disabled:cursor-default"
-                    checked={contentFlags[kind]}
-                    disabled={disabled}
-                    onChange={(e) => toggleContent(kind, e.target.checked)}
-                  />
-                  <span className="text-[length:var(--text-xs)] text-text-secondary">
-                    {label}
-                    {hint && <span className="block mt-0.5 text-text-muted">{hint}</span>}
-                  </span>
-                </label>
-              );
-            })}
-          </div>
-
-          <div className="flex items-center gap-3 mt-4">
             <button
               type="button"
-              data-testid="settings-sync-save"
-              onClick={() => void handleSave()}
-              disabled={saving}
+              data-testid="settings-sync-empty-add"
+              onClick={openAdd}
               className={BTN_SECONDARY}
             >
-              {saving
-                ? <RefreshCw size={13} strokeWidth={2} className="animate-spin" />
-                : <Save size={13} strokeWidth={2} />}
-              {saving ? "Saving…" : editing ? "Update dataset" : "Save dataset"}
+              <Plus size={13} strokeWidth={2} /> Add dataset
             </button>
-            {editing && (
-              <button
-                type="button"
-                data-testid="settings-sync-cancel-edit"
-                onClick={cancelEdit}
-                disabled={saving}
-                className={BTN_SECONDARY}
-              >
-                Cancel
-              </button>
-            )}
-            <p className={DESC_CLASS}>
-              The passphrase and the server login are stored on this computer, not on the server.
-            </p>
           </div>
-
-          {saveOutcome && <SyncSaveReport outcome={saveOutcome} />}
-        </div>
-      </SettingsGroup>
-
-      <SettingsGroup label="Saved datasets">
-        {datasetError && (
-          <p
-            data-testid="settings-sync-dataset-error"
-            className="flex items-start gap-1.5 mb-3 text-[length:var(--text-xs)] text-status-error"
-          >
-            <AlertCircle size={13} strokeWidth={2} className="mt-0.5 shrink-0" />
-            <span>
-              {datasetError}
-              {datasetErrorKind && SYNC_ERROR_HINTS[datasetErrorKind]
-                ? ` ${SYNC_ERROR_HINTS[datasetErrorKind]}`
-                : null}
-            </span>
-          </p>
         )}
 
-        <div className="space-y-3">
-          {datasetsLoading && datasets.length === 0 && (
-            <p className={DESC_CLASS}>Loading saved datasets…</p>
-          )}
-          {!datasetsLoading && datasets.length === 0 && (
-            <div className="px-4 py-3 rounded-xl bg-bg-surface border border-border/50">
-              <p className={DESC_CLASS}>
-                No dataset saved yet. Fill in the server details above, choose a passphrase,
-                and press “Save dataset”.
-              </p>
-            </div>
-          )}
-
-          {datasets.map((dataset) => {
-            /* One claim at a time per row: a push, a pull, and a rollback all
-             * write the same records, so the row disables its buttons while any
-             * of them runs. */
-            const busy = pushing === dataset.id || pulling === dataset.id
-              || rollingBack === dataset.id;
-            const blocked = preflight?.datasetId === dataset.id
-              && preflight.includeCredentials
-              && (preflight.vaultLocked || preflight.credentialsBlocked > 0);
-            const outcome = pushResult?.datasetId === dataset.id ? pushResult : null;
-            const pulled = pullResult?.datasetId === dataset.id ? pullResult : null;
-            const missingSecret = describeMissingDatasetSecrets(dataset);
-            const preserved = pulled ? describePreserved(pulled.keptLocal, pulled.conflicts) : [];
-            const showConflicts = pulled !== null && (pulled.conflicts > 0 || conflicts.length > 0);
-            return (
-              <div
-                key={dataset.id}
-                data-testid={`settings-sync-dataset-${dataset.id}`}
-                className="px-4 py-3 rounded-xl bg-bg-surface border border-border/50"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className={LABEL_CLASS}>{dataset.name}</p>
-                    <p className="text-[length:var(--text-xs)] font-mono text-text-muted truncate">
-                      {dataset.username}@{dataset.host}:{dataset.port}
-                    </p>
-                    <p className="text-[length:var(--text-xs)] text-text-muted truncate">
-                      {dataset.remotePath}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      data-testid="settings-sync-edit"
-                      onClick={() => beginEdit(dataset)}
-                      disabled={busy}
-                      className={BTN_SECONDARY}
-                      aria-label={`Edit the dataset “${dataset.name}”`}
-                    >
-                      <Pencil size={13} strokeWidth={2} /> Edit
-                    </button>
-                    {dataset.role === "owner" && (
-                      <button
-                        type="button"
-                        data-testid="settings-sync-push"
-                        onClick={() => void runPush(dataset.id)}
-                        disabled={busy}
-                        className={BTN_SECONDARY}
-                      >
-                        <Upload size={13} strokeWidth={2} />
-                        {pushing === dataset.id ? "Pushing…" : "Push now"}
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      data-testid="settings-sync-pull"
-                      onClick={() => void runPull(dataset.id)}
-                      disabled={busy}
-                      className={BTN_SECONDARY}
-                    >
-                      <Download size={13} strokeWidth={2} />
-                      {pulling === dataset.id ? "Pulling…" : "Pull now"}
-                    </button>
-                    <button
-                      type="button"
-                      data-testid="settings-sync-remove"
-                      onClick={() => setConfirmRemove(dataset)}
-                      disabled={busy}
-                      className={BTN_SECONDARY}
-                    >
-                      <Trash2 size={13} strokeWidth={2} /> Remove
-                    </button>
-                  </div>
-                </div>
-
-                <p className="mt-2 text-[length:var(--text-xs)] text-text-muted">
-                  {dataset.role === "owner" ? "Owner — can publish" : "Member — pull only"}
-                  {" · "}generation {dataset.lastGeneration}
-                  {" · "}
-                  {dataset.lastSyncedAt
-                    ? `last synced ${relativeTime(dataset.lastSyncedAt)}`
-                    : "never synced"}
-                </p>
-
-                {/* Secrets never travel in a backup, so a dataset restored on
-                    another machine arrives without the keychain entries it
-                    needs. Name them here; the alternative is a push or pull
-                    failing on a keychain lookup the user cannot see. */}
-                {missingSecret && (
-                  <div
-                    data-testid={`settings-sync-needs-secret-${dataset.id}`}
-                    className="flex items-start gap-2 mt-2 px-3 py-2.5 rounded-lg bg-status-warning/10 border border-status-warning/30"
-                  >
-                    <AlertTriangle
-                      size={13}
-                      strokeWidth={2}
-                      className="text-status-warning shrink-0 mt-0.5"
-                    />
-                    <span className="text-[length:var(--text-xs)] text-text-secondary">
-                      This machine is missing {missingSecret} for this dataset. A backup carries
-                      no secrets, so a dataset restored from one comes back without them — open
-                      Edit, enter {missingSecret}, and save to sync again.
+        {datasets.map((dataset) => {
+          /* One claim at a time per row: a push, a pull, and a rollback all
+           * write the same records, so the row disables its buttons while any
+           * of them runs. */
+          const busy = pushing === dataset.id || pulling === dataset.id
+            || rollingBack === dataset.id;
+          const blocked = preflight?.datasetId === dataset.id
+            && preflight.includeCredentials
+            && (preflight.vaultLocked || preflight.credentialsBlocked > 0);
+          const outcome = pushResult?.datasetId === dataset.id ? pushResult : null;
+          const pulled = pullResult?.datasetId === dataset.id ? pullResult : null;
+          const missingSecret = describeMissingDatasetSecrets(dataset);
+          const preserved = pulled ? describePreserved(pulled.keptLocal, pulled.conflicts) : [];
+          const showConflicts = pulled !== null && (pulled.conflicts > 0 || conflicts.length > 0);
+          return (
+            <div
+              key={dataset.id}
+              data-testid={`settings-sync-dataset-${dataset.id}`}
+              className="px-4 py-3.5 rounded-xl bg-bg-surface border border-border/50 space-y-3"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className={`${LABEL_CLASS} font-semibold`}>{dataset.name}</p>
+                    <span className={`px-2 py-0.5 text-[length:var(--text-2xs)] font-medium rounded-full border ${
+                      dataset.role === "owner"
+                        ? "bg-accent/10 text-accent border-accent/20"
+                        : "bg-bg-subtle text-text-secondary border-border"
+                    }`}>
+                      {dataset.role === "owner" ? "Owner — can publish" : "Member — pull only"}
+                    </span>
+                    <span className="px-2 py-0.5 text-[length:var(--text-2xs)] font-mono text-text-muted rounded-full bg-bg-base border border-border/50">
+                      generation {dataset.lastGeneration}
                     </span>
                   </div>
-                )}
+                  <p className="text-[length:var(--text-xs)] font-mono text-text-muted truncate mt-1">
+                    {dataset.username}@{dataset.host}:{dataset.port} · {dataset.remotePath}
+                  </p>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    data-testid="settings-sync-edit"
+                    onClick={() => beginEdit(dataset)}
+                    disabled={busy}
+                    className={BTN_SECONDARY}
+                    aria-label={`Edit the dataset “${dataset.name}”`}
+                  >
+                    <Pencil size={13} strokeWidth={2} /> Edit
+                  </button>
+                  {dataset.role === "owner" && (
+                    <button
+                      type="button"
+                      data-testid="settings-sync-push"
+                      onClick={() => void runPush(dataset.id)}
+                      disabled={busy}
+                      className={BTN_SECONDARY}
+                    >
+                      <Upload size={13} strokeWidth={2} />
+                      {pushing === dataset.id ? "Pushing…" : "Push now"}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    data-testid="settings-sync-pull"
+                    onClick={() => void runPull(dataset.id)}
+                    disabled={busy}
+                    className={BTN_SECONDARY}
+                  >
+                    <Download size={13} strokeWidth={2} />
+                    {pulling === dataset.id ? "Pulling…" : "Pull now"}
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="settings-sync-remove"
+                    onClick={() => setConfirmRemove(dataset)}
+                    disabled={busy}
+                    className={BTN_SECONDARY}
+                  >
+                    <Trash2 size={13} strokeWidth={2} /> Remove
+                  </button>
+                </div>
+              </div>
 
-                {/* What the dataset actually carries, not what its form last
-                    said: a group that gained a host since the save is counted
-                    here without touching the dataset. */}
+              <div className="text-[length:var(--text-xs)] space-y-1">
                 <p
                   data-testid={`settings-sync-scope-summary-${dataset.id}`}
-                  className="mt-1 text-[length:var(--text-xs)] text-text-muted"
+                  className="text-text-muted"
                 >
-                  {/* A member stores no scope of its own — the row shows who
-                      decides instead of a count it does not use. */}
                   {dataset.role === "member"
                     ? "Scope: set by the dataset owner"
                     : dataset.scopeMode === "all"
@@ -2613,15 +1881,16 @@ function SyncSettings() {
                       {dataset.scopeHostCount} host{dataset.scopeHostCount === 1 ? "" : "s"} in scope
                     </>
                   )}
+                  {" · "}
+                  {dataset.lastSyncedAt
+                    ? `last synced ${relativeTime(dataset.lastSyncedAt)}`
+                    : "never synced"}
                 </p>
 
-                {/* Generation 0 is not a number to read past: it says this
-                    dataset holds nothing on the server yet, which is the state
-                    a mistyped remote path leaves behind. */}
                 {dataset.lastGeneration === 0 && (
                   <p
                     data-testid={`settings-sync-unpublished-${dataset.id}`}
-                    className="mt-1 text-[length:var(--text-xs)] text-status-connecting"
+                    className="text-status-connecting"
                   >
                     Nothing is published at {dataset.remotePath} yet — press Push now to create
                     the first generation.
@@ -2633,92 +1902,119 @@ function SyncSettings() {
                   status={statuses[dataset.id]}
                   busy={pushing === dataset.id ? "pushing" : pulling === dataset.id ? "pulling" : null}
                 />
-                {dataset.role === "member" && preflight?.datasetId === dataset.id && preflight.remoteWritable && (
-                  <div
-                    data-testid="settings-sync-member-writable-warning"
-                    className="flex items-start gap-2 mt-2 px-3 py-2.5 rounded-lg bg-status-warning/10 border border-status-warning/30"
-                  >
-                    <AlertTriangle
-                      size={13}
-                      strokeWidth={2}
-                      className="text-status-warning shrink-0 mt-0.5"
-                    />
-                    <span className="text-[length:var(--text-xs)] text-text-secondary">
-                      This account can still write to {dataset.remotePath}, so the server is not
-                      enforcing this dataset's pull-only role. Use a read-only SSH account for
-                      members, or make the dataset directory read-only on the server
-                      (for example with chmod), so a member can never publish over the owner's
-                      dataset by accident.
-                    </span>
-                  </div>
-                )}
-
-                {blocked && preflight && (
-                  <div
-                    data-testid="settings-sync-preflight-warning"
-                    className="flex items-start gap-2 mt-2 px-3 py-2.5 rounded-lg bg-status-connecting/10 border border-status-connecting/30"
-                  >
-                    <AlertTriangle
-                      size={13}
-                      strokeWidth={2}
-                      className="text-status-connecting shrink-0 mt-0.5"
-                    />
-                    <span className="text-[length:var(--text-xs)] text-text-secondary">
-                      {preflight.vaultLocked
-                        ? "Unlock the App Vault to include credentials."
-                        : `${preflight.credentialsBlocked} stored credential${preflight.credentialsBlocked === 1 ? "" : "s"} cannot be read on this computer.`}
-                      {" "}Nothing was pushed — publish without them by turning the credential
-                      toggles off, or unlock the vault and push again.
-                    </span>
-                  </div>
-                )}
-
-                {outcome && (
-                  <div
-                    data-testid="settings-sync-push-result"
-                    className="mt-2 px-3 py-2.5 rounded-lg bg-bg-base border border-border/60 text-[length:var(--text-xs)] text-text-secondary"
-                  >
-                    <p className="flex items-center gap-1.5 text-status-success">
-                      <CheckCircle2 size={13} strokeWidth={2} /> Pushed generation {outcome.generation}.
-                    </p>
-                    <p className="mt-1">{describePush(outcome)}</p>
-                  </div>
-                )}
-
-                {pulled && (
-                  <div
-                    data-testid="settings-sync-pull-result"
-                    className="mt-2 px-3 py-2.5 rounded-lg bg-bg-base border border-border/60 text-[length:var(--text-xs)] text-text-secondary"
-                  >
-                    <p className="flex items-center gap-1.5 text-status-success">
-                      <CheckCircle2 size={13} strokeWidth={2} /> Pulled generation {pulled.generation}.
-                    </p>
-                    <p className="mt-1">
-                      {describeAppliedCounts(pulled.applied, pulled.deleted, pulled.credentialsApplied)}
-                    </p>
-                    {pulled.publishedByAnotherMachine && (
-                      <p data-testid="settings-sync-other-writer" className="mt-1">
-                        This update came from another computer.
-                      </p>
-                    )}
-                    {preserved.length > 0 && <p className="mt-1">{preserved.join(" · ")}</p>}
-                  </div>
-                )}
-
-                {showConflicts && <SyncConflictLog conflicts={conflicts} />}
-
-                {/* Only an owner can act on history: rolling back publishes a
-                    new generation, which the backend refuses for a member. */}
-                {dataset.role === "owner" && (
-                  <SyncHistoryPanel dataset={dataset} busy={busy} />
-                )}
-
-                <SyncScheduleControls dataset={dataset} />
               </div>
-            );
-          })}
-        </div>
-      </SettingsGroup>
+
+              {missingSecret && (
+                <div
+                  data-testid={`settings-sync-needs-secret-${dataset.id}`}
+                  className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-status-warning/10 border border-status-warning/30"
+                >
+                  <AlertTriangle
+                    size={13}
+                    strokeWidth={2}
+                    className="text-status-warning shrink-0 mt-0.5"
+                  />
+                  <span className="text-[length:var(--text-xs)] text-text-secondary">
+                    This machine is missing {missingSecret} for this dataset. A backup carries
+                    no secrets, so a dataset restored from one comes back without them — open
+                    Edit, enter {missingSecret}, and save to sync again.
+                  </span>
+                </div>
+              )}
+
+              {dataset.role === "member" && preflight?.datasetId === dataset.id && preflight.remoteWritable && (
+                <div
+                  data-testid="settings-sync-member-writable-warning"
+                  className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-status-warning/10 border border-status-warning/30"
+                >
+                  <AlertTriangle
+                    size={13}
+                    strokeWidth={2}
+                    className="text-status-warning shrink-0 mt-0.5"
+                  />
+                  <span className="text-[length:var(--text-xs)] text-text-secondary">
+                    This account can still write to {dataset.remotePath}, so the server is not
+                    enforcing this dataset's pull-only role. Use a read-only SSH account for
+                    members, or make the dataset directory read-only on the server
+                    (for example with chmod), so a member can never publish over the owner's
+                    dataset by accident.
+                  </span>
+                </div>
+              )}
+
+              {blocked && preflight && (
+                <div
+                  data-testid="settings-sync-preflight-warning"
+                  className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-status-connecting/10 border border-status-connecting/30"
+                >
+                  <AlertTriangle
+                    size={13}
+                    strokeWidth={2}
+                    className="text-status-connecting shrink-0 mt-0.5"
+                  />
+                  <span className="text-[length:var(--text-xs)] text-text-secondary">
+                    {preflight.vaultLocked
+                      ? "Unlock the App Vault to include credentials."
+                      : `${preflight.credentialsBlocked} stored credential${preflight.credentialsBlocked === 1 ? "" : "s"} cannot be read on this computer.`}
+                    {" "}Nothing was pushed — publish without them by turning the credential
+                    toggles off, or unlock the vault and push again.
+                  </span>
+                </div>
+              )}
+
+              {outcome && (
+                <div
+                  data-testid="settings-sync-push-result"
+                  className="px-3 py-2.5 rounded-lg bg-bg-base border border-border/60 text-[length:var(--text-xs)] text-text-secondary"
+                >
+                  <p className="flex items-center gap-1.5 text-status-success">
+                    <CheckCircle2 size={13} strokeWidth={2} /> Pushed generation {outcome.generation}.
+                  </p>
+                  <p className="mt-1">{describePush(outcome)}</p>
+                </div>
+              )}
+
+              {pulled && (
+                <div
+                  data-testid="settings-sync-pull-result"
+                  className="px-3 py-2.5 rounded-lg bg-bg-base border border-border/60 text-[length:var(--text-xs)] text-text-secondary"
+                >
+                  <p className="flex items-center gap-1.5 text-status-success">
+                    <CheckCircle2 size={13} strokeWidth={2} /> Pulled generation {pulled.generation}.
+                  </p>
+                  <p className="mt-1">
+                    {describeAppliedCounts(pulled.applied, pulled.deleted, pulled.credentialsApplied)}
+                  </p>
+                  {pulled.publishedByAnotherMachine && (
+                    <p data-testid="settings-sync-other-writer" className="mt-1">
+                      This update came from another computer.
+                    </p>
+                  )}
+                  {preserved.length > 0 && <p className="mt-1">{preserved.join(" · ")}</p>}
+                </div>
+              )}
+
+              {showConflicts && <SyncConflictLog conflicts={conflicts} />}
+
+              {dataset.role === "owner" && (
+                <SyncHistoryPanel dataset={dataset} busy={busy} />
+              )}
+
+              <SyncScheduleControls dataset={dataset} />
+            </div>
+          );
+        })}
+      </div>
+
+      <SyncDatasetModal
+        open={modalOpen}
+        editing={editing}
+        onClose={() => {
+          setModalOpen(false);
+          setEditing(null);
+        }}
+        onCancelEdit={() => setEditing(null)}
+      />
 
       <ConfirmDangerDialog
         open={confirmRemove !== null}
@@ -2728,7 +2024,7 @@ function SyncSettings() {
         onConfirm={() => void handleRemove()}
         onCancel={() => setConfirmRemove(null)}
       />
-    </>
+    </div>
   );
 }
 

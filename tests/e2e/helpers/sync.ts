@@ -88,7 +88,7 @@ export async function openSyncSection(): Promise<void> {
     const section = await $("[data-testid='settings-nav-sync']");
     await section.waitForClickable({ timeout: 10_000 });
     await section.click();
-    await (await $("[data-testid='settings-sync-host']")).waitForDisplayed({ timeout: 10_000 });
+    await (await $("[data-testid='settings-sync-container']")).waitForDisplayed({ timeout: 10_000 });
 }
 
 async function setField(testid: string, value: string): Promise<void> {
@@ -99,6 +99,13 @@ async function setField(testid: string, value: string): Promise<void> {
 
 /** Fill the endpoint form. Password auth is the only mode the sync spec uses. */
 export async function configureSyncEndpoint(endpoint = SYNC_ENDPOINT): Promise<void> {
+    const hostInput = await $("[data-testid='settings-sync-host']");
+    if (!(await hostInput.isDisplayed())) {
+        const emptyAdd = await $("[data-testid='settings-sync-empty-add']");
+        const addBtn = (await emptyAdd.isExisting()) ? emptyAdd : await $("[data-testid='settings-sync-add']");
+        await addBtn.waitForClickable({ timeout: 5_000 });
+        await addBtn.click();
+    }
     await setField("settings-sync-host", endpoint.host);
     await setField("settings-sync-port", String(endpoint.port));
     await setField("settings-sync-username", endpoint.username);

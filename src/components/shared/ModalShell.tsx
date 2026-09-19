@@ -6,16 +6,16 @@ import { ModalBackdrop } from "./ModalBackdrop";
 // Import these in any modal footer so every button looks identical.
 
 export const BTN_GHOST =
-  "px-4 py-1.5 text-[length:var(--text-sm)] font-medium text-text-secondary hover:text-text-primary rounded-lg transition-colors duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";
+  "inline-flex items-center justify-center gap-2 px-4 py-1.5 text-[length:var(--text-sm)] font-medium text-text-secondary hover:text-text-primary rounded-lg transition-colors duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer";
 
 export const BTN_SECONDARY =
-  "px-4 py-1.5 text-[length:var(--text-sm)] font-medium text-text-secondary hover:text-text-primary bg-bg-subtle hover:bg-bg-muted border border-border disabled:opacity-50 rounded-lg transition-all duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+  "inline-flex items-center justify-center gap-2 px-4 py-1.5 text-[length:var(--text-sm)] font-medium text-text-secondary hover:text-text-primary bg-bg-subtle hover:bg-bg-muted border border-border disabled:opacity-50 rounded-lg transition-all duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring whitespace-nowrap shrink-0 cursor-pointer";
 
 export const BTN_PRIMARY =
-  "px-4 py-1.5 text-[length:var(--text-sm)] font-medium text-text-inverse bg-accent hover:bg-accent-hover disabled:opacity-50 rounded-lg transition-colors duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-bg-overlay";
+  "inline-flex items-center justify-center gap-2 px-4 py-1.5 text-[length:var(--text-sm)] font-medium text-text-inverse bg-accent hover:bg-accent-hover disabled:opacity-50 rounded-lg transition-colors duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-bg-overlay whitespace-nowrap shrink-0 cursor-pointer";
 
 export const BTN_DANGER =
-  "px-4 py-1.5 text-[length:var(--text-sm)] font-medium text-text-inverse bg-status-error hover:opacity-90 active:opacity-80 disabled:opacity-50 rounded-lg transition-opacity duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+  "inline-flex items-center justify-center gap-2 px-4 py-1.5 text-[length:var(--text-sm)] font-medium text-text-inverse bg-status-error hover:opacity-90 active:opacity-80 disabled:opacity-50 rounded-lg transition-opacity duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring whitespace-nowrap shrink-0 cursor-pointer";
 
 // ─── ModalShell ───────────────────────────────────────────────────────────────
 
@@ -24,6 +24,9 @@ const MAX_W: Record<NonNullable<ModalShellProps["maxWidth"]>, string> = {
   md: "max-w-md",
   lg: "max-w-lg",
   xl: "max-w-xl",
+  "2xl": "max-w-2xl",
+  "3xl": "max-w-3xl",
+  "4xl": "max-w-4xl",
 };
 
 export interface ModalShellProps {
@@ -45,7 +48,7 @@ export interface ModalShellProps {
    */
   iconNode?: React.ReactNode;
   /** Panel max-width. Defaults to "lg". */
-  maxWidth?: "sm" | "md" | "lg" | "xl";
+  maxWidth?: "sm" | "md" | "lg" | "xl" | "2xl" | "3xl" | "4xl";
   /** Adds overflow-y-auto + flex-1 + min-h-0 to the body and max-h-[84vh] to the panel. */
   scrollable?: boolean;
   /** Prevents backdrop click and Escape from closing the dialog. */

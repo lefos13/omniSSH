@@ -59,7 +59,16 @@ function commandCalls(command: string): unknown[][] {
   return invoke.mock.calls.filter((call) => call[0] === command);
 }
 
+function ensureFormOpen() {
+  if (!screen.queryByTestId("settings-sync-host")) {
+    const addBtn =
+      screen.queryByTestId("settings-sync-add") || screen.queryByTestId("settings-sync-empty-add");
+    if (addBtn) fireEvent.click(addBtn);
+  }
+}
+
 function fillEndpoint() {
+  ensureFormOpen();
   fireEvent.change(screen.getByTestId("settings-sync-host"), { target: { value: "10.0.0.9" } });
   fireEvent.change(screen.getByTestId("settings-sync-port"), { target: { value: "2299" } });
   fireEvent.change(screen.getByTestId("settings-sync-username"), { target: { value: "testuser" } });
@@ -136,11 +145,14 @@ const scopeHosts: SavedHost[] = [
 ];
 
 /** Mounts Settings ▸ Sync and waits for the on-mount dataset listing to settle. */
-async function openSyncSection() {
+async function openSyncSection(openFormIfEmpty = true) {
   render(<SettingsPage />);
   fireEvent.click(screen.getByTestId("settings-nav-sync"));
-  await screen.findByTestId("settings-sync-name");
+  await screen.findByTestId("settings-sync-container");
   await waitFor(() => expect(useSyncStore.getState().datasetsLoading).toBe(false));
+  if (openFormIfEmpty && useSyncStore.getState().datasets.length === 0) {
+    ensureFormOpen();
+  }
 }
 
 const probe: SyncConnectionTest = {
@@ -1346,6 +1358,24 @@ describe("SettingsPage dataset sync", () => {
     expect(within(row).getByTestId("settings-sync-manual-only")).toHaveTextContent(
       "both cadences are 0",
     );
+  });
+
+  it("hides push delay input on a member dataset and shows pull-only copy", async () => {
+    const memberDataset: SyncDatasetSummary = {
+      ...savedDataset,
+      id: "ds-member",
+      role: "member",
+    };
+    mockCommands({
+      sync_list_datasets: () => [memberDataset],
+      sync_update_schedule: () => memberDataset,
+    });
+    await openSyncSection();
+
+    const row = await screen.findByTestId("settings-sync-dataset-ds-member");
+    expect(within(row).getByTestId("settings-sync-pull-interval")).toBeInTheDocument();
+    expect(within(row).queryByTestId("settings-sync-push-debounce")).not.toBeInTheDocument();
+    expect(row).toHaveTextContent("Off — this dataset only syncs when you press Pull now.");
   });
 
   it("cautions about edits made elsewhere only on the rows that sync automatically", async () => {
