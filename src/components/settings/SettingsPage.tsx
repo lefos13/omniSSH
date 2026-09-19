@@ -3315,22 +3315,33 @@ function SecuritySettings() {
   const [preflightLoading, setPreflightLoading] = useState(false);
   const [migrating, setMigrating] = useState(false);
 
+  /* The mount-time preflight is IPC: it can settle after the page is gone
+   * (closing Settings, or a test tearing the render down), and a setState on
+   * an unmounted tree is an unhandled rejection, not a render. The flag is the
+   * cancellation this fire-and-forget call otherwise has none of. */
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; };
+  }, []);
+
   const fetchPreflight = useCallback(async () => {
+    if (!alive.current) return;
     setPreflightLoading(true);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const summary = await invoke<MigrationPreflightSummary>("local_vault_migration_preflight");
-      setPreflight(summary);
+      if (alive.current) setPreflight(summary);
     } catch {
       // Non-fatal preflight inspection
     } finally {
-      setPreflightLoading(false);
+      if (alive.current) setPreflightLoading(false);
     }
   }, []);
 
   useEffect(() => {
     void loadStatus().catch(() => {
-      toast.error("Couldn’t load encrypted vault status.");
+      if (alive.current) toast.error("Couldn’t load encrypted vault status.");
     });
     void fetchPreflight();
   }, [loadStatus, fetchPreflight]);
