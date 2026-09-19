@@ -412,6 +412,7 @@ export function SyncDatasetModal({
       ) : (
         <button
           type="button"
+          data-testid="settings-sync-modal-close"
           onClick={onClose}
           disabled={saving}
           className={BTN_SECONDARY}
