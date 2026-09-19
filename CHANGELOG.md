@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.2] - 2026-09-19
+
+### 🚀 Improvements
+
+#### 1. Complete Telemetry Removal & Absolute Privacy
+* **Zero Telemetry**: Fully eliminated the telemetry module, remote analytics submission, event capture loops, and related configurations.
+* **Leak-Proof Guarantee**: Verified that no analytics, connection counts, host data, crash statistics, or system metrics leave the local machine.
+
+#### 2. Refreshed Application Icons & Platform Bundles
+* **High-Resolution Multi-Platform Icons**: Overhauled application icons and platform asset bundles across macOS (`icon.icns`), Windows (`icon.ico`, Square logos), Linux, Android (adaptive mipmaps), and iOS.
+* **Optimized Web Favicons**: Replaced web icons and favicons with sharp, modernized brand graphics.
+
+#### 3. Submodule & Landing Page Synchronization
+* **OmniSSH Web 1.6.2**: Updated the landing page submodule with the Matrix digital rain background effect, refined cryptographic specifications, and updated release documentation.
+
 ## [1.6.1] - 2026-09-19
 
 ### 🚀 Improvements
