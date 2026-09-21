@@ -167,6 +167,70 @@
   --shadow-lg:  0 14px 32px oklch(0.290 0.020 260 / 0.14), 0 3px 10px oklch(0.290 0.020 260 / 0.08);
 }
 
+/*
+ * Matrix theme tokens: authentic cyber aesthetic inspired by omnissh-web.
+ * Combines deep dark phosphor green surfaces with cyber glass translucency,
+ * high-contrast text, glowing neon green accents, and subtle borders.
+ */
+:root[data-theme="matrix"] {
+  color-scheme: dark;
+
+  /* Matrix cyber dark: high-legibility frosted cyber glass surfaces over transparent base */
+  --color-bg-base:      oklch(0.080 0.025 155 / 0.05);
+  --color-bg-surface:   oklch(0.120 0.030 155 / 0.78);
+  --color-bg-overlay:   oklch(0.160 0.035 155 / 0.88);
+  --color-bg-subtle:    oklch(0.200 0.040 155 / 0.90);
+  --color-bg-muted:     oklch(0.240 0.040 155 / 0.94);
+
+  /* Matrix phosphor greens & bright cyber text */
+  --color-text-primary:   oklch(0.980 0.030 150);
+  --color-text-secondary: oklch(0.840 0.090 150);
+  --color-text-muted:     oklch(0.680 0.075 150);
+  --color-text-inverse:   oklch(0.095 0.025 155);
+
+  /* Accent: vibrant matrix neon green */
+  --color-accent:       oklch(0.800 0.250 var(--accent-hue, 150));
+  --color-accent-hover: oklch(0.750 0.250 var(--accent-hue, 150));
+  --color-accent-muted: oklch(0.800 0.250 var(--accent-hue, 150) / 0.22);
+
+  /* Status */
+  --color-status-connected:    oklch(0.820 0.240 150);
+  --color-status-connecting:   oklch(0.820 0.180 85);
+  --color-status-error:        oklch(0.700 0.230 25);
+  --color-status-disconnected: oklch(0.580 0.030 155);
+
+  /* Borders with subtle green phosphor luminance */
+  --color-border:       oklch(0.350 0.060 155 / 0.50);
+  --color-border-focus: oklch(0.800 0.250 var(--accent-hue, 150));
+  --color-ring:         oklch(0.800 0.250 var(--accent-hue, 150) / 0.40);
+
+  /* Glowing matrix shadows */
+  --shadow-sm:  0 1px 3px oklch(0 0 0 / 0.5);
+  --shadow-md:  0 2px 10px oklch(0 0 0 / 0.6), 0 0 14px oklch(0.800 0.250 150 / 0.18);
+  --shadow-lg:  0 8px 28px oklch(0 0 0 / 0.7), 0 0 28px oklch(0.800 0.250 150 / 0.22);
+}
+
+:root[data-theme="matrix"],
+:root[data-theme="matrix"] body,
+:root[data-theme="matrix"] #root {
+  background-color: #040805;
+}
+
+:root[data-theme="matrix"] nav[data-testid="sidebar"],
+:root[data-theme="matrix"] aside[data-testid="groups-sidebar"],
+:root[data-theme="matrix"] [data-testid^="host-card-"],
+:root[data-theme="matrix"] .bg-bg-surface {
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+:root[data-theme="matrix"] [role="dialog"],
+:root[data-theme="matrix"] dialog {
+  background-color: oklch(0.120 0.030 155 / 0.94);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
 /* --- Base Resets --- */
 
 html, body, #root {

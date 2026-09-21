@@ -53,6 +53,18 @@ function scheme(
 }
 
 export const TERMINAL_SCHEMES: TerminalColorScheme[] = [
+  scheme("matrix", "Matrix", {
+    background: "#070d08",
+    foreground: "#a5f3bc",
+    cursor: "#00ff66",
+    selection: "#12381e",
+    ansi: [
+      "#040805", "#ff5252", "#00ff66", "#b8ff52",
+      "#00e5ff", "#d670ff", "#26ffc9", "#c6fadc",
+      "#1b3824", "#ff7b7b", "#4dff8f", "#d2ff85",
+      "#52f0ff", "#e499ff", "#66ffda", "#ffffff",
+    ],
+  }),
   scheme("dracula", "Dracula", {
     background: "#282a36",
     foreground: "#f8f8f2",

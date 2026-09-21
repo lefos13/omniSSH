@@ -11,6 +11,7 @@ import { ConfirmDangerDialog } from "../shared/ConfirmDangerDialog";
 import type { ContextMenuItem } from "../shared/ContextMenu";
 import type { ConnectionHistoryEntry } from "../../types";
 import { parseSqliteUtc } from "../../utils/time";
+import { handleVaultLockedError } from "../../lib/vault-errors";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -122,7 +123,10 @@ export function HistoryPage() {
         savedHostId: entry.host_id,
       });
       useTabStore.getState().addTab({ type: "terminal", id: sessionId, label });
-    } catch {
+    } catch (err) {
+      if (handleVaultLockedError(err, entry.host_label || `${entry.username}@${entry.host}`, () => void handleTerminal(entry))) {
+        return;
+      }
       // Connection errors show via disconnect overlay
     }
   }, []);
@@ -159,7 +163,10 @@ export function HistoryPage() {
 
       useSftpStore.getState().openSession(explorerSessionId, sessionId, label, entry.username, false, undefined, transport, entry.host_id);
       useTabStore.getState().addTab({ type: "sftp", id: explorerSessionId, label, transport });
-    } catch {
+    } catch (err) {
+      if (handleVaultLockedError(err, entry.host_label || `${entry.username}@${entry.host}`, () => void handleExplorer(entry))) {
+        return;
+      }
       // Errors surface via SFTP page
     }
   }, []);

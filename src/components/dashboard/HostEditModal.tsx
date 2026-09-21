@@ -14,6 +14,7 @@ import { useVaultGuard } from "../vault";
 import { RevealPasswordDialog } from "../vault";
 import { useSettingsStore } from "../../stores/settings-store";
 import { HostPluginsPanel } from "../plugins";
+import { handleVaultLockedError } from "../../lib/vault-errors";
 
 // ─── Field types ─────────────────────────────────────────────────────────────
 
@@ -614,6 +615,11 @@ export function HostEditModal() {
       void useHostsStore.getState().recordConnection(host.id);
       close();
     } catch (err) {
+      /* Locked vault: prompt to unlock and re-run the connect instead of
+       * showing the generic failure text in the modal. */
+      if (handleVaultLockedError(err, form.label || form.host, () => void handleConnect())) {
+        return;
+      }
       setError(extractError(err, "Connection failed"));
     } finally {
       setConnecting(false);

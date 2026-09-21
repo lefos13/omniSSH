@@ -101,6 +101,29 @@ const ANSI_PALETTE_LIGHT = {
   brightWhite: "#8c959f",
 };
 
+/*
+ * High-contrast cyber phosphor palette for Matrix theme terminal sessions.
+ * Preserves standard ANSI color meaning with neon green bias and bright indicators.
+ */
+const ANSI_PALETTE_MATRIX = {
+  black: "#040805",
+  red: "#ff5252",
+  green: "#00ff66",
+  yellow: "#b8ff52",
+  blue: "#00e5ff",
+  magenta: "#d670ff",
+  cyan: "#26ffc9",
+  white: "#c6fadc",
+  brightBlack: "#1b3824",
+  brightRed: "#ff7b7b",
+  brightGreen: "#4dff8f",
+  brightYellow: "#d2ff85",
+  brightBlue: "#52f0ff",
+  brightMagenta: "#e499ff",
+  brightCyan: "#66ffda",
+  brightWhite: "#ffffff",
+};
+
 /** Read OKLCH CSS custom properties and convert to hex for xterm.js. */
 export function getTerminalTheme(): ITheme {
   const styles = getComputedStyle(document.documentElement);
@@ -113,14 +136,23 @@ export function getTerminalTheme(): ITheme {
   function toHex(cssVar: string): string {
     const value = styles.getPropertyValue(cssVar).trim();
     if (!value) return "#000000";
+    ctx!.clearRect(0, 0, 1, 1);
     ctx!.fillStyle = value;
     ctx!.fillRect(0, 0, 1, 1);
-    const [r, g, b] = ctx!.getImageData(0, 0, 1, 1).data;
+    const [r, g, b, a] = ctx!.getImageData(0, 0, 1, 1).data;
+    if (a < 255) {
+      return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}${a.toString(16).padStart(2, "0")}`;
+    }
     return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
   }
 
+  const themeAttr = document.documentElement.dataset.theme;
   const ansi =
-    document.documentElement.dataset.theme === "light" ? ANSI_PALETTE_LIGHT : ANSI_PALETTE_DARK;
+    themeAttr === "light"
+      ? ANSI_PALETTE_LIGHT
+      : themeAttr === "matrix"
+        ? ANSI_PALETTE_MATRIX
+        : ANSI_PALETTE_DARK;
 
   return {
     background: toHex("--color-bg-base"),
@@ -175,6 +207,7 @@ function createEntry(sessionId: string): TerminalEntry {
     scrollback: settings.terminalScrollback,
     theme: terminalThemeForSession(sessionId),
     allowProposedApi: true,
+    allowTransparency: true,
     // Open OSC 8 hyperlinks (emitted by ls --hyperlink, git, etc.) through the
     // OS browser instead of xterm's window.open() fallback, which errors in the
     // Tauri webview.

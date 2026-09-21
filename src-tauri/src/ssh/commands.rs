@@ -831,7 +831,14 @@ fn resolve_auth_method(
                 });
             }
             Err(error) => {
-                return Err(SshError::ConnectionFailed(error.to_string()));
+                /* A locked vault is recoverable by the user, so it keeps its own
+                 * kind for the unlock prompt; other vault failures stay generic. */
+                return Err(match &error {
+                    crate::vault::VaultError::LocalVaultLocked => {
+                        SshError::VaultLocked(error.to_string())
+                    }
+                    _ => SshError::ConnectionFailed(error.to_string()),
+                });
             }
         }
     }
@@ -1027,5 +1034,9 @@ mod auth_tests {
         .expect_err("should return error when locked");
 
         assert!(err.to_string().contains("locked"));
+        /* The frontend keys the unlock prompt off this kind, so it must not be
+         * flattened into a generic connection failure. */
+        let json = serde_json::to_value(&err).expect("serialize");
+        assert_eq!(json["kind"], "vault_locked");
     }
 }

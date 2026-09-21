@@ -9,10 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.3] - 2026-09-21
+
 ### 🚀 Improvements
 
 #### 1. Development App Naming in the macOS Dock
-* **Dock & App Menu Name**: Local development runs and debug builds now register with macOS as `OmniSSH-dev`, so the Dock tooltip and app menu match the `"OmniSSH-dev"` window title and About card instead of showing the executable's file name (`anyscp`).
+* **Dock & App Menu Name**: Local development runs and debug builds now register with macOS as `OmniSSH-dev`, so the Dock tooltip and app menu match the `"OmniSSH-dev"` window title and About card instead of showing the executable's file name (`anyscp`). The dev-only `Info.plist` is written beside the linked binary inside `target/`, and release builds are skipped because the Tauri bundler gives the `.app` its own plist.
+
+#### 2. Guided Encrypted App Vault Setup
+* **Create It Where It Is Missing**: Settings ▸ Security & Vault now offers a "Create vault…" action whenever no vault exists, and choosing "Encrypted App Vault" as the default password storage opens the create dialog immediately instead of letting the gap surface later during a host save.
+* **Offer It As The Default After Creation**: A new `VaultDefaultStorageDialog` appears right after a vault is created — from Settings or from the host-edit flow that creates one — and offers to make the App Vault the default storage for new password-authenticated hosts. Declining leaves the previous default untouched.
+
+#### 3. Silent macOS Keychain Existence Checks
+* **No Prompt Just To List Credentials**: `credential_exists` on macOS now answers through `SecItemCopyMatching` with `kSecReturnAttributes` and no `kSecReturnData`, so reporting whether a credential is stored no longer reads — and no longer prompts for — the secret. Other platforms (and the test build) keep the read-and-discard path, and the macOS-only `security-framework` dependency adds no bundle weight since it is already in the tree via keyring.
+
+### 🐛 Fixes
+
+#### 1. Dataset Sync To A Remote Root That Does Not Exist Yet
+* **Writability Probed Before Bailing Out**: A dataset directory that has not been created yet is the normal first-sync case, but the probe treated a missing root as unwritable and rejected it. It now runs the create+remove probe in the nearest existing ancestor (`nearest_existing_dir` / `ancestor_dirs`), answering "can this account create the dataset directory?" without creating anything on the server.
+* **Owner Failure Surfaces Before Saving**: Saving a dataset as an owner now verifies that the account can create files at the remote path before the local row is written, so an unwritable server is a visible configuration error rather than a silent failure on the first push. A pull-only member is never blocked by it.
+
+#### 2. Dataset Sync No Longer Demands A Vault That Is Not Configured
+* **Lock Only When It Matters**: The `vault_locked` preflight flag and the push / passphrase-rotation guards only apply when an App Vault is actually configured, so a machine with no vault — and therefore no vault-backed secrets to omit — is no longer blocked from publishing a dataset that carries credentials.
+
+#### 3. Sync Dataset Modal Feedback And Form State
+* **Feedback Dismissed On Edit**: Any change to the form now clears both the previous save report and the dataset error, so stale feedback never describes a form state that no longer exists.
+* **Save Disabled Until Valid**: The Save button stays disabled, with required fields marked, until the form could plausibly succeed — leaving server-side rejections as the only failure the error banner has to explain.
+* **No Ghost Credential Toggles**: With no App Vault, the credential toggles are disabled and their flags are dropped on save instead of being stored as a request the machine cannot fulfil. The vault status is refreshed when the form opens rather than trusting a possibly stale store.
+* **Editing Closes The Dialog**: Saving an edit closes the modal and returns to the dataset list; a brand-new dataset keeps its report, whose "press Push now" guidance is the next step.
+
+#### 4. Settings Polish
+* **Steady Sync History Button**: The sync-history toggle has a fixed width and an always-present spinner slot, so loading no longer resizes the button or shifts its label.
+* **Clearer Keychain Migration Note**: The migration guidance now states that macOS authorizes each System Keychain credential on first read — one prompt per credential — and that "Always Allow" makes it once per credential instead of on every run.
 
 ## [1.6.2] - 2026-09-19
 

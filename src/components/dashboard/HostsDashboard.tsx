@@ -47,6 +47,7 @@ import { ConnectionDialog } from "./ConnectionDialog";
 import { RecentConnections } from "./RecentConnections";
 import { toast } from "../../stores/toast-store";
 import { openExplorerSessionForHost } from "../../lib/open-explorer-session";
+import { handleVaultLockedError } from "../../lib/vault-errors";
 
 // Abort an in-flight SSH connection attempt on the Rust side. Best-effort:
 // the attempt may already have settled, in which case the backend reports it
@@ -413,6 +414,10 @@ export function HostsDashboard() {
         useTabStore.getState().addTab({ type: "terminal", id: sessionId, label: hostLabel });
       } catch (err) {
         if (cancelled) return;
+        if (handleVaultLockedError(err, label, () => void connectToHost(host))) {
+          setConnectingHost(null);
+          return;
+        }
         const msg = err && typeof err === "object" && "message" in err
           ? String((err as { message: string }).message)
           : "Connection failed. Check host, port, and credentials.";
@@ -455,6 +460,10 @@ export function HostsDashboard() {
         useTabStore.getState().addTab({ type: "terminal", id: sessionId, label: connLabel });
       } catch (err) {
         if (cancelled) return;
+        if (handleVaultLockedError(err, label, () => void handleRecentConnect(conn))) {
+          setConnectingHost(null);
+          return;
+        }
         const msg = err && typeof err === "object" && "message" in err
           ? String((err as { message: string }).message)
           : "Connection failed.";
@@ -495,6 +504,12 @@ export function HostsDashboard() {
           useTabStore.getState().setActiveTab(activeTerminalTabId);
         }
       } catch (err) {
+        /* A locked vault is the one split failure worth surfacing — offer the
+         * unlock prompt and re-run the split once the vault opens. */
+        const label = host.label || `${host.username}@${host.host}`;
+        if (handleVaultLockedError(err, label, () => void splitHostIntoTerminal(host, direction))) {
+          return;
+        }
         console.error("Failed to split host into terminal:", err);
       }
     },
@@ -539,6 +554,10 @@ export function HostsDashboard() {
           .addTab({ type: "sftp", id: opened.sftpSessionId, label, transport: opened.transport });
       } catch (err) {
         if (cancelled) return;
+        if (handleVaultLockedError(err, label, () => void exploreHost(host))) {
+          setConnectingHost(null);
+          return;
+        }
         const msg = err && typeof err === "object" && "message" in err
           ? String((err as { message: string }).message)
           : "Connection failed.";

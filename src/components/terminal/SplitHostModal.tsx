@@ -22,6 +22,7 @@ import { useUiStore } from "../../stores/ui-store";
 import { ModalBackdrop } from "../shared/ModalBackdrop";
 import type { SavedHost, HostConfig, SplitDirection } from "../../types";
 import { getHostColor, ENV_BADGE_CLASSES, ENV_LABELS, isEnvironmentValue } from "../dashboard/HostCard";
+import { handleVaultLockedError } from "../../lib/vault-errors";
 
 export function SplitHostModal() {
   const { open, targetSessionId, direction: initialDirection } = useUiStore((s) => s.splitModal);
@@ -122,6 +123,11 @@ export function SplitHostModal() {
         useSessionStore.getState().splitPane(direction, targetSessionId, newSessionId, hostConfig);
         closeSplitModal();
       } catch (err) {
+        /* A locked vault opens the unlock prompt and retries the split; other
+         * failures keep the inline banner. */
+        if (handleVaultLockedError(err, host.label || host.host, () => void handleConnect(host))) {
+          return;
+        }
         const msg =
           err instanceof Error
             ? err.message

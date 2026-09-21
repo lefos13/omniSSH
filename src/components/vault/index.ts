@@ -3,4 +3,5 @@ export { UnlockVaultDialog, type UnlockVaultDialogProps } from "./UnlockVaultDia
 export { ChangeVaultPasswordDialog, type ChangeVaultPasswordDialogProps } from "./ChangeVaultPasswordDialog";
 export { VaultDefaultStorageDialog, type VaultDefaultStorageDialogProps } from "./VaultDefaultStorageDialog";
 export { useVaultGuard } from "./useVaultGuard";
+export { GlobalVaultUnlockPrompt } from "./GlobalVaultUnlockPrompt";
 export { RevealPasswordDialog, type RevealPasswordDialogProps } from "./RevealPasswordDialog";

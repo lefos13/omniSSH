@@ -3,7 +3,7 @@ import type { CredentialStorage } from "../types/vault";
 import type { TerminalHighlightRule } from "../types";
 
 export type CursorStyle = "block" | "bar" | "underline";
-export type ThemeMode = "dark" | "light";
+export type ThemeMode = "dark" | "light" | "matrix";
 /** Which mouse button pastes the clipboard into the terminal (#71). */
 export type PasteButton = "none" | "right" | "middle";
 /** What double-clicking a file in the Explorer does. */
@@ -142,8 +142,10 @@ const DEFAULTS = {
  * default when the attribute is absent (e.g. a plain web/dev context).
  */
 function initialThemeMode(): ThemeMode {
-  if (typeof document !== "undefined" && document.documentElement.dataset.theme === "light") {
-    return "light";
+  if (typeof document !== "undefined") {
+    const theme = document.documentElement.dataset.theme;
+    if (theme === "light") return "light";
+    if (theme === "matrix") return "matrix";
   }
   return DEFAULTS.themeMode;
 }
@@ -253,7 +255,13 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   loaded: false,
 
   setThemeMode: (mode) => {
-    set({ themeMode: mode });
+    set((s) => {
+      const nextHue = mode === "matrix" && s.accentHue === 250 && !s.accentCustom ? 150 : s.accentHue;
+      if (nextHue !== s.accentHue) {
+        persist("app_accent_hue", String(nextHue));
+      }
+      return { themeMode: mode, accentHue: nextHue };
+    });
     persist("app_theme", mode);
   },
 
@@ -441,7 +449,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
       let editorsSeeded = false;
       for (const [key, value] of pairs) {
         switch (key) {
-          case "app_theme": updates.themeMode = value === "light" ? "light" : DEFAULTS.themeMode; break;
+          case "app_theme": updates.themeMode = value === "light" || value === "matrix" ? value : DEFAULTS.themeMode; break;
           case "app_accent_hue": updates.accentHue = Number(value) || DEFAULTS.accentHue; break;
           case "app_accent_custom": {
             const parts = value.trim().split(/\s+/).map(Number);

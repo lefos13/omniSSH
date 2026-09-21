@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useTabStore } from "../../stores/tab-store";
 import { useSessionStore, collectSessionIds } from "../../stores/session-store";
 import { useTerminalSearchStore } from "../../stores/terminal-search-store";
@@ -30,10 +30,11 @@ import { UpdateDialog } from "../updater/UpdateDialog";
 import { Toaster } from "../shared/Toaster";
 import { closeExplorerSession, resolveExplorerTransport } from "../../lib/explorer-transport";
 import { useLocalVaultStore } from "../../stores/local-vault-store";
-import { UnlockVaultDialog } from "../vault";
+import { useVaultPromptStore } from "../../stores/vault-prompt-store";
+import { GlobalVaultUnlockPrompt } from "../vault";
+import { MatrixBackground } from "../matrix";
 
 export function AppShell() {
-  const [unlockVaultOnStart, setUnlockVaultOnStart] = useState(false);
   const themeMode = useSettingsStore((s) => s.themeMode);
   const accentHue = useSettingsStore((s) => s.accentHue);
   const accentCustom = useSettingsStore((s) => s.accentCustom);
@@ -52,7 +53,11 @@ export function AppShell() {
    * still leaves Keychain-only and SSH-key hosts immediately available. */
   useEffect(() => {
     void loadVaultStatus()
-      .then((status) => setUnlockVaultOnStart(status.configured && !status.unlocked))
+      .then((status) => {
+        if (status.configured && !status.unlocked) {
+          useVaultPromptStore.getState().request();
+        }
+      })
       .catch(() => { /* optional vault status must not block startup */ });
   }, [loadVaultStatus]);
   // Auto-open hosts tab if active tab gets removed
@@ -524,7 +529,12 @@ export function AppShell() {
 
   return (
     <>
-    <div className="flex h-screen w-screen overflow-hidden bg-bg-base no-select p-2 gap-2">
+    {themeMode === "matrix" && <MatrixBackground />}
+    <div
+      className={`flex h-screen w-screen overflow-hidden ${
+        themeMode === "matrix" ? "bg-transparent" : "bg-bg-base"
+      } no-select p-2 gap-2 relative z-10`}
+    >
       {/* Sidebar rail */}
       <Sidebar />
 
@@ -619,11 +629,8 @@ export function AppShell() {
       {/* Transient notifications (errors, etc.) */}
       <Toaster />
     </div>
-    <UnlockVaultDialog
-      open={unlockVaultOnStart}
-      onClose={() => setUnlockVaultOnStart(false)}
-      onSuccess={() => setUnlockVaultOnStart(false)}
-    />
+    {/* Rendered after every other modal so it paints above them at equal z-index. */}
+    <GlobalVaultUnlockPrompt />
     </>
   );
 }

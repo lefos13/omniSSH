@@ -47,6 +47,25 @@ export interface SshStatusPayload {
   status: { status: ConnectionStatus; message?: string };
 }
 
+/* Rust `SshError`, serialized as `{ kind, message }`. Callers narrow on `kind`
+ * rather than parsing the message; `vault_locked` is a recoverable state that
+ * prompts for a vault unlock instead of a retry. */
+export type SshErrorKind =
+  | "connection_failed"
+  | "authentication_failed"
+  | "session_not_found"
+  | "channel_error"
+  | "key_parse_error"
+  | "io_error"
+  | "already_disconnected"
+  | "cancelled"
+  | "vault_locked";
+
+export interface SshErrorPayload {
+  kind: SshErrorKind;
+  message: string;
+}
+
 export interface HostGroup {
   id: string;
   name: string;

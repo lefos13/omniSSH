@@ -27,6 +27,9 @@ pub enum SshError {
 
     #[error("Connection cancelled")]
     Cancelled,
+
+    #[error("{0}")]
+    VaultLocked(String),
 }
 
 impl Serialize for SshError {
@@ -45,6 +48,7 @@ impl Serialize for SshError {
             SshError::IoError(_) => "io_error",
             SshError::AlreadyDisconnected => "already_disconnected",
             SshError::Cancelled => "cancelled",
+            SshError::VaultLocked(_) => "vault_locked",
         };
         state.serialize_field("kind", kind)?;
         state.serialize_field("message", &self.to_string())?;
@@ -81,5 +85,21 @@ mod tests {
         let json = serde_json::to_value(SshError::Cancelled).expect("serialize");
         assert_eq!(json["kind"], "cancelled");
         assert_eq!(json["message"], "Connection cancelled");
+    }
+
+    /// A locked local vault must stay distinguishable from a generic connection
+    /// failure so the frontend can prompt for unlock instead of offering a
+    /// retry that cannot succeed.
+    #[test]
+    fn vault_locked_serializes_with_a_distinct_kind() {
+        let json = serde_json::to_value(SshError::VaultLocked(
+            "Local vault is locked; unlock it before connecting".to_string(),
+        ))
+        .expect("serialize");
+        assert_eq!(json["kind"], "vault_locked");
+        assert_eq!(
+            json["message"],
+            "Local vault is locked; unlock it before connecting"
+        );
     }
 }

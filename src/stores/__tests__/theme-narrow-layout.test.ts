@@ -55,6 +55,10 @@ describe("Theme and narrow layout constraints", () => {
 
       store.setThemeMode("dark");
       expect(useSettingsStore.getState().themeMode).toBe("dark");
+
+      store.setThemeMode("matrix");
+      expect(useSettingsStore.getState().themeMode).toBe("matrix");
+      expect(useSettingsStore.getState().accentHue).toBe(150);
     });
 
     it("updates accent hue and custom accent colors", () => {
@@ -67,7 +71,7 @@ describe("Theme and narrow layout constraints", () => {
       expect(useSettingsStore.getState().accentCustom).toEqual({ l: 0.7, c: 0.15, h: 280 });
     });
 
-    it("generates contrast-tuned terminal theme palettes for dark and light modes", () => {
+    it("generates contrast-tuned terminal theme palettes for dark, light, and matrix modes", () => {
       document.documentElement.dataset.theme = "dark";
       const darkTheme = getTerminalTheme();
       expect(darkTheme.background).toBeDefined();
@@ -80,6 +84,14 @@ describe("Theme and narrow layout constraints", () => {
       expect(lightTheme.foreground).toBeDefined();
       // Contrast-tuned green differs between light and dark palettes
       expect(lightTheme.green).not.toEqual(darkTheme.green);
+
+      document.documentElement.dataset.theme = "matrix";
+      const matrixTheme = getTerminalTheme();
+      expect(matrixTheme.background).toBeDefined();
+      expect(matrixTheme.foreground).toBeDefined();
+      expect(matrixTheme.green).toBe("#00ff66");
+      expect(matrixTheme.green).not.toEqual(darkTheme.green);
+      expect(matrixTheme.green).not.toEqual(lightTheme.green);
     });
   });
 

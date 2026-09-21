@@ -3,6 +3,7 @@ import { WifiOff, AlertTriangle, RefreshCw, X } from "lucide-react";
 import type { HostConfig, SessionId } from "../../types";
 import { useSessionStore } from "../../stores/session-store";
 import { useTabStore } from "../../stores/tab-store";
+import { handleVaultLockedError } from "../../lib/vault-errors";
 
 interface DisconnectOverlayProps {
   sessionId: SessionId;
@@ -52,6 +53,13 @@ export function DisconnectOverlay({
       addSession(newSessionId as SessionId, hostConfig);
       useTabStore.getState().addTab({ type: "terminal", id: newSessionId, label });
     } catch (err) {
+      /* A locked vault unlocks-then-retries instead of showing the reconnect
+       * error in the pill. */
+      const label = hostConfig.label || `${hostConfig.username}@${hostConfig.host}`;
+      if (handleVaultLockedError(err, label, () => void handleReconnect())) {
+        setIsReconnecting(false);
+        return;
+      }
       const msg =
         err instanceof Error ? err.message
         : err && typeof err === "object" && "message" in err ? String((err as { message: string }).message)
