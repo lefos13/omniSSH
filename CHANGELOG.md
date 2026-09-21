@@ -9,14 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.3] - 2026-09-21
+
 ### 🚀 Highlights & New Features
 
-#### 1. Berserk Animated Theme
+#### 1. Matrix Theme
+* **Digital-Rain Background**: A new `Matrix` theme joins Dark and Light — a GPU-accelerated HTML5 canvas digital-rain effect adapted from the OmniSSH landing page, with 3D depth layering, glyph flicker, mouse-proximity reactivity, a ~33 FPS throttle, `prefers-reduced-motion` support, and a compact controls panel (palette, speed, dimmer, glyph size, head mode, pause) persisted to local storage.
+* **Matrix Terminal Palette**: Terminal sessions adopt a green-on-black ANSI palette while the theme is active, and a host-pinnable "Matrix" scheme is available for per-host color overrides; selecting Matrix also nudges the accent hue to its signature green.
+* **Sensible Defaults & One-Click Restore**: The background ships tuned (OmniSSH palette, 30% dimmer, medium glyphs, soft heads) and the controls panel gained a "Restore defaults" action that resets every visual option and playback state.
+
+#### 2. Berserk Animated Theme
 * **Blood-Rain Background**: A new `Berserk` color theme joins Dark, Light, and Matrix — a dark-fantasy "blood rain" canvas effect with falling crimson droplets, white-hot glowing heads, drifting embers, and an optional pulsing brand-sigil watermark. It honors `prefers-reduced-motion`, throttles to 30 FPS, pauses when the tab is hidden, and offers a floating controls panel (palette, dimmer, density, velocity, embers, brand) persisted to local storage.
 * **Berserk Terminal Palette**: Terminal sessions adopt a blood-and-ember ANSI palette while the theme is active, and a host-pinnable "Berserk" scheme is available for per-host color overrides.
 * **No Startup Flash**: The persisted theme is injected onto `<html>` before first paint (frontend store plus the Rust `setup()` hook), and selecting Berserk applies its signature blood-crimson accent hue.
-
-## [1.6.3] - 2026-09-21
 
 ### 🚀 Improvements
 
@@ -29,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### 3. Silent macOS Keychain Existence Checks
 * **No Prompt Just To List Credentials**: `credential_exists` on macOS now answers through `SecItemCopyMatching` with `kSecReturnAttributes` and no `kSecReturnData`, so reporting whether a credential is stored no longer reads — and no longer prompts for — the secret. Other platforms (and the test build) keep the read-and-discard path, and the macOS-only `security-framework` dependency adds no bundle weight since it is already in the tree via keyring.
+
+#### 4. Locked Vault Unlock Prompt On Connection Attempts
+* **Unlock And Retry Instead Of A Generic Failure**: Connecting to a host — from the dashboard, an SCP/SFTP explorer session, a host split, or the history page — whose App Vault is still locked now raises the shared unlock dialog and re-runs the connection once it opens, instead of failing with a generic error. A single globally-mounted prompt (`GlobalVaultUnlockPrompt` in `AppShell`) guarantees the startup check and a locked-vault connection error never stack two dialogs.
 
 ### 🐛 Fixes
 
