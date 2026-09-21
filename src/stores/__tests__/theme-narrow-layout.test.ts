@@ -1,8 +1,8 @@
 /*
  * Tests for theme switching and narrow/responsive layout boundaries.
- * Verifies dark/light theme switching, accent custom properties, ANSI palette
- * generation for xterm.js, sidebar width clamping [180, 400], and linked explorer
- * width clamping [220, 800].
+ * Verifies dark/light/matrix/berserk theme switching, accent custom properties,
+ * ANSI palette generation for xterm.js, sidebar width clamping [180, 400], and
+ * linked explorer width clamping [220, 800].
  */
 
 import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
@@ -59,6 +59,12 @@ describe("Theme and narrow layout constraints", () => {
       store.setThemeMode("matrix");
       expect(useSettingsStore.getState().themeMode).toBe("matrix");
       expect(useSettingsStore.getState().accentHue).toBe(150);
+
+      // Berserk applies its own signature accent only from the untouched default
+      store.setAccentHue(250);
+      store.setThemeMode("berserk");
+      expect(useSettingsStore.getState().themeMode).toBe("berserk");
+      expect(useSettingsStore.getState().accentHue).toBe(25);
     });
 
     it("updates accent hue and custom accent colors", () => {
@@ -71,7 +77,7 @@ describe("Theme and narrow layout constraints", () => {
       expect(useSettingsStore.getState().accentCustom).toEqual({ l: 0.7, c: 0.15, h: 280 });
     });
 
-    it("generates contrast-tuned terminal theme palettes for dark, light, and matrix modes", () => {
+    it("generates contrast-tuned terminal theme palettes for dark, light, matrix, and berserk modes", () => {
       document.documentElement.dataset.theme = "dark";
       const darkTheme = getTerminalTheme();
       expect(darkTheme.background).toBeDefined();
@@ -92,6 +98,14 @@ describe("Theme and narrow layout constraints", () => {
       expect(matrixTheme.green).toBe("#00ff66");
       expect(matrixTheme.green).not.toEqual(darkTheme.green);
       expect(matrixTheme.green).not.toEqual(lightTheme.green);
+
+      document.documentElement.dataset.theme = "berserk";
+      const berserkTheme = getTerminalTheme();
+      expect(berserkTheme.background).toBeDefined();
+      expect(berserkTheme.foreground).toBeDefined();
+      expect(berserkTheme.red).toBe("#c1121f");
+      expect(berserkTheme.red).not.toEqual(matrixTheme.red);
+      expect(berserkTheme.red).not.toEqual(darkTheme.red);
     });
   });
 

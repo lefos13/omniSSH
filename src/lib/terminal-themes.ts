@@ -65,6 +65,18 @@ export const TERMINAL_SCHEMES: TerminalColorScheme[] = [
       "#52f0ff", "#e499ff", "#66ffda", "#ffffff",
     ],
   }),
+  scheme("berserk", "Berserk", {
+    background: "#0a0507",
+    foreground: "#e8d7c3",
+    cursor: "#c1121f",
+    selection: "#3a0d10",
+    ansi: [
+      "#1a0d10", "#c1121f", "#6b7f3a", "#d4a017",
+      "#4a5a7a", "#8a3a5a", "#5a7a72", "#d9cdbf",
+      "#3a2a2a", "#ff3b30", "#9db35a", "#ffcc4d",
+      "#6b84b0", "#c25a7a", "#8fb3a8", "#ffffff",
+    ],
+  }),
   scheme("dracula", "Dracula", {
     background: "#282a36",
     foreground: "#f8f8f2",

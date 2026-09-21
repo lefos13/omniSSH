@@ -216,10 +216,14 @@
   background-color: #040805;
 }
 
+/* Glass blur on chrome surfaces. Form controls are excluded: giving an input a
+   backdrop-filter promotes it into its own compositing layer, which then paints
+   over absolutely-positioned adornment icons (search magnifiers, etc.) and hides
+   them behind the blurred backdrop. */
 :root[data-theme="matrix"] nav[data-testid="sidebar"],
 :root[data-theme="matrix"] aside[data-testid="groups-sidebar"],
 :root[data-theme="matrix"] [data-testid^="host-card-"],
-:root[data-theme="matrix"] .bg-bg-surface {
+:root[data-theme="matrix"] .bg-bg-surface:not(input):not(textarea):not(select) {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
 }
@@ -229,6 +233,93 @@
   background-color: oklch(0.120 0.030 155 / 0.94);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
+}
+
+/*
+ * Berserk theme tokens: dark-fantasy aesthetic inspired by Kentaro Miura's
+ * Berserk. Blood-black translucent surfaces float over the animated blood-rain
+ * canvas, with bone/ash text, a blood-crimson accent, and ember-gold highlights.
+ */
+:root[data-theme="berserk"] {
+  color-scheme: dark;
+
+  /* Blood-black frosted glass surfaces over a transparent, canvas-backed base */
+  --color-bg-base:      oklch(0.085 0.020 25 / 0.05);
+  --color-bg-surface:   oklch(0.130 0.030 25 / 0.80);
+  --color-bg-overlay:   oklch(0.170 0.035 25 / 0.88);
+  --color-bg-subtle:    oklch(0.210 0.040 25 / 0.90);
+  --color-bg-muted:     oklch(0.250 0.040 25 / 0.94);
+
+  /* Bone & ash text */
+  --color-text-primary:   oklch(0.960 0.020 70);
+  --color-text-secondary: oklch(0.850 0.045 45);
+  --color-text-muted:     oklch(0.680 0.045 35);
+  --color-text-inverse:   oklch(0.100 0.030 25);
+
+  /* Accent: blood crimson */
+  --color-accent:       oklch(0.620 0.240 var(--accent-hue, 25));
+  --color-accent-hover: oklch(0.560 0.240 var(--accent-hue, 25));
+  --color-accent-muted: oklch(0.620 0.240 var(--accent-hue, 25) / 0.22);
+
+  /* Status */
+  --color-status-connected:    oklch(0.700 0.200 145);
+  --color-status-connecting:   oklch(0.760 0.170 75);
+  --color-status-error:        oklch(0.650 0.250 25);
+  --color-status-disconnected: oklch(0.560 0.030 25);
+
+  /* Ember-lit borders */
+  --color-border:       oklch(0.360 0.070 25 / 0.55);
+  --color-border-focus: oklch(0.620 0.240 var(--accent-hue, 25));
+  --color-ring:         oklch(0.620 0.240 var(--accent-hue, 25) / 0.40);
+
+  /* Crimson glow shadows */
+  --shadow-sm:  0 1px 3px oklch(0 0 0 / 0.5);
+  --shadow-md:  0 2px 10px oklch(0 0 0 / 0.6), 0 0 14px oklch(0.620 0.240 25 / 0.18);
+  --shadow-lg:  0 8px 28px oklch(0 0 0 / 0.7), 0 0 28px oklch(0.620 0.240 25 / 0.22);
+}
+
+:root[data-theme="berserk"],
+:root[data-theme="berserk"] body,
+:root[data-theme="berserk"] #root {
+  background-color: #0a0507;
+}
+
+/* See the Matrix rule above: inputs are excluded from the backdrop-filter so
+   input adornment icons stay visible. */
+:root[data-theme="berserk"] nav[data-testid="sidebar"],
+:root[data-theme="berserk"] aside[data-testid="groups-sidebar"],
+:root[data-theme="berserk"] [data-testid^="host-card-"],
+:root[data-theme="berserk"] .bg-bg-surface:not(input):not(textarea):not(select) {
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+:root[data-theme="berserk"] [role="dialog"],
+:root[data-theme="berserk"] dialog {
+  background-color: oklch(0.130 0.030 25 / 0.94);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+/* Slow glow pulse for the Berserk brand-sigil watermark (see BrandSigil.tsx). */
+@keyframes berserk-sigil-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.berserk-sigil-anim {
+  animation: berserk-sigil-pulse 5s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .berserk-sigil-anim {
+    animation: none;
+  }
 }
 
 /* --- Base Resets --- */

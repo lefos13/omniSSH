@@ -124,6 +124,30 @@ const ANSI_PALETTE_MATRIX = {
   brightWhite: "#ffffff",
 };
 
+/*
+ * Blood-and-ember palette for Berserk theme terminal sessions.
+ * Keeps standard ANSI color meaning while biasing toward blood crimson, ember
+ * gold, and bone-white indicators over a dark-fantasy base.
+ */
+const ANSI_PALETTE_BERSERK = {
+  black: "#1a0d10",
+  red: "#c1121f",
+  green: "#6b7f3a",
+  yellow: "#d4a017",
+  blue: "#4a5a7a",
+  magenta: "#8a3a5a",
+  cyan: "#5a7a72",
+  white: "#d9cdbf",
+  brightBlack: "#3a2a2a",
+  brightRed: "#ff3b30",
+  brightGreen: "#9db35a",
+  brightYellow: "#ffcc4d",
+  brightBlue: "#6b84b0",
+  brightMagenta: "#c25a7a",
+  brightCyan: "#8fb3a8",
+  brightWhite: "#ffffff",
+};
+
 /** Read OKLCH CSS custom properties and convert to hex for xterm.js. */
 export function getTerminalTheme(): ITheme {
   const styles = getComputedStyle(document.documentElement);
@@ -152,7 +176,9 @@ export function getTerminalTheme(): ITheme {
       ? ANSI_PALETTE_LIGHT
       : themeAttr === "matrix"
         ? ANSI_PALETTE_MATRIX
-        : ANSI_PALETTE_DARK;
+        : themeAttr === "berserk"
+          ? ANSI_PALETTE_BERSERK
+          : ANSI_PALETTE_DARK;
 
   return {
     background: toHex("--color-bg-base"),

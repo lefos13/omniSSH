@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🚀 Highlights & New Features
+
+#### 1. Berserk Animated Theme
+* **Blood-Rain Background**: A new `Berserk` color theme joins Dark, Light, and Matrix — a dark-fantasy "blood rain" canvas effect with falling crimson droplets, white-hot glowing heads, drifting embers, and an optional pulsing brand-sigil watermark. It honors `prefers-reduced-motion`, throttles to 30 FPS, pauses when the tab is hidden, and offers a floating controls panel (palette, dimmer, density, velocity, embers, brand) persisted to local storage.
+* **Berserk Terminal Palette**: Terminal sessions adopt a blood-and-ember ANSI palette while the theme is active, and a host-pinnable "Berserk" scheme is available for per-host color overrides.
+* **No Startup Flash**: The persisted theme is injected onto `<html>` before first paint (frontend store plus the Rust `setup()` hook), and selecting Berserk applies its signature blood-crimson accent hue.
+
 ## [1.6.3] - 2026-09-21
 
 ### 🚀 Improvements

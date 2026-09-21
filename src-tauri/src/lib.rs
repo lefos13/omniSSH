@@ -115,6 +115,7 @@ pub fn run() {
             let theme = match host_db.get_setting("app_theme") {
                 Ok(Some(v)) if v == "light" => "light",
                 Ok(Some(v)) if v == "matrix" => "matrix",
+                Ok(Some(v)) if v == "berserk" => "berserk",
                 _ => "dark",
             };
             // Same rationale as the theme: inject the persisted accent hue before

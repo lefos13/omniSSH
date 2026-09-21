@@ -33,6 +33,7 @@ import { useLocalVaultStore } from "../../stores/local-vault-store";
 import { useVaultPromptStore } from "../../stores/vault-prompt-store";
 import { GlobalVaultUnlockPrompt } from "../vault";
 import { MatrixBackground } from "../matrix";
+import { BerserkBackground } from "../berserk";
 
 export function AppShell() {
   const themeMode = useSettingsStore((s) => s.themeMode);
@@ -530,9 +531,10 @@ export function AppShell() {
   return (
     <>
     {themeMode === "matrix" && <MatrixBackground />}
+    {themeMode === "berserk" && <BerserkBackground />}
     <div
       className={`flex h-screen w-screen overflow-hidden ${
-        themeMode === "matrix" ? "bg-transparent" : "bg-bg-base"
+        themeMode === "matrix" || themeMode === "berserk" ? "bg-transparent" : "bg-bg-base"
       } no-select p-2 gap-2 relative z-10`}
     >
       {/* Sidebar rail */}

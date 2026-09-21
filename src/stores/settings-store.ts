@@ -3,7 +3,7 @@ import type { CredentialStorage } from "../types/vault";
 import type { TerminalHighlightRule } from "../types";
 
 export type CursorStyle = "block" | "bar" | "underline";
-export type ThemeMode = "dark" | "light" | "matrix";
+export type ThemeMode = "dark" | "light" | "matrix" | "berserk";
 /** Which mouse button pastes the clipboard into the terminal (#71). */
 export type PasteButton = "none" | "right" | "middle";
 /** What double-clicking a file in the Explorer does. */
@@ -146,6 +146,7 @@ function initialThemeMode(): ThemeMode {
     const theme = document.documentElement.dataset.theme;
     if (theme === "light") return "light";
     if (theme === "matrix") return "matrix";
+    if (theme === "berserk") return "berserk";
   }
   return DEFAULTS.themeMode;
 }
@@ -256,7 +257,14 @@ export const useSettingsStore = create<SettingsState>((set) => ({
 
   setThemeMode: (mode) => {
     set((s) => {
-      const nextHue = mode === "matrix" && s.accentHue === 250 && !s.accentCustom ? 150 : s.accentHue;
+      /* Animated themes carry a signature accent hue; nudge it in only while the
+       * user is still on the untouched default (blue) accent, so an existing
+       * deliberate accent choice is never silently overridden. */
+      const signatureHue = mode === "matrix" ? 150 : mode === "berserk" ? 25 : null;
+      const nextHue =
+        signatureHue !== null && s.accentHue === 250 && !s.accentCustom
+          ? signatureHue
+          : s.accentHue;
       if (nextHue !== s.accentHue) {
         persist("app_accent_hue", String(nextHue));
       }
@@ -449,7 +457,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
       let editorsSeeded = false;
       for (const [key, value] of pairs) {
         switch (key) {
-          case "app_theme": updates.themeMode = value === "light" || value === "matrix" ? value : DEFAULTS.themeMode; break;
+          case "app_theme": updates.themeMode = value === "light" || value === "matrix" || value === "berserk" ? value : DEFAULTS.themeMode; break;
           case "app_accent_hue": updates.accentHue = Number(value) || DEFAULTS.accentHue; break;
           case "app_accent_custom": {
             const parts = value.trim().split(/\s+/).map(Number);

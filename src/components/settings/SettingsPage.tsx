@@ -369,7 +369,7 @@ function AppearanceSettings() {
       <SettingRow>
         <div>
           <p className={LABEL_CLASS}>Color Theme</p>
-          <p className={DESC_CLASS}>Switch between dark, light, and special animated Matrix cyber theme</p>
+          <p className={DESC_CLASS}>Switch between dark, light, and the animated Matrix / Berserk special themes</p>
         </div>
         <SegmentedControl<ThemeMode>
           id="s-light-theme"
@@ -379,6 +379,7 @@ function AppearanceSettings() {
             { value: "dark", label: "Dark" },
             { value: "light", label: "Light" },
             { value: "matrix", label: "Matrix" },
+            { value: "berserk", label: "Berserk" },
           ]}
         />
       </SettingRow>
