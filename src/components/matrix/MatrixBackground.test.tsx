@@ -147,9 +147,9 @@ describe("MatrixBackground", () => {
     const trigger = screen.getByTestId("matrix-controls-toggle");
     fireEvent.click(trigger);
 
-    // Default brightness is 45% (0.45)
+    // Default brightness is 30% (0.3)
     const slider = screen.getByTestId("matrix-dimmer-slider");
-    expect(slider).toHaveValue("0.45");
+    expect(slider).toHaveValue("0.3");
 
     // Adjust via slider
     fireEvent.change(slider, { target: { value: "0.75" } });
@@ -159,8 +159,8 @@ describe("MatrixBackground", () => {
     // Adjust via presets
     const subtleBtn = screen.getByTestId("matrix-dimmer-subtle");
     fireEvent.click(subtleBtn);
-    expect(window.localStorage.getItem("matrix_theme_brightness")).toBe(JSON.stringify(0.35));
-    expect(slider).toHaveValue("0.35");
+    expect(window.localStorage.getItem("matrix_theme_brightness")).toBe(JSON.stringify(0.3));
+    expect(slider).toHaveValue("0.3");
 
     const vividBtn = screen.getByTestId("matrix-dimmer-vivid");
     fireEvent.click(vividBtn);
@@ -215,10 +215,17 @@ describe("MatrixBackground", () => {
     const tintedBtn = screen.getByTestId("matrix-head-tinted");
     const softBtn = screen.getByTestId("matrix-head-soft");
 
-    // Default is white
+    // Default is soft
+    expect(softBtn).toHaveAttribute("aria-pressed", "true");
+    expect(softBtn.className).toContain("font-bold");
+    expect(whiteBtn).toHaveAttribute("aria-pressed", "false");
+    expect(tintedBtn).toHaveAttribute("aria-pressed", "false");
+
+    // Select White
+    fireEvent.click(whiteBtn);
+    expect(window.localStorage.getItem("matrix_theme_head")).toBe(JSON.stringify("white"));
     expect(whiteBtn).toHaveAttribute("aria-pressed", "true");
     expect(whiteBtn.className).toContain("font-bold");
-    expect(tintedBtn).toHaveAttribute("aria-pressed", "false");
     expect(softBtn).toHaveAttribute("aria-pressed", "false");
 
     // Select Tinted
@@ -228,18 +235,11 @@ describe("MatrixBackground", () => {
     expect(tintedBtn.className).toContain("font-bold");
     expect(whiteBtn).toHaveAttribute("aria-pressed", "false");
 
-    // Select Soft
+    // Select Soft again
     fireEvent.click(softBtn);
     expect(window.localStorage.getItem("matrix_theme_head")).toBe(JSON.stringify("soft"));
     expect(softBtn).toHaveAttribute("aria-pressed", "true");
     expect(softBtn.className).toContain("font-bold");
-    expect(tintedBtn).toHaveAttribute("aria-pressed", "false");
-
-    // Select White again
-    fireEvent.click(whiteBtn);
-    expect(window.localStorage.getItem("matrix_theme_head")).toBe(JSON.stringify("white"));
-    expect(whiteBtn).toHaveAttribute("aria-pressed", "true");
-    expect(whiteBtn.className).toContain("font-bold");
   });
 
   it("initializes with stored first letter preference from localStorage and handles invalid value fallback", () => {
@@ -255,39 +255,39 @@ describe("MatrixBackground", () => {
 
     unmount();
 
-    // Invalid storage value should safely fall back to "white"
+    // Invalid storage value should safely fall back to "soft"
     window.localStorage.setItem("matrix_theme_head", JSON.stringify("nonexistent_mode"));
     const { unmount: unmount2 } = render(<MatrixBackground />);
     const trigger2 = screen.getByTestId("matrix-controls-toggle");
     fireEvent.click(trigger2);
 
-    const whiteBtn = screen.getByTestId("matrix-head-white");
-    expect(whiteBtn).toHaveAttribute("aria-pressed", "true");
-    expect(whiteBtn.className).toContain("font-bold");
+    const softBtn = screen.getByTestId("matrix-head-soft");
+    expect(softBtn).toHaveAttribute("aria-pressed", "true");
+    expect(softBtn.className).toContain("font-bold");
 
     unmount2();
 
-    // Malformed JSON should safely fall back to "white"
+    // Malformed JSON should safely fall back to "soft"
     window.localStorage.setItem("matrix_theme_head", "{bad-json");
     render(<MatrixBackground />);
     const trigger3 = screen.getByTestId("matrix-controls-toggle");
     fireEvent.click(trigger3);
 
-    const whiteBtnAfterMalformed = screen.getByTestId("matrix-head-white");
-    expect(whiteBtnAfterMalformed).toHaveAttribute("aria-pressed", "true");
-    expect(whiteBtnAfterMalformed.className).toContain("font-bold");
+    const softBtnAfterMalformed = screen.getByTestId("matrix-head-soft");
+    expect(softBtnAfterMalformed).toHaveAttribute("aria-pressed", "true");
+    expect(softBtnAfterMalformed.className).toContain("font-bold");
   });
 
-  it("handles non-string types in localStorage safely and falls back to white", () => {
+  it("handles non-string types in localStorage safely and falls back to soft", () => {
     for (const badValue of [123, true, {}, [], ""]) {
       window.localStorage.setItem("matrix_theme_head", JSON.stringify(badValue));
       const { unmount } = render(<MatrixBackground />);
       const trigger = screen.getByTestId("matrix-controls-toggle");
       fireEvent.click(trigger);
 
-      const whiteBtn = screen.getByTestId("matrix-head-white");
-      expect(whiteBtn).toHaveAttribute("aria-pressed", "true");
-      expect(whiteBtn.className).toContain("font-bold");
+      const softBtn = screen.getByTestId("matrix-head-soft");
+      expect(softBtn).toHaveAttribute("aria-pressed", "true");
+      expect(softBtn.className).toContain("font-bold");
       unmount();
     }
   });
@@ -320,20 +320,34 @@ describe("MatrixBackground", () => {
         });
       });
 
-      // 1. Default Mode is "white"
+      // 1. Default Mode is "soft"
       let now = performance.now() + 100;
       capturedRafCb!(now);
 
       expect(draws.length).toBeGreaterThan(0);
+      // In "soft" mode, all draws must have shadowBlur === 0 and shadowColor === transparent
+      const drawsWithShadow = draws.filter((d) => d.shadowBlur > 0);
+      expect(drawsWithShadow.length).toBe(0);
+      const nonWhiteDraws = draws.filter((d) => d.fillStyle !== "#ffffff");
+      expect(nonWhiteDraws.length).toBeGreaterThan(0);
+
+      // 2. Switch to "white"
+      const trigger = screen.getByTestId("matrix-controls-toggle");
+      fireEvent.click(trigger);
+      const whiteBtn = screen.getByTestId("matrix-head-white");
+      fireEvent.click(whiteBtn);
+
+      draws.length = 0;
+      now += 100;
+      capturedRafCb!(now);
+
       // In "white" mode, head character is bright white (#ffffff) with glow bloom
       const whiteHeadDraws = draws.filter((d) => d.fillStyle === "#ffffff");
       expect(whiteHeadDraws.length).toBeGreaterThan(0);
       expect(whiteHeadDraws[0].shadowBlur).toBeGreaterThan(0);
       expect(whiteHeadDraws[0].shadowColor).not.toBe("transparent");
 
-      // 2. Switch to "tinted"
-      const trigger = screen.getByTestId("matrix-controls-toggle");
-      fireEvent.click(trigger);
+      // 3. Switch to "tinted"
       const tintedBtn = screen.getByTestId("matrix-head-tinted");
       fireEvent.click(tintedBtn);
 
@@ -347,24 +361,65 @@ describe("MatrixBackground", () => {
       );
       expect(tintedHeadDraws.length).toBeGreaterThan(0);
       expect(tintedHeadDraws[0].shadowColor).not.toBe("transparent");
-
-      // 3. Switch to "soft"
-      const softBtn = screen.getByTestId("matrix-head-soft");
-      fireEvent.click(softBtn);
-
-      draws.length = 0;
-      now += 100;
-      capturedRafCb!(now);
-
-      // In "soft" mode, all draws must have shadowBlur === 0 and shadowColor === transparent
-      expect(draws.length).toBeGreaterThan(0);
-      const drawsWithShadow = draws.filter((d) => d.shadowBlur > 0);
-      expect(drawsWithShadow.length).toBe(0);
-      const nonWhiteDraws = draws.filter((d) => d.fillStyle !== "#ffffff");
-      expect(nonWhiteDraws.length).toBeGreaterThan(0);
     } finally {
       rafSpy.mockRestore();
     }
+  });
+
+  it("restores all settings to default presets when restore defaults button is clicked", () => {
+    render(<MatrixBackground />);
+    const trigger = screen.getByTestId("matrix-controls-toggle");
+    fireEvent.click(trigger);
+
+    // 1. Modify multiple settings away from defaults
+    // Change brightness to vivid 90%
+    fireEvent.click(screen.getByTestId("matrix-dimmer-vivid"));
+    // Change size to large
+    fireEvent.click(screen.getByTestId("matrix-size-large"));
+    // Change first letter to white
+    fireEvent.click(screen.getByTestId("matrix-head-white"));
+    // Change palette to classic
+    fireEvent.click(screen.getByTestId("matrix-palette-classic"));
+    // Change speed to 1.6x
+    fireEvent.click(screen.getByTestId("matrix-speed-1.6"));
+
+    // Verify settings were changed and saved
+    expect(window.localStorage.getItem("matrix_theme_brightness")).toBe(JSON.stringify(0.9));
+    expect(window.localStorage.getItem("matrix_theme_size")).toBe(JSON.stringify("large"));
+    expect(window.localStorage.getItem("matrix_theme_head")).toBe(JSON.stringify("white"));
+    expect(window.localStorage.getItem("matrix_theme_palette")).toBe(JSON.stringify("classic"));
+    expect(window.localStorage.getItem("matrix_theme_speed")).toBe(JSON.stringify(1.6));
+
+    // 2. Click Restore to Defaults
+    const restoreBtn = screen.getByTestId("matrix-restore-defaults");
+    expect(restoreBtn).toBeInTheDocument();
+    fireEvent.click(restoreBtn);
+
+    // 3. Verify all settings are restored to default (dimmer 30%, size medium, first letter soft, palette omnissh, speed 1.0x)
+    const slider = screen.getByTestId("matrix-dimmer-slider");
+    expect(slider).toHaveValue("0.3");
+
+    const mediumBtn = screen.getByTestId("matrix-size-medium");
+    expect(mediumBtn.className).toContain("font-bold");
+
+    const softBtn = screen.getByTestId("matrix-head-soft");
+    expect(softBtn).toHaveAttribute("aria-pressed", "true");
+    expect(softBtn.className).toContain("font-bold");
+
+    const classicBtn = screen.getByTestId("matrix-palette-classic");
+    expect(classicBtn.className).not.toContain("font-semibold");
+    const omnisshBtn = screen.getByTestId("matrix-palette-omnissh");
+    expect(omnisshBtn.className).toContain("font-semibold");
+
+    const speed10 = screen.getByTestId("matrix-speed-1.0");
+    expect(speed10.className).toContain("font-bold");
+
+    // Verify defaults were written to storage
+    expect(window.localStorage.getItem("matrix_theme_brightness")).toBe(JSON.stringify(0.3));
+    expect(window.localStorage.getItem("matrix_theme_size")).toBe(JSON.stringify("medium"));
+    expect(window.localStorage.getItem("matrix_theme_head")).toBe(JSON.stringify("soft"));
+    expect(window.localStorage.getItem("matrix_theme_palette")).toBe(JSON.stringify("omnissh"));
+    expect(window.localStorage.getItem("matrix_theme_speed")).toBe(JSON.stringify(1));
   });
 });
 

@@ -7,7 +7,7 @@
  */
 
 import { useEffect, useRef, useState, useCallback, useSyncExternalStore } from "react";
-import { Terminal, Play, Pause, Palette, Sliders, Eye, EyeOff, Sparkles, X, Sun, Type, Zap } from "lucide-react";
+import { Terminal, Play, Pause, Palette, Sliders, Eye, EyeOff, Sparkles, X, Sun, Type, Zap, RotateCcw } from "lucide-react";
 
 // Authentic Matrix half-width Katakana + code / binary / sysadmin glyphs
 const KATAKANA = "ﾊﾐﾋｰｳｼﾅﾓﾆｻﾜﾂｵﾘｱﾎﾃﾏｹﾒｴｶｷﾑﾕﾗｾﾈｽﾀﾇﾍ1234567890:・.=\"=*+-<>¦｜";
@@ -84,11 +84,27 @@ const getReducedMotionSnapshot = () => {
 };
 const getReducedMotionServerSnapshot = () => false;
 
-const STORAGE_PALETTE_KEY = "matrix_theme_palette";
-const STORAGE_SPEED_KEY = "matrix_theme_speed";
-const STORAGE_BRIGHTNESS_KEY = "matrix_theme_brightness";
-const STORAGE_SIZE_KEY = "matrix_theme_size";
-const STORAGE_HEAD_KEY = "matrix_theme_head";
+export const STORAGE_PALETTE_KEY = "matrix_theme_palette";
+export const STORAGE_SPEED_KEY = "matrix_theme_speed";
+export const STORAGE_BRIGHTNESS_KEY = "matrix_theme_brightness";
+export const STORAGE_SIZE_KEY = "matrix_theme_size";
+export const STORAGE_HEAD_KEY = "matrix_theme_head";
+
+/*
+ * Default visual configuration for the Matrix rain background:
+ * - 30% dimmer for balanced contrast against terminal text and shell UI.
+ * - Medium glyph size (14px font, 18px column step).
+ * - Soft first letter highlight (smooth stream blend without blooming glare).
+ * - OmniSSH signature color palette (cyan / emerald / purple mix).
+ * - Standard 1.0x velocity.
+ */
+export const MATRIX_DEFAULTS = {
+  theme: "omnissh" as ColorTheme,
+  speedMultiplier: 1 as 1 | 0.6 | 1.6,
+  brightness: 0.30,
+  glyphSize: "medium" as GlyphSize,
+  headMode: "soft" as HeadMode,
+} as const;
 
 function getStoredValue<T>(key: string, fallback: T): T {
   if (typeof window === "undefined" || !window.localStorage) return fallback;
@@ -122,21 +138,29 @@ export function MatrixBackground() {
   const isRunning = !prefersReducedMotion && !userPaused;
 
   const [isVisible, setIsVisible] = useState(true);
-  const [theme, setThemeState] = useState<ColorTheme>(() =>
-    getStoredValue<ColorTheme>(STORAGE_PALETTE_KEY, "omnissh")
-  );
-  const [speedMultiplier, setSpeedMultiplierState] = useState<1 | 0.6 | 1.6>(() =>
-    getStoredValue<1 | 0.6 | 1.6>(STORAGE_SPEED_KEY, 1)
-  );
-  const [brightness, setBrightnessState] = useState<number>(() =>
-    getStoredValue<number>(STORAGE_BRIGHTNESS_KEY, 0.45)
-  );
-  const [glyphSize, setGlyphSizeState] = useState<GlyphSize>(() =>
-    getStoredValue<GlyphSize>(STORAGE_SIZE_KEY, "medium")
-  );
+  const [theme, setThemeState] = useState<ColorTheme>(() => {
+    const val = getStoredValue<ColorTheme>(STORAGE_PALETTE_KEY, MATRIX_DEFAULTS.theme);
+    return val === "omnissh" || val === "cyan" || val === "emerald" || val === "classic"
+      ? val
+      : MATRIX_DEFAULTS.theme;
+  });
+  const [speedMultiplier, setSpeedMultiplierState] = useState<1 | 0.6 | 1.6>(() => {
+    const val = getStoredValue<1 | 0.6 | 1.6>(STORAGE_SPEED_KEY, MATRIX_DEFAULTS.speedMultiplier);
+    return val === 1 || val === 0.6 || val === 1.6 ? val : MATRIX_DEFAULTS.speedMultiplier;
+  });
+  const [brightness, setBrightnessState] = useState<number>(() => {
+    const val = getStoredValue<number>(STORAGE_BRIGHTNESS_KEY, MATRIX_DEFAULTS.brightness);
+    return typeof val === "number" && !isNaN(val)
+      ? Math.max(0.15, Math.min(1.0, Math.round(val * 100) / 100))
+      : MATRIX_DEFAULTS.brightness;
+  });
+  const [glyphSize, setGlyphSizeState] = useState<GlyphSize>(() => {
+    const val = getStoredValue<GlyphSize>(STORAGE_SIZE_KEY, MATRIX_DEFAULTS.glyphSize);
+    return val === "small" || val === "medium" || val === "large" ? val : MATRIX_DEFAULTS.glyphSize;
+  });
   const [headMode, setHeadModeState] = useState<HeadMode>(() => {
-    const val = getStoredValue<HeadMode>(STORAGE_HEAD_KEY, "white");
-    return val === "white" || val === "tinted" || val === "soft" ? val : "white";
+    const val = getStoredValue<HeadMode>(STORAGE_HEAD_KEY, MATRIX_DEFAULTS.headMode);
+    return val === "white" || val === "tinted" || val === "soft" ? val : MATRIX_DEFAULTS.headMode;
   });
   const [controlsOpen, setControlsOpen] = useState(false);
 
@@ -182,6 +206,20 @@ export function MatrixBackground() {
     sizeRef.current = s;
     setupColumnsRef.current();
   }, []);
+
+  /*
+   * Revert all Matrix visual options and playback states to default presets,
+   * synchronizing React state, canvas render refs, and persisted localStorage.
+   */
+  const restoreDefaults = useCallback(() => {
+    setTheme(MATRIX_DEFAULTS.theme);
+    setSpeedMultiplier(MATRIX_DEFAULTS.speedMultiplier);
+    setBrightness(MATRIX_DEFAULTS.brightness);
+    setGlyphSize(MATRIX_DEFAULTS.glyphSize);
+    setHeadMode(MATRIX_DEFAULTS.headMode);
+    setUserPaused(false);
+    setIsVisible(true);
+  }, [setTheme, setSpeedMultiplier, setBrightness, setGlyphSize, setHeadMode]);
 
   useEffect(() => {
     isRunningRef.current = isRunning;
@@ -657,7 +695,7 @@ export function MatrixBackground() {
               </div>
               <div className="flex justify-between mt-1.5 gap-1 font-mono text-[10px]">
                 {([
-                  { label: "Subtle", val: 0.35, testId: "matrix-dimmer-subtle" },
+                  { label: "Subtle", val: 0.30, testId: "matrix-dimmer-subtle" },
                   { label: "Balanced", val: 0.55, testId: "matrix-dimmer-balanced" },
                   { label: "Vivid", val: 0.90, testId: "matrix-dimmer-vivid" },
                 ]).map((preset) => (
@@ -832,6 +870,20 @@ export function MatrixBackground() {
                   </button>
                 ))}
               </div>
+            </div>
+
+            {/* Restore to Defaults */}
+            <div className="pt-2 border-t border-border/50 mt-1 flex justify-end">
+              <button
+                type="button"
+                data-testid="matrix-restore-defaults"
+                onClick={restoreDefaults}
+                className="w-full py-1.5 px-2 rounded flex items-center justify-center gap-1.5 font-mono text-[11px] text-text-secondary hover:text-text-primary hover:bg-bg-subtle border border-border/60 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent cursor-pointer"
+                aria-label="Restore default matrix settings"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-accent" />
+                <span>Restore to Defaults</span>
+              </button>
             </div>
           </div>
         )}
