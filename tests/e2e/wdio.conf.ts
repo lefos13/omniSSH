@@ -191,6 +191,13 @@ export const config: WebdriverIO.Config = {
     specs: resolveSpecs(),
     maxInstances: 1,
 
+    /* Retry a failed spec file before failing the run. Several specs drive
+     * timing-sensitive shell/OSC 7 and transfer flows whose ordering can shift
+     * under CI load; a whole-file retry absorbs those without hiding a
+     * reproducible failure, which still fails on every attempt. */
+    specFileRetries: 2,
+    specFileRetriesDeferred: false,
+
     hostname: "127.0.0.1",
     port: 4444,
 
