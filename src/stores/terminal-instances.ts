@@ -148,6 +148,157 @@ const ANSI_PALETTE_BERSERK = {
   brightWhite: "#ffffff",
 };
 
+/*
+ * Abyssal palette for Deep Sea theme sessions: cool cyan/teal bias with a bright
+ * aqua accent, keeping standard ANSI colour meaning.
+ */
+const ANSI_PALETTE_DEEPSEA = {
+  black: "#030814",
+  red: "#ff6b81",
+  green: "#2fd8bd",
+  yellow: "#ffd97a",
+  blue: "#3fa9f5",
+  magenta: "#8f7cff",
+  cyan: "#4fe0ff",
+  white: "#cfe6f2",
+  brightBlack: "#1b3550",
+  brightRed: "#ff8fa3",
+  brightGreen: "#5df0d6",
+  brightYellow: "#ffe9a8",
+  brightBlue: "#6fc2ff",
+  brightMagenta: "#b0a4ff",
+  brightCyan: "#8af0ff",
+  brightWhite: "#ffffff",
+};
+
+/*
+ * Starlight palette for Starfield theme sessions: cool blue/white bias with a
+ * familiar mid-blue "blue" slot so standard ANSI meaning is preserved.
+ */
+const ANSI_PALETTE_STARFIELD = {
+  black: "#05060d",
+  red: "#ff6b81",
+  green: "#4fe0a0",
+  yellow: "#ffe08a",
+  blue: "#6f8fd8",
+  magenta: "#c084fc",
+  cyan: "#7fd8ff",
+  white: "#dbe7ff",
+  brightBlack: "#1c2436",
+  brightRed: "#ff8fa3",
+  brightGreen: "#7ff0bd",
+  brightYellow: "#fff0b8",
+  brightBlue: "#9fb8ff",
+  brightMagenta: "#d8a8ff",
+  brightCyan: "#a8e8ff",
+  brightWhite: "#ffffff",
+};
+
+/*
+ * Desaturated palette for Fog theme sessions: muted, low-saturation tones that
+ * match the theme's deliberate lack of bright highlights.
+ */
+const ANSI_PALETTE_FOG = {
+  black: "#0b0d0c",
+  red: "#c96b5a",
+  green: "#8aa06a",
+  yellow: "#c2ad72",
+  blue: "#6f8593",
+  magenta: "#9a7c8a",
+  cyan: "#7f9a93",
+  white: "#c3ccc6",
+  brightBlack: "#3d463f",
+  brightRed: "#e08a76",
+  brightGreen: "#a8c084",
+  brightYellow: "#ddc98f",
+  brightBlue: "#8fa8b8",
+  brightMagenta: "#b89cae",
+  brightCyan: "#a0c0b8",
+  brightWhite: "#eef2ef",
+};
+
+/*
+ * Light-contrast palette for the Sakura theme's light base — mirroring
+ * ANSI_PALETTE_LIGHT (dark inks for legibility on an off-white background) with
+ * a warmed, rose-biased neutral.
+ */
+const ANSI_PALETTE_SAKURA = {
+  black: "#3a2e33",
+  red: "#c9255a",
+  green: "#116329",
+  yellow: "#8a5a10",
+  blue: "#3a5bbf",
+  magenta: "#a03a86",
+  cyan: "#1b7c83",
+  white: "#8a7a80",
+  brightBlack: "#6b5c62",
+  brightRed: "#e0436e",
+  brightGreen: "#1a7f37",
+  brightYellow: "#a06a18",
+  brightBlue: "#5573d6",
+  brightMagenta: "#c25aa6",
+  brightCyan: "#3192aa",
+  brightWhite: "#b0a2a8",
+};
+
+/*
+ * Dark, warmly-lit palette for the Sakura Night theme: pale ink over a near-black
+ * rose base, matching that theme's moonlit petals and violet shafts.
+ */
+const ANSI_PALETTE_SAKURA_NIGHT = {
+  black: "#140a12",
+  red: "#ff6b8a",
+  green: "#8ad8a8",
+  yellow: "#ffd18a",
+  blue: "#7f9ae0",
+  magenta: "#d88ad8",
+  cyan: "#7fd8d0",
+  white: "#f2dae4",
+  brightBlack: "#3a2436",
+  brightRed: "#ff94ac",
+  brightGreen: "#a8f0c0",
+  brightYellow: "#ffe8b0",
+  brightBlue: "#a0b8ff",
+  brightMagenta: "#f0a8f0",
+  brightCyan: "#a8f0ea",
+  brightWhite: "#ffffff",
+};
+
+/*
+ * Golden-order palette for Erdtree theme sessions: ember gold and pale bone over
+ * a warm dark base, with the standard ANSI roles intact.
+ */
+const ANSI_PALETTE_ERDTREE = {
+  black: "#0d0a04",
+  red: "#c25a4a",
+  green: "#9aa84c",
+  yellow: "#e0b040",
+  blue: "#6f7fa8",
+  magenta: "#a86a8a",
+  cyan: "#7fa8a0",
+  white: "#e8dcc0",
+  brightBlack: "#4a3d1c",
+  brightRed: "#e07a5a",
+  brightGreen: "#c0d06a",
+  brightYellow: "#ffd45e",
+  brightBlue: "#93a8d8",
+  brightMagenta: "#c89ab8",
+  brightCyan: "#a8d0c8",
+  brightWhite: "#fff6d8",
+};
+
+/** Theme id → contrast-tuned ANSI palette. Unknown ids fall back to dark. */
+const ANSI_PALETTES: Record<string, typeof ANSI_PALETTE_DARK> = {
+  matrix: ANSI_PALETTE_MATRIX,
+  berserk: ANSI_PALETTE_BERSERK,
+  deepsea: ANSI_PALETTE_DEEPSEA,
+  starfield: ANSI_PALETTE_STARFIELD,
+  fog: ANSI_PALETTE_FOG,
+  sakura: ANSI_PALETTE_SAKURA,
+  "sakura-night": ANSI_PALETTE_SAKURA_NIGHT,
+  erdtree: ANSI_PALETTE_ERDTREE,
+};
+
 /** Read OKLCH CSS custom properties and convert to hex for xterm.js. */
 export function getTerminalTheme(): ITheme {
   const styles = getComputedStyle(document.documentElement);
@@ -174,11 +325,9 @@ export function getTerminalTheme(): ITheme {
   const ansi =
     themeAttr === "light"
       ? ANSI_PALETTE_LIGHT
-      : themeAttr === "matrix"
-        ? ANSI_PALETTE_MATRIX
-        : themeAttr === "berserk"
-          ? ANSI_PALETTE_BERSERK
-          : ANSI_PALETTE_DARK;
+      : themeAttr
+        ? ANSI_PALETTES[themeAttr] ?? ANSI_PALETTE_DARK
+        : ANSI_PALETTE_DARK;
 
   return {
     background: toHex("--color-bg-base"),

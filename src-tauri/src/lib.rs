@@ -113,10 +113,23 @@ pub fn run() {
             // (rather than declaratively in tauri.conf.json) specifically so we
             // can attach this initialization script before first paint.
             let theme = match host_db.get_setting("app_theme") {
-                Ok(Some(v)) if v == "light" => "light",
-                Ok(Some(v)) if v == "matrix" => "matrix",
-                Ok(Some(v)) if v == "berserk" => "berserk",
-                _ => "dark",
+                Ok(Some(v))
+                    if matches!(
+                        v.as_str(),
+                        "light"
+                            | "matrix"
+                            | "berserk"
+                            | "deepsea"
+                            | "starfield"
+                            | "fog"
+                            | "sakura"
+                            | "sakura-night"
+                            | "erdtree"
+                    ) =>
+                {
+                    v
+                }
+                _ => "dark".to_string(),
             };
             // Same rationale as the theme: inject the persisted accent hue before
             // first paint so the accent colour doesn't flash from the default.

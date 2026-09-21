@@ -3,7 +3,41 @@ import type { CredentialStorage } from "../types/vault";
 import type { TerminalHighlightRule } from "../types";
 
 export type CursorStyle = "block" | "bar" | "underline";
-export type ThemeMode = "dark" | "light" | "matrix" | "berserk";
+export type ThemeMode =
+  | "dark"
+  | "light"
+  | "matrix"
+  | "berserk"
+  | "deepsea"
+  | "starfield"
+  | "fog"
+  | "sakura"
+  | "sakura-night"
+  | "erdtree";
+
+/*
+ * Animated "special" themes render a full-viewport canvas behind a transparent
+ * UI shell and carry a signature accent hue that is nudged in only while the
+ * user is still on the untouched default accent. Keeping the registry here means
+ * the theme id is validated in exactly one place (store, CSS, AppShell and the
+ * Rust pre-paint injection all key off it).
+ */
+export const SPECIAL_THEME_HUES: Record<string, number> = {
+  matrix: 150,
+  berserk: 25,
+  deepsea: 205,
+  starfield: 245,
+  fog: 145,
+  sakura: 350,
+  "sakura-night": 320,
+  erdtree: 85,
+};
+
+/** Whether a persisted/selected theme id is one of the animated special themes. */
+export function isSpecialTheme(theme: string): theme is ThemeMode {
+  return Object.prototype.hasOwnProperty.call(SPECIAL_THEME_HUES, theme);
+}
+
 /** Which mouse button pastes the clipboard into the terminal (#71). */
 export type PasteButton = "none" | "right" | "middle";
 /** What double-clicking a file in the Explorer does. */
@@ -145,8 +179,7 @@ function initialThemeMode(): ThemeMode {
   if (typeof document !== "undefined") {
     const theme = document.documentElement.dataset.theme;
     if (theme === "light") return "light";
-    if (theme === "matrix") return "matrix";
-    if (theme === "berserk") return "berserk";
+    if (theme && isSpecialTheme(theme)) return theme;
   }
   return DEFAULTS.themeMode;
 }
@@ -260,7 +293,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
       /* Animated themes carry a signature accent hue; nudge it in only while the
        * user is still on the untouched default (blue) accent, so an existing
        * deliberate accent choice is never silently overridden. */
-      const signatureHue = mode === "matrix" ? 150 : mode === "berserk" ? 25 : null;
+      const signatureHue = SPECIAL_THEME_HUES[mode] ?? null;
       const nextHue =
         signatureHue !== null && s.accentHue === 250 && !s.accentCustom
           ? signatureHue
@@ -457,7 +490,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
       let editorsSeeded = false;
       for (const [key, value] of pairs) {
         switch (key) {
-          case "app_theme": updates.themeMode = value === "light" || value === "matrix" || value === "berserk" ? value : DEFAULTS.themeMode; break;
+          case "app_theme": updates.themeMode = value === "light" || isSpecialTheme(value) ? (value as ThemeMode) : DEFAULTS.themeMode; break;
           case "app_accent_hue": updates.accentHue = Number(value) || DEFAULTS.accentHue; break;
           case "app_accent_custom": {
             const parts = value.trim().split(/\s+/).map(Number);

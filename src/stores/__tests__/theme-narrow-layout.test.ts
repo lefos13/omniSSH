@@ -13,6 +13,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import { useSettingsStore } from "../settings-store";
+import type { ThemeMode } from "../settings-store";
 import { useUiStore } from "../ui-store";
 import { useLinkedExplorerStore } from "../linked-explorer-store";
 import { getTerminalTheme } from "../terminal-instances";
@@ -67,6 +68,30 @@ describe("Theme and narrow layout constraints", () => {
       expect(useSettingsStore.getState().accentHue).toBe(25);
     });
 
+    it("applies the signature accent hue for every special theme from the default accent", () => {
+      const expected: Record<ThemeMode, number | null> = {
+        dark: null,
+        light: null,
+        matrix: 150,
+        berserk: 25,
+        deepsea: 205,
+        starfield: 245,
+        fog: 145,
+        sakura: 350,
+        "sakura-night": 320,
+        erdtree: 85,
+      };
+
+      for (const [mode, hue] of Object.entries(expected) as [ThemeMode, number | null][]) {
+        // Reset to the untouched default accent so the signature hue is eligible.
+        useSettingsStore.getState().setAccentHue(250);
+        useSettingsStore.getState().setThemeMode(mode);
+
+        expect(useSettingsStore.getState().themeMode).toBe(mode);
+        expect(useSettingsStore.getState().accentHue).toBe(hue ?? 250);
+      }
+    });
+
     it("updates accent hue and custom accent colors", () => {
       const store = useSettingsStore.getState();
 
@@ -106,6 +131,33 @@ describe("Theme and narrow layout constraints", () => {
       expect(berserkTheme.red).toBe("#c1121f");
       expect(berserkTheme.red).not.toEqual(matrixTheme.red);
       expect(berserkTheme.red).not.toEqual(darkTheme.red);
+    });
+
+    it("generates a distinct terminal palette for each new special theme", () => {
+      document.documentElement.dataset.theme = "dark";
+      const darkGreen = getTerminalTheme().green;
+
+      const expectedGreens: [string, string][] = [
+        ["deepsea", "#2fd8bd"],
+        ["starfield", "#4fe0a0"],
+        ["fog", "#8aa06a"],
+        ["sakura", "#116329"],
+        ["sakura-night", "#8ad8a8"],
+        ["erdtree", "#9aa84c"],
+      ];
+
+      const seen = new Set<string>(["#0dbc79"]);
+      for (const [theme, green] of expectedGreens) {
+        document.documentElement.dataset.theme = theme;
+        const palette = getTerminalTheme();
+        expect(palette.background).toBeDefined();
+        expect(palette.foreground).toBeDefined();
+        expect(palette.green).toBe(green);
+        expect(palette.green).not.toBe(darkGreen);
+        seen.add(green);
+      }
+      // Every theme resolves to its own palette rather than reusing another's.
+      expect(seen.size).toBe(expectedGreens.length + 1);
     });
   });
 

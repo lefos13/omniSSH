@@ -322,6 +322,359 @@
   }
 }
 
+/*
+ * Deep Sea theme tokens: an abyssal aesthetic with cool blue-teal translucent
+ * surfaces floating over the animated bubble/bioluminescence canvas, a cyan
+ * accent, and soft aquatic glow shadows.
+ */
+:root[data-theme="deepsea"] {
+  color-scheme: dark;
+
+  --color-bg-base:      oklch(0.075 0.030 235 / 0.05);
+  --color-bg-surface:   oklch(0.120 0.035 235 / 0.78);
+  --color-bg-overlay:   oklch(0.160 0.040 235 / 0.88);
+  --color-bg-subtle:    oklch(0.200 0.045 235 / 0.90);
+  --color-bg-muted:     oklch(0.240 0.045 235 / 0.94);
+
+  --color-text-primary:   oklch(0.975 0.025 210);
+  --color-text-secondary: oklch(0.845 0.060 210);
+  --color-text-muted:     oklch(0.680 0.050 215);
+  --color-text-inverse:   oklch(0.090 0.030 235);
+
+  --color-accent:       oklch(0.760 0.180 var(--accent-hue, 205));
+  --color-accent-hover: oklch(0.700 0.180 var(--accent-hue, 205));
+  --color-accent-muted: oklch(0.760 0.180 var(--accent-hue, 205) / 0.22);
+
+  --color-status-connected:    oklch(0.780 0.170 175);
+  --color-status-connecting:   oklch(0.800 0.160 85);
+  --color-status-error:        oklch(0.680 0.220 20);
+  --color-status-disconnected: oklch(0.560 0.040 235);
+
+  --color-border:       oklch(0.340 0.060 220 / 0.50);
+  --color-border-focus: oklch(0.760 0.180 var(--accent-hue, 205));
+  --color-ring:         oklch(0.760 0.180 var(--accent-hue, 205) / 0.40);
+
+  --shadow-sm:  0 1px 3px oklch(0 0 0 / 0.5);
+  --shadow-md:  0 2px 10px oklch(0 0 0 / 0.6), 0 0 14px oklch(0.760 0.180 205 / 0.18);
+  --shadow-lg:  0 8px 28px oklch(0 0 0 / 0.7), 0 0 28px oklch(0.760 0.180 205 / 0.22);
+}
+
+/*
+ * Starfield theme tokens: deep-space navy translucent surfaces with starlight
+ * text, a cool blue accent, and faint blue glow shadows.
+ */
+:root[data-theme="starfield"] {
+  color-scheme: dark;
+
+  --color-bg-base:      oklch(0.070 0.025 265 / 0.05);
+  --color-bg-surface:   oklch(0.115 0.030 265 / 0.78);
+  --color-bg-overlay:   oklch(0.155 0.035 265 / 0.88);
+  --color-bg-subtle:    oklch(0.195 0.038 265 / 0.90);
+  --color-bg-muted:     oklch(0.235 0.038 265 / 0.94);
+
+  --color-text-primary:   oklch(0.970 0.020 250);
+  --color-text-secondary: oklch(0.840 0.050 250);
+  --color-text-muted:     oklch(0.675 0.045 250);
+  --color-text-inverse:   oklch(0.090 0.025 265);
+
+  --color-accent:       oklch(0.730 0.170 var(--accent-hue, 245));
+  --color-accent-hover: oklch(0.675 0.170 var(--accent-hue, 245));
+  --color-accent-muted: oklch(0.730 0.170 var(--accent-hue, 245) / 0.22);
+
+  --color-status-connected:    oklch(0.780 0.170 165);
+  --color-status-connecting:   oklch(0.800 0.160 85);
+  --color-status-error:        oklch(0.680 0.220 20);
+  --color-status-disconnected: oklch(0.560 0.040 250);
+
+  --color-border:       oklch(0.335 0.055 250 / 0.50);
+  --color-border-focus: oklch(0.730 0.170 var(--accent-hue, 245));
+  --color-ring:         oklch(0.730 0.170 var(--accent-hue, 245) / 0.40);
+
+  --shadow-sm:  0 1px 3px oklch(0 0 0 / 0.5);
+  --shadow-md:  0 2px 10px oklch(0 0 0 / 0.6), 0 0 14px oklch(0.730 0.170 245 / 0.18);
+  --shadow-lg:  0 8px 28px oklch(0 0 0 / 0.7), 0 0 28px oklch(0.730 0.170 245 / 0.22);
+}
+
+/*
+ * Fog theme tokens: deliberately desaturated grey-green surfaces with a low-chroma
+ * accent and flat (non-glowing) shadows, matching the theme's absence of bright
+ * highlights.
+ */
+:root[data-theme="fog"] {
+  color-scheme: dark;
+
+  --color-bg-base:      oklch(0.085 0.006 150 / 0.05);
+  --color-bg-surface:   oklch(0.130 0.008 150 / 0.80);
+  --color-bg-overlay:   oklch(0.170 0.010 150 / 0.88);
+  --color-bg-subtle:    oklch(0.210 0.012 150 / 0.90);
+  --color-bg-muted:     oklch(0.250 0.012 150 / 0.94);
+
+  --color-text-primary:   oklch(0.930 0.012 150);
+  --color-text-secondary: oklch(0.790 0.018 150);
+  --color-text-muted:     oklch(0.640 0.016 150);
+  --color-text-inverse:   oklch(0.100 0.008 150);
+
+  --color-accent:       oklch(0.680 0.070 var(--accent-hue, 145));
+  --color-accent-hover: oklch(0.625 0.070 var(--accent-hue, 145));
+  --color-accent-muted: oklch(0.680 0.070 var(--accent-hue, 145) / 0.20);
+
+  --color-status-connected:    oklch(0.700 0.120 150);
+  --color-status-connecting:   oklch(0.720 0.110 85);
+  --color-status-error:        oklch(0.620 0.150 25);
+  --color-status-disconnected: oklch(0.560 0.015 150);
+
+  --color-border:       oklch(0.320 0.015 150 / 0.55);
+  --color-border-focus: oklch(0.680 0.070 var(--accent-hue, 145));
+  --color-ring:         oklch(0.680 0.070 var(--accent-hue, 145) / 0.35);
+
+  --shadow-sm:  0 1px 3px oklch(0 0 0 / 0.5);
+  --shadow-md:  0 2px 10px oklch(0 0 0 / 0.6);
+  --shadow-lg:  0 8px 28px oklch(0 0 0 / 0.68);
+}
+
+/*
+ * Erdtree theme tokens: warm gold-and-bone text over ash-dark translucent
+ * surfaces, with a golden accent and ember glow shadows. A gnarled tree
+ * watermark (see TreeWatermark.tsx) pulses behind the UI.
+ */
+:root[data-theme="erdtree"] {
+  color-scheme: dark;
+
+  --color-bg-base:      oklch(0.090 0.020 80 / 0.05);
+  --color-bg-surface:   oklch(0.135 0.025 80 / 0.80);
+  --color-bg-overlay:   oklch(0.175 0.030 80 / 0.88);
+  --color-bg-subtle:    oklch(0.215 0.032 80 / 0.90);
+  --color-bg-muted:     oklch(0.255 0.032 80 / 0.94);
+
+  --color-text-primary:   oklch(0.965 0.035 85);
+  --color-text-secondary: oklch(0.855 0.060 80);
+  --color-text-muted:     oklch(0.690 0.050 80);
+  --color-text-inverse:   oklch(0.105 0.025 80);
+
+  --color-accent:       oklch(0.780 0.150 var(--accent-hue, 85));
+  --color-accent-hover: oklch(0.720 0.150 var(--accent-hue, 85));
+  --color-accent-muted: oklch(0.780 0.150 var(--accent-hue, 85) / 0.22);
+
+  --color-status-connected:    oklch(0.740 0.170 145);
+  --color-status-connecting:   oklch(0.800 0.160 85);
+  --color-status-error:        oklch(0.660 0.220 25);
+  --color-status-disconnected: oklch(0.570 0.030 80);
+
+  --color-border:       oklch(0.370 0.060 80 / 0.55);
+  --color-border-focus: oklch(0.780 0.150 var(--accent-hue, 85));
+  --color-ring:         oklch(0.780 0.150 var(--accent-hue, 85) / 0.40);
+
+  --shadow-sm:  0 1px 3px oklch(0 0 0 / 0.5);
+  --shadow-md:  0 2px 10px oklch(0 0 0 / 0.6), 0 0 14px oklch(0.780 0.150 85 / 0.18);
+  --shadow-lg:  0 8px 28px oklch(0 0 0 / 0.7), 0 0 28px oklch(0.780 0.150 85 / 0.22);
+}
+
+/*
+ * Sakura theme tokens: the only light-based special theme. Soft rose-tinted
+ * translucent surfaces float over the petal canvas, with dark ink text and a
+ * pink accent. Light surfaces still carry alpha so petals read through chrome.
+ */
+:root[data-theme="sakura"] {
+  color-scheme: light;
+
+  --color-bg-base:      oklch(0.965 0.010 350 / 0.10);
+  --color-bg-surface:   oklch(0.985 0.008 350 / 0.82);
+  --color-bg-overlay:   oklch(0.995 0.005 350 / 0.90);
+  --color-bg-subtle:    oklch(0.950 0.012 350 / 0.92);
+  --color-bg-muted:     oklch(0.905 0.016 350 / 0.95);
+
+  --color-text-primary:   oklch(0.250 0.030 350);
+  --color-text-secondary: oklch(0.420 0.030 350);
+  --color-text-muted:     oklch(0.560 0.026 350);
+  --color-text-inverse:   oklch(0.990 0.006 350);
+
+  --color-accent:       oklch(0.620 0.170 var(--accent-hue, 350));
+  --color-accent-hover: oklch(0.560 0.170 var(--accent-hue, 350));
+  --color-accent-muted: oklch(0.620 0.170 var(--accent-hue, 350) / 0.16);
+
+  --color-status-connected:    oklch(0.580 0.145 155);
+  --color-status-connecting:   oklch(0.640 0.130 80);
+  --color-status-error:        oklch(0.580 0.200 20);
+  --color-status-disconnected: oklch(0.580 0.020 350);
+
+  --color-border:       oklch(0.800 0.020 350);
+  --color-border-focus: oklch(0.620 0.170 var(--accent-hue, 350));
+  --color-ring:         oklch(0.620 0.170 var(--accent-hue, 350) / 0.30);
+
+  --shadow-sm:  0 1px 2px oklch(0.300 0.030 350 / 0.08);
+  --shadow-md:  0 2px 10px oklch(0.300 0.030 350 / 0.10), 0 1px 2px oklch(0.300 0.030 350 / 0.06);
+  --shadow-lg:  0 14px 32px oklch(0.300 0.030 350 / 0.14), 0 3px 10px oklch(0.300 0.030 350 / 0.08);
+}
+
+/*
+ * Sakura Night theme tokens: the dark counterpart to Sakura. Near-black rose
+ * translucent surfaces with pale blossom text, a violet-pink accent, and soft
+ * moonlight glow shadows.
+ */
+:root[data-theme="sakura-night"] {
+  color-scheme: dark;
+
+  --color-bg-base:      oklch(0.090 0.020 340 / 0.05);
+  --color-bg-surface:   oklch(0.135 0.028 340 / 0.80);
+  --color-bg-overlay:   oklch(0.175 0.032 340 / 0.88);
+  --color-bg-subtle:    oklch(0.215 0.034 340 / 0.90);
+  --color-bg-muted:     oklch(0.255 0.034 340 / 0.94);
+
+  --color-text-primary:   oklch(0.965 0.025 340);
+  --color-text-secondary: oklch(0.860 0.045 330);
+  --color-text-muted:     oklch(0.700 0.040 330);
+  --color-text-inverse:   oklch(0.105 0.020 340);
+
+  --color-accent:       oklch(0.740 0.170 var(--accent-hue, 320));
+  --color-accent-hover: oklch(0.685 0.170 var(--accent-hue, 320));
+  --color-accent-muted: oklch(0.740 0.170 var(--accent-hue, 320) / 0.22);
+
+  --color-status-connected:    oklch(0.760 0.160 155);
+  --color-status-connecting:   oklch(0.800 0.160 85);
+  --color-status-error:        oklch(0.680 0.210 15);
+  --color-status-disconnected: oklch(0.570 0.030 330);
+
+  --color-border:       oklch(0.355 0.050 335 / 0.52);
+  --color-border-focus: oklch(0.740 0.170 var(--accent-hue, 320));
+  --color-ring:         oklch(0.740 0.170 var(--accent-hue, 320) / 0.40);
+
+  --shadow-sm:  0 1px 3px oklch(0 0 0 / 0.5);
+  --shadow-md:  0 2px 10px oklch(0 0 0 / 0.6), 0 0 14px oklch(0.740 0.170 320 / 0.18);
+  --shadow-lg:  0 8px 28px oklch(0 0 0 / 0.7), 0 0 28px oklch(0.740 0.170 320 / 0.22);
+}
+
+/* Opaque fallback layers painted behind the transparent effect canvases. */
+:root[data-theme="deepsea"],
+:root[data-theme="deepsea"] body,
+:root[data-theme="deepsea"] #root {
+  background-color: #030814;
+}
+
+:root[data-theme="starfield"],
+:root[data-theme="starfield"] body,
+:root[data-theme="starfield"] #root {
+  background-color: #05060d;
+}
+
+:root[data-theme="fog"],
+:root[data-theme="fog"] body,
+:root[data-theme="fog"] #root {
+  background-color: #0b0d0c;
+}
+
+:root[data-theme="sakura"],
+:root[data-theme="sakura"] body,
+:root[data-theme="sakura"] #root {
+  background-color: #fdf6f8;
+}
+
+:root[data-theme="erdtree"],
+:root[data-theme="erdtree"] body,
+:root[data-theme="erdtree"] #root {
+  background-color: #0d0a04;
+}
+
+:root[data-theme="sakura-night"],
+:root[data-theme="sakura-night"] body,
+:root[data-theme="sakura-night"] #root {
+  background-color: #140a12;
+}
+
+/* See the Matrix rule above: inputs are excluded from the backdrop-filter so
+   input adornment icons stay visible. Applies to every effect theme. */
+:root[data-theme="deepsea"] nav[data-testid="sidebar"],
+:root[data-theme="deepsea"] aside[data-testid="groups-sidebar"],
+:root[data-theme="deepsea"] [data-testid^="host-card-"],
+:root[data-theme="deepsea"] .bg-bg-surface:not(input):not(textarea):not(select),
+:root[data-theme="starfield"] nav[data-testid="sidebar"],
+:root[data-theme="starfield"] aside[data-testid="groups-sidebar"],
+:root[data-theme="starfield"] [data-testid^="host-card-"],
+:root[data-theme="starfield"] .bg-bg-surface:not(input):not(textarea):not(select),
+:root[data-theme="fog"] nav[data-testid="sidebar"],
+:root[data-theme="fog"] aside[data-testid="groups-sidebar"],
+:root[data-theme="fog"] [data-testid^="host-card-"],
+:root[data-theme="fog"] .bg-bg-surface:not(input):not(textarea):not(select),
+:root[data-theme="sakura"] nav[data-testid="sidebar"],
+:root[data-theme="sakura"] aside[data-testid="groups-sidebar"],
+:root[data-theme="sakura"] [data-testid^="host-card-"],
+:root[data-theme="sakura"] .bg-bg-surface:not(input):not(textarea):not(select),
+:root[data-theme="erdtree"] nav[data-testid="sidebar"],
+:root[data-theme="erdtree"] aside[data-testid="groups-sidebar"],
+:root[data-theme="erdtree"] [data-testid^="host-card-"],
+:root[data-theme="erdtree"] .bg-bg-surface:not(input):not(textarea):not(select),
+:root[data-theme="sakura-night"] nav[data-testid="sidebar"],
+:root[data-theme="sakura-night"] aside[data-testid="groups-sidebar"],
+:root[data-theme="sakura-night"] [data-testid^="host-card-"],
+:root[data-theme="sakura-night"] .bg-bg-surface:not(input):not(textarea):not(select) {
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* Modal treatment for the dark effect themes. */
+:root[data-theme="deepsea"] [role="dialog"],
+:root[data-theme="deepsea"] dialog {
+  background-color: oklch(0.120 0.035 235 / 0.94);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+:root[data-theme="starfield"] [role="dialog"],
+:root[data-theme="starfield"] dialog {
+  background-color: oklch(0.115 0.030 265 / 0.94);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+:root[data-theme="fog"] [role="dialog"],
+:root[data-theme="fog"] dialog {
+  background-color: oklch(0.130 0.008 150 / 0.94);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+:root[data-theme="erdtree"] [role="dialog"],
+:root[data-theme="erdtree"] dialog {
+  background-color: oklch(0.135 0.025 80 / 0.94);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+/* Modal treatment for the light Sakura theme. */
+:root[data-theme="sakura"] [role="dialog"],
+:root[data-theme="sakura"] dialog {
+  background-color: oklch(0.985 0.008 350 / 0.96);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+:root[data-theme="sakura-night"] [role="dialog"],
+:root[data-theme="sakura-night"] dialog {
+  background-color: oklch(0.135 0.028 340 / 0.94);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+/* Slow glow pulse for the Erdtree watermark (see TreeWatermark.tsx). */
+@keyframes erdtree-tree-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.erdtree-tree-anim {
+  animation: erdtree-tree-pulse 6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .erdtree-tree-anim {
+    animation: none;
+  }
+}
+
 /* --- Base Resets --- */
 
 html, body, #root {

@@ -326,6 +326,18 @@ const ACCENT_PRESETS: { name: string; hue: number }[] = [
   { name: "Teal", hue: 195 },
 ];
 
+/* Animated special themes shown as cards in the Appearance gallery. */
+const SPECIAL_THEME_OPTIONS: { id: ThemeMode; label: string; dot: string }[] = [
+  { id: "matrix", label: "Matrix", dot: "bg-emerald-500" },
+  { id: "berserk", label: "Berserk", dot: "bg-red-700" },
+  { id: "deepsea", label: "Deep Sea", dot: "bg-sky-600" },
+  { id: "starfield", label: "Starfield", dot: "bg-blue-600" },
+  { id: "fog", label: "Fog", dot: "bg-slate-500" },
+  { id: "sakura", label: "Sakura", dot: "bg-pink-400" },
+  { id: "sakura-night", label: "Sakura Night", dot: "bg-purple-400" },
+  { id: "erdtree", label: "Erdtree", dot: "bg-amber-400" },
+];
+
 function AppearanceSettings() {
   const themeMode = useSettingsStore((s) => s.themeMode);
   const setThemeMode = useSettingsStore((s) => s.setThemeMode);
@@ -369,7 +381,7 @@ function AppearanceSettings() {
       <SettingRow>
         <div>
           <p className={LABEL_CLASS}>Color Theme</p>
-          <p className={DESC_CLASS}>Switch between dark, light, and the animated Matrix / Berserk special themes</p>
+          <p className={DESC_CLASS}>Base dark or light appearance for the whole app</p>
         </div>
         <SegmentedControl<ThemeMode>
           id="s-light-theme"
@@ -378,10 +390,48 @@ function AppearanceSettings() {
           options={[
             { value: "dark", label: "Dark" },
             { value: "light", label: "Light" },
-            { value: "matrix", label: "Matrix" },
-            { value: "berserk", label: "Berserk" },
           ]}
         />
+      </SettingRow>
+
+      <SettingRow>
+        <div className="min-w-0">
+          <p className={LABEL_CLASS}>Special Themes</p>
+          <p className={DESC_CLASS}>
+            Animated full-window effects, each with its own palettes and terminal colors
+          </p>
+        </div>
+        <div
+          role="radiogroup"
+          aria-label="Special themes"
+          className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 min-w-0 flex-1 max-w-[420px]"
+        >
+          {SPECIAL_THEME_OPTIONS.map((option) => {
+            const selected = themeMode === option.id;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                data-testid={`theme-special-${option.id}`}
+                onClick={() => setThemeMode(option.id)}
+                className={[
+                  "flex items-center gap-2 px-2.5 py-1.5 rounded-lg border text-left",
+                  "text-[length:var(--text-sm)] font-medium transition-colors duration-[var(--duration-fast)]",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  selected
+                    ? "bg-bg-overlay text-text-primary border-accent shadow-[var(--shadow-sm)]"
+                    : "bg-bg-base text-text-muted border-border hover:text-text-primary hover:bg-bg-subtle",
+                ].join(" ")}
+              >
+                <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${option.dot}`} />
+                <span className="truncate">{option.label}</span>
+                {selected && <Check className="w-3.5 h-3.5 ml-auto shrink-0 text-accent" />}
+              </button>
+            );
+          })}
+        </div>
       </SettingRow>
 
       <SettingRow>

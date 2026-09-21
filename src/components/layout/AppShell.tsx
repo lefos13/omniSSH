@@ -1,9 +1,9 @@
-import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, type ComponentType } from "react";
 import { useTabStore } from "../../stores/tab-store";
 import { useSessionStore, collectSessionIds } from "../../stores/session-store";
 import { useTerminalSearchStore } from "../../stores/terminal-search-store";
 import { useTerminalAutoFocus } from "../../hooks/use-terminal-autofocus";
-import { useSettingsStore } from "../../stores/settings-store";
+import { useSettingsStore, isSpecialTheme, type ThemeMode } from "../../stores/settings-store";
 import { useHostsStore } from "../../stores/hosts-store";
 import { useUpdaterStore } from "../../stores/updater-store";
 import { useUiStore } from "../../stores/ui-store";
@@ -34,6 +34,26 @@ import { useVaultPromptStore } from "../../stores/vault-prompt-store";
 import { GlobalVaultUnlockPrompt } from "../vault";
 import { MatrixBackground } from "../matrix";
 import { BerserkBackground } from "../berserk";
+import { DeepSeaBackground } from "../effects/deepsea";
+import { StarfieldBackground } from "../effects/starfield";
+import { FogBackground } from "../effects/fog";
+import { SakuraBackground, SakuraNightBackground } from "../effects/sakura";
+import { ErdtreeBackground } from "../effects/erdtree";
+
+/*
+ * Registry of animated special themes → their background canvas component.
+ * Keeps the render path a single lookup instead of one conditional per theme.
+ */
+const SPECIAL_THEME_BACKGROUNDS: Partial<Record<ThemeMode, ComponentType>> = {
+  matrix: MatrixBackground,
+  berserk: BerserkBackground,
+  deepsea: DeepSeaBackground,
+  starfield: StarfieldBackground,
+  fog: FogBackground,
+  sakura: SakuraBackground,
+  "sakura-night": SakuraNightBackground,
+  erdtree: ErdtreeBackground,
+};
 
 export function AppShell() {
   const themeMode = useSettingsStore((s) => s.themeMode);
@@ -528,13 +548,15 @@ export function AppShell() {
   // Determine what page content to show
   const activePageType = activeTab?.type === "page" ? activeTab.page : null;
 
+  const SpecialBackground = SPECIAL_THEME_BACKGROUNDS[themeMode];
+  const isSpecial = isSpecialTheme(themeMode);
+
   return (
     <>
-    {themeMode === "matrix" && <MatrixBackground />}
-    {themeMode === "berserk" && <BerserkBackground />}
+    {SpecialBackground && <SpecialBackground />}
     <div
       className={`flex h-screen w-screen overflow-hidden ${
-        themeMode === "matrix" || themeMode === "berserk" ? "bg-transparent" : "bg-bg-base"
+        isSpecial ? "bg-transparent" : "bg-bg-base"
       } no-select p-2 gap-2 relative z-10`}
     >
       {/* Sidebar rail */}

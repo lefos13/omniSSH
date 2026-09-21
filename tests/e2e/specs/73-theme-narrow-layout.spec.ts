@@ -54,7 +54,30 @@ describe("theme and narrow layout", () => {
         const darkTheme = await browser.execute(() => document.documentElement.dataset.theme);
         expect(darkTheme).to.equal("dark");
 
-        // 3. Narrow layout responsiveness test at 720px width
+        // 3. Select a special theme from the gallery and confirm it applies
+        const sakuraCard = await $("[data-testid='theme-special-sakura']");
+        await sakuraCard.waitForClickable({ timeout: 10_000 });
+        await sakuraCard.click();
+
+        await browser.waitUntil(
+            async () =>
+                (await browser.execute(() => document.documentElement.dataset.theme)) === "sakura",
+            { timeout: 5_000, timeoutMsg: "data-theme did not update to sakura" },
+        );
+        const specialTheme = await browser.execute(() => document.documentElement.dataset.theme);
+        expect(specialTheme).to.equal("sakura");
+
+        // Return to a base theme so the narrow-layout checks below run on it
+        const darkAgain = await $("[data-testid='s-light-theme-dark']");
+        await darkAgain.waitForClickable({ timeout: 10_000 });
+        await darkAgain.click();
+        await browser.waitUntil(
+            async () =>
+                (await browser.execute(() => document.documentElement.dataset.theme)) === "dark",
+            { timeout: 5_000, timeoutMsg: "data-theme did not return to dark" },
+        );
+
+        // 4. Narrow layout responsiveness test at 720px width
         const originalSize = await browser.getWindowSize();
         try {
             await browser.setWindowSize(720, 600);
@@ -79,6 +102,10 @@ describe("theme and narrow layout", () => {
             // Verify appearance theme control element remains displayed within viewport
             const themeControl = await $("#s-light-theme");
             expect(await themeControl.isDisplayed()).to.equal(true);
+
+            // Verify the special-theme gallery still renders within the viewport
+            const galleryCard = await $("#theme-special-deepsea");
+            expect(await galleryCard.isDisplayed()).to.equal(true);
         } finally {
             // Restore original window dimensions
             await browser.setWindowSize(originalSize.width, originalSize.height);
