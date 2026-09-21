@@ -119,6 +119,7 @@ dependencies = [
  "russh-sftp",
  "rust-s3",
  "rusty-leveldb",
+ "security-framework 3.7.0",
  "serde",
  "serde_json",
  "sha2",

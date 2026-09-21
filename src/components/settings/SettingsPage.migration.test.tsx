@@ -66,7 +66,14 @@ describe("SettingsPage bulk credential migration to App Vault", () => {
     expect(countLine).toHaveTextContent("1 host uses SSH keys and can’t be moved to the App Vault yet.");
 
     expect(screen.getByText(/Migrate Credentials to App Vault/i)).toBeInTheDocument();
-    expect(screen.getByText(/macOS may request Keychain access once to authorize reading your credentials/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /macOS asks to authorize each System Keychain credential the first time it is read/i,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/one prompt per credential shown above/i),
+    ).toBeInTheDocument();
     expect(screen.getByTestId("settings-vault-migrate")).toBeEnabled();
   });
 

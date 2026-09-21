@@ -392,7 +392,21 @@ pub async fn save_dataset(
     let store = RemoteStore::connect(ssh, &endpoint).await?;
     let probe = store.probe().await;
     store.close(ssh).await;
-    let remote_meta = match probe?.meta.as_deref() {
+    let probe = probe?;
+
+    /* An owner publishes, so the account must be able to create files at the
+     * remote root (probed non-destructively, including for a path that does not
+     * exist yet). Refusing here — before the local row is written — means
+     * "this machine cannot create the dataset on this server" is a visible
+     * configuration error rather than a silent failure on the first push, and
+     * a member (pull-only) is never blocked by it. */
+    if new_role == "owner" && !probe.writable {
+        return Err(SyncError::Format(
+            "this account cannot create files at the remote path, so it cannot own a dataset here — fix the directory permissions on the server, or join as a member".into(),
+        ));
+    }
+
+    let remote_meta = match probe.meta.as_deref() {
         Some(bytes) => Some(DatasetMeta::parse(bytes)?),
         None => None,
     };

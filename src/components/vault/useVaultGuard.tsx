@@ -1,12 +1,16 @@
 import { useState } from "react";
 import { CreateVaultDialog } from "./CreateVaultDialog";
 import { UnlockVaultDialog } from "./UnlockVaultDialog";
+import { VaultDefaultStorageDialog } from "./VaultDefaultStorageDialog";
 import { useLocalVaultStore } from "../../stores/local-vault-store";
+import { useSettingsStore } from "../../stores/settings-store";
 
 export function useVaultGuard() {
   const loadStatus = useLocalVaultStore((s) => s.loadStatus);
+  const setDefaultCredentialStorage = useSettingsStore((s) => s.setDefaultCredentialStorage);
   const [createVaultOpen, setCreateVaultOpen] = useState(false);
   const [unlockVaultOpen, setUnlockVaultOpen] = useState(false);
+  const [promptDefaultStorageOpen, setPromptDefaultStorageOpen] = useState(false);
   const [vaultHostLabel, setVaultHostLabel] = useState<string | undefined>();
   const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
   const checkVault = async (
@@ -41,6 +45,11 @@ export function useVaultGuard() {
           const action = pendingAction;
           setPendingAction(null);
           if (action) action();
+          /* A brand-new vault is the moment to offer it as the storage default,
+           * unless the user already prefers it. */
+          if (useSettingsStore.getState().defaultCredentialStorage !== "localVault") {
+            setPromptDefaultStorageOpen(true);
+          }
         }}
       />
       <UnlockVaultDialog
@@ -53,6 +62,14 @@ export function useVaultGuard() {
           if (action) action();
         }}
         hostLabel={vaultHostLabel}
+      />
+      <VaultDefaultStorageDialog
+        open={promptDefaultStorageOpen}
+        onClose={() => setPromptDefaultStorageOpen(false)}
+        onAccept={() => {
+          setDefaultCredentialStorage("localVault");
+          setPromptDefaultStorageOpen(false);
+        }}
       />
     </>
   );

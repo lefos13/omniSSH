@@ -100,7 +100,8 @@ impl SyncEndpoint {
 pub struct RemoteProbe {
     /// The root exists and is a directory.
     pub path_exists: bool,
-    /// A probe file could be created and removed in the root.
+    /// A file could be created and removed at the root — directly when it
+    /// exists, or in its nearest existing ancestor when it does not yet.
     pub writable: bool,
     /// A dataset bundle and metadata file are already present.
     pub dataset_present: bool,
@@ -216,35 +217,43 @@ impl RemoteStore {
             sftp.metadata(&self.root).await,
             Ok(attrs) if attrs.file_type() == FileType::Dir
         );
-        if !path_exists {
-            return Ok(RemoteProbe {
-                path_exists: false,
-                writable: false,
-                dataset_present: false,
-                meta: None,
-            });
-        }
 
         /* Writability is probed with a real create+remove rather than inferred
          * from the mode bits: the account may be denied by ACLs, a read-only
          * mount, or a quota that `metadata` cannot show — and for a member of a
          * shared dataset, "can this account write?" is exactly the question
-         * whose answer the UI must surface. */
-        let probe_path = self.path(&format!(".omnissh-probe-{}", self.client_id));
-        let writable = match sftp
-            .open_with_flags(
-                &probe_path,
-                OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::TRUNCATE,
-            )
-            .await
-        {
-            Ok(mut file) => {
-                let wrote = file.write_all(b"omnissh").await.is_ok();
-                let _ = file.shutdown().await;
-                let _ = sftp.remove_file(&probe_path).await;
-                wrote
+         * whose answer the UI must surface.
+         *
+         * A root that does not exist yet is the normal first-sync case (it is
+         * created by `ensure_root` before the first push), so the probe runs in
+         * the nearest existing ancestor instead of bailing out read-only. That
+         * answers "can this account create the dataset directory?" without
+         * creating anything on the server. */
+        let probe_dir = if path_exists {
+            Some(self.root.clone())
+        } else {
+            nearest_existing_dir(&sftp, &self.root).await
+        };
+        let writable = match probe_dir {
+            Some(dir) => {
+                let probe_path = join(&dir, &format!(".omnissh-probe-{}", self.client_id));
+                match sftp
+                    .open_with_flags(
+                        &probe_path,
+                        OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::TRUNCATE,
+                    )
+                    .await
+                {
+                    Ok(mut file) => {
+                        let wrote = file.write_all(b"omnissh").await.is_ok();
+                        let _ = file.shutdown().await;
+                        let _ = sftp.remove_file(&probe_path).await;
+                        wrote
+                    }
+                    Err(_) => false,
+                }
             }
-            Err(_) => false,
+            None => false,
         };
 
         let meta = read_optional(&sftp, &self.path(META_FILE)).await?;
@@ -482,6 +491,54 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// The candidate directories to probe when the dataset root does not exist yet:
+/// the root itself, then each ancestor down to `/` (absolute) or `.` (relative).
+fn ancestor_dirs(path: &str) -> Vec<String> {
+    let absolute = path.starts_with('/');
+    let mut current = path.trim_end_matches('/').to_string();
+    if current.is_empty() {
+        current = if absolute {
+            "/".to_string()
+        } else {
+            ".".to_string()
+        };
+    }
+    let mut candidates = Vec::new();
+    loop {
+        candidates.push(current.clone());
+        if current == "/" || current == "." {
+            break;
+        }
+        current = match current.rsplit_once('/') {
+            Some(("", _)) => "/".to_string(),
+            Some((parent, _)) if !parent.is_empty() => parent.to_string(),
+            _ => {
+                if absolute {
+                    "/".to_string()
+                } else {
+                    ".".to_string()
+                }
+            }
+        };
+    }
+    candidates
+}
+
+/// The nearest directory that already exists on `path`, so a create+remove probe
+/// can answer "could this account create the dataset directory?" for a root that
+/// has not been created yet. `None` when a non-directory occupies a component or
+/// no ancestor could be read.
+async fn nearest_existing_dir(sftp: &SftpSession, path: &str) -> Option<String> {
+    for candidate in ancestor_dirs(path) {
+        match sftp.metadata(&candidate).await {
+            Ok(attrs) if attrs.file_type() == FileType::Dir => return Some(candidate),
+            Ok(_) => return None,
+            Err(_) => {}
+        }
+    }
+    None
 }
 
 async fn ensure_dir(sftp: &SftpSession, path: &str) -> Result<(), SyncError> {
@@ -798,6 +855,22 @@ mod tests {
         assert!(json.contains("\"clientId\":\"client-1\""));
         assert!(json.contains("\"acquiredAtSecs\":1759000000"));
         assert_eq!(serde_json::from_str::<LockFile>(&json).unwrap(), lock);
+    }
+
+    #[test]
+    fn ancestor_dirs_walks_up_to_the_filesystem_root() {
+        assert_eq!(
+            ancestor_dirs("/srv/omnissh/nova"),
+            vec!["/srv/omnissh/nova", "/srv/omnissh", "/srv", "/"]
+        );
+        assert_eq!(
+            ancestor_dirs("/srv/omnissh/nova/"),
+            vec!["/srv/omnissh/nova", "/srv/omnissh", "/srv", "/"]
+        );
+        assert_eq!(ancestor_dirs("nova/data"), vec!["nova/data", "nova", "."]);
+        assert_eq!(ancestor_dirs("nova"), vec!["nova", "."]);
+        assert_eq!(ancestor_dirs("/"), vec!["/"]);
+        assert_eq!(ancestor_dirs(""), vec!["."]);
     }
 
     #[test]

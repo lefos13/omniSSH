@@ -15,7 +15,7 @@ import { useGroupsStore } from "../../stores/groups-store";
 import { useSyncStore } from "../../stores/sync-store";
 import type { SyncScheduleInput } from "../../stores/sync-store";
 import { ConfirmDangerDialog } from "../shared/ConfirmDangerDialog";
-import { ChangeVaultPasswordDialog, UnlockVaultDialog } from "../vault";
+import { ChangeVaultPasswordDialog, CreateVaultDialog, UnlockVaultDialog, VaultDefaultStorageDialog } from "../vault";
 import { TerminalHighlightModal } from "./TerminalHighlightModal";
 import { SyncDatasetModal, SyncSaveReport } from "./SyncDatasetModal";
 import { isLightColor } from "../../lib/terminal-highlighter";
@@ -1183,9 +1183,18 @@ function SyncHistoryPanel({ dataset, busy }: { dataset: SyncDatasetSummary; busy
           data-testid="settings-sync-history-toggle"
           onClick={toggle}
           disabled={busy || loading}
-          className={BTN_SECONDARY}
+          aria-busy={loading}
+          className={`${BTN_SECONDARY} w-[8.75rem]`}
         >
-          {loading ? "Loading…" : listing ? "Hide history" : "Show history"}
+          {/* The spinner slot is always present (hidden when idle) and the box has
+              a fixed width, so loading never resizes the button or shifts its
+              contents. */}
+          <RefreshCw
+            size={13}
+            strokeWidth={2}
+            className={`shrink-0 ${loading ? "motion-safe:animate-spin" : "invisible"}`}
+          />
+          <span>{listing ? "Hide history" : "Show history"}</span>
         </button>
       </div>
 
@@ -2013,7 +2022,6 @@ function SyncSettings() {
           setModalOpen(false);
           setEditing(null);
         }}
-        onCancelEdit={() => setEditing(null)}
       />
 
       <ConfirmDangerDialog
@@ -2607,6 +2615,8 @@ function SecuritySettings() {
   const setDefaultCredentialStorage = useSettingsStore((s) => s.setDefaultCredentialStorage);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const [unlockOpen, setUnlockOpen] = useState(false);
+  const [createVaultOpen, setCreateVaultOpen] = useState(false);
+  const [promptDefaultStorageOpen, setPromptDefaultStorageOpen] = useState(false);
   const [preflight, setPreflight] = useState<MigrationPreflightSummary | null>(null);
   const [preflightLoading, setPreflightLoading] = useState(false);
   const [migrating, setMigrating] = useState(false);
@@ -2691,11 +2701,23 @@ function SecuritySettings() {
     <>
       <SettingsGroup label="Encrypted App Vault">
         {!configured ? (
-          <div className="rounded-xl border border-border/50 bg-bg-surface px-4 py-3">
-            <p className={LABEL_CLASS}>No encrypted vault set up</p>
-            <p className={DESC_CLASS}>
-              Choose “Encrypted App Vault” while editing a password-authenticated host to create one.
-            </p>
+          <div className="rounded-xl border border-border/50 bg-bg-surface px-4 py-3 flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className={LABEL_CLASS}>No encrypted vault set up</p>
+              <p className={DESC_CLASS}>
+                Create one with a master password, or choose “Encrypted App Vault” while
+                editing a password-authenticated host.
+              </p>
+            </div>
+            <button
+              type="button"
+              data-testid="settings-vault-create"
+              onClick={() => setCreateVaultOpen(true)}
+              disabled={loading}
+              className={BTN_SECONDARY}
+            >
+              Create vault…
+            </button>
           </div>
         ) : (
           <>
@@ -2768,9 +2790,11 @@ function SecuritySettings() {
                     disabled={migrating || preflightLoading}
                     className={BTN_SECONDARY}
                   >
-                    {migrating && (
-                      <RefreshCw size={13} strokeWidth={2} className="motion-safe:animate-spin" />
-                    )}
+                    <RefreshCw
+                      size={13}
+                      strokeWidth={2}
+                      className={`shrink-0 ${migrating ? "motion-safe:animate-spin" : "invisible"}`}
+                    />
                     Migrate all to App Vault
                   </button>
                 </div>
@@ -2787,7 +2811,9 @@ function SecuritySettings() {
                     )}
                   </p>
                   <p className="text-[length:var(--text-xs)] text-text-muted">
-                    macOS may request Keychain access once to authorize reading your credentials.
+                    macOS asks to authorize each System Keychain credential the first time it is
+                    read — one prompt per credential shown above. Approve with “Always Allow” to
+                    make it once per credential instead of on every run.
                   </p>
                 </div>
               </div>
@@ -2819,7 +2845,12 @@ function SecuritySettings() {
             id="security-default-storage"
             data-testid="security-default-storage"
             value={defaultCredentialStorage}
-            onChange={(value) => setDefaultCredentialStorage(value as CredentialStorage)}
+            onChange={(value) => {
+              setDefaultCredentialStorage(value as CredentialStorage);
+              /* Choosing the App Vault with none set up is the moment to create
+               * it, rather than discovering at first host save that it is missing. */
+              if (value === "localVault" && !configured) setCreateVaultOpen(true);
+            }}
             options={[
               { value: "keychain", label: "System Keychain" },
               { value: "localVault", label: "Encrypted App Vault" },
@@ -2827,6 +2858,26 @@ function SecuritySettings() {
           />
         </SettingRow>
       </SettingsGroup>
+      <CreateVaultDialog
+        open={createVaultOpen}
+        onClose={() => setCreateVaultOpen(false)}
+        onSuccess={() => {
+          toast.success("Encrypted App Vault created.");
+          void fetchPreflight();
+          /* A fresh vault is the moment to offer it as the storage default. If
+           * the user already picked it in the dropdown, there is nothing to ask. */
+          if (defaultCredentialStorage !== "localVault") setPromptDefaultStorageOpen(true);
+        }}
+      />
+      <VaultDefaultStorageDialog
+        open={promptDefaultStorageOpen}
+        onClose={() => setPromptDefaultStorageOpen(false)}
+        onAccept={() => {
+          setDefaultCredentialStorage("localVault");
+          setPromptDefaultStorageOpen(false);
+          toast.success("App Vault set as the default password storage.");
+        }}
+      />
       <ChangeVaultPasswordDialog
         open={changePasswordOpen}
         onClose={() => setChangePasswordOpen(false)}

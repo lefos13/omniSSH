@@ -121,8 +121,11 @@ pub async fn preflight(
         dataset_id: row.id,
         include_credentials: flags.includes_credentials(),
         /* Only reported as locked when it actually blocks this push: a dataset
-         * that does not carry credentials does not care about the vault. */
-        vault_locked: flags.includes_credentials() && !local_vault.is_unlocked(),
+         * that does not carry credentials does not care about the vault, and a
+         * machine with no vault configured has nothing to unlock. */
+        vault_locked: flags.includes_credentials()
+            && db.is_local_vault_configured()?
+            && !local_vault.is_unlocked(),
         hosts_in_scope,
         credentials_readable: readable,
         credentials_blocked: blocked,
@@ -148,10 +151,12 @@ pub async fn push(
 
     let flags = SyncContentFlags::from_json(&row.content_flags);
     let scope = scope::resolve_row(db, &row)?;
-    if flags.includes_credentials() && !local_vault.is_unlocked() {
+    if flags.includes_credentials() && db.is_local_vault_configured()? && !local_vault.is_unlocked()
+    {
         /* Fail before connecting: publishing a dataset that claims to carry
          * credentials while silently omitting the App Vault ones would leave
-         * the other machine with unusable hosts. */
+         * the other machine with unusable hosts. A machine with no vault has no
+         * vault-backed secrets to omit, so it is never blocked here. */
         let counts = credential_preflight(db, local_vault, &scope, flags)?;
         if counts.2 > 0 {
             return Err(SyncError::Vault(
@@ -252,7 +257,8 @@ pub async fn rotate_passphrase(
     secrets::validate_passphrase(new_passphrase)?;
     let current_passphrase = secrets::load_passphrase(&row.id)?;
     let flags = SyncContentFlags::from_json(&row.content_flags);
-    if flags.includes_credentials() && !local_vault.is_unlocked() {
+    if flags.includes_credentials() && db.is_local_vault_configured()? && !local_vault.is_unlocked()
+    {
         return Err(SyncError::Vault(
             "unlock the App Vault to rotate a dataset that carries credentials".into(),
         ));

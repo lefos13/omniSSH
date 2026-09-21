@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 🚀 Improvements
+
+#### 1. Development App Naming in the macOS Dock
+* **Dock & App Menu Name**: Local development runs and debug builds now register with macOS as `OmniSSH-dev`, so the Dock tooltip and app menu match the `"OmniSSH-dev"` window title and About card instead of showing the executable's file name (`anyscp`).
+
 ## [1.6.2] - 2026-09-19
 
 ### 🚀 Improvements

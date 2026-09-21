@@ -9,6 +9,7 @@ import {
 } from "../../stores/sync-store";
 import { useGroupsStore } from "../../stores/groups-store";
 import { useHostsStore } from "../../stores/hosts-store";
+import { useLocalVaultStore } from "../../stores/local-vault-store";
 import type { SavedHost, HostGroup } from "../../types";
 import type {
   SyncConflictEntry,
@@ -49,6 +50,10 @@ function mockCommands(handlers: Record<string, (args: Record<string, unknown>) =
     const handler = handlers[command];
     if (!handler) {
       if (command === "sync_status") return [];
+      // Opening the dataset form refreshes the App Vault status; default to a
+      // configured vault so credential toggles start enabled unless a test
+      // overrides this for the no-vault case.
+      if (command === "local_vault_status") return { configured: true, unlocked: true };
       throw new Error(`unexpected invoke: ${command}`);
     }
     return handler(args);
@@ -379,6 +384,9 @@ describe("SettingsPage dataset sync", () => {
      * populated them must not leak into the next one. */
     useHostsStore.setState({ hosts: [], loading: false, error: null });
     useGroupsStore.setState({ groups: [], loading: false, error: null });
+    /* The credential toggles are gated on a configured App Vault; most tests
+     * exercise the happy path, and the no-vault test overrides this. */
+    useLocalVaultStore.setState({ configured: true, unlocked: true, loading: false, error: null });
     useSyncStore.setState({
       endpoint: { ...DEFAULT_SYNC_ENDPOINT },
       testing: false,
@@ -725,7 +733,7 @@ describe("SettingsPage dataset sync", () => {
     });
   });
 
-  it("returns the form to a new dataset when the edit is cancelled", async () => {
+  it("closes the form when an edit is cancelled", async () => {
     mockCommands({ sync_list_datasets: () => [savedDataset] });
     await openSyncSection();
 
@@ -735,15 +743,36 @@ describe("SettingsPage dataset sync", () => {
 
     fireEvent.click(screen.getByTestId("settings-sync-cancel-edit"));
 
+    // Cancelling dismisses the modal entirely, not just the form fields.
     expect(screen.queryByTestId("settings-sync-editing")).not.toBeInTheDocument();
-    expect(screen.getByTestId("settings-sync-save")).toHaveTextContent("Save dataset");
-    expect(screen.queryByTestId("settings-sync-cancel-edit")).not.toBeInTheDocument();
-    expect(screen.getByTestId("settings-sync-name")).toHaveValue("");
-    expect(screen.getByTestId("settings-sync-host")).toHaveValue("");
-    expect(screen.getByTestId("settings-sync-username")).toHaveValue("");
-    expect(screen.getByTestId("settings-sync-path")).toHaveValue("");
-    // Cancelling is not a save.
+    expect(screen.queryByTestId("settings-sync-save")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("settings-sync-name")).not.toBeInTheDocument();
+    // The row is still there, untouched, and nothing was saved.
+    expect(screen.getByTestId("settings-sync-dataset-ds-1")).toBeInTheDocument();
     expect(commandCalls("sync_save_dataset")).toHaveLength(0);
+  });
+
+  it("closes the form after a successful dataset update", async () => {
+    mockCommands({
+      sync_list_datasets: () => [savedDataset],
+      sync_save_dataset: () => saveOutcome,
+    });
+    await openSyncSection();
+
+    const row = await screen.findByTestId("settings-sync-dataset-ds-1");
+    fireEvent.click(within(row).getByTestId("settings-sync-edit"));
+    fireEvent.change(screen.getByTestId("settings-sync-passphrase"), {
+      target: { value: PASSPHRASE },
+    });
+    fireEvent.change(screen.getByTestId("settings-sync-password"), {
+      target: { value: "testpass" },
+    });
+    fireEvent.click(screen.getByTestId("settings-sync-save"));
+
+    await waitFor(() => expect(commandCalls("sync_save_dataset")).toHaveLength(1));
+    // The update is done, so the modal goes away rather than lingering open.
+    await waitFor(() => expect(screen.queryByTestId("settings-sync-save")).not.toBeInTheDocument());
+    expect(screen.queryByTestId("settings-sync-editing")).not.toBeInTheDocument();
   });
 
   it("says so on the row when nothing is published at its path yet", async () => {
@@ -819,7 +848,7 @@ describe("SettingsPage dataset sync", () => {
     expect(text).not.toContain("yetNothing");
   });
 
-  it("refuses a short dataset passphrase without invoking the backend", async () => {
+  it("keeps Save disabled and flags a short dataset passphrase before the backend is asked", async () => {
     await openSyncSection();
 
     fillEndpoint();
@@ -827,10 +856,15 @@ describe("SettingsPage dataset sync", () => {
     fireEvent.change(screen.getByTestId("settings-sync-passphrase"), {
       target: { value: "too-short" },
     });
-    fireEvent.click(screen.getByTestId("settings-sync-save"));
 
-    const message = await screen.findByTestId("settings-sync-passphrase-error");
-    expect(message).toHaveTextContent("at least 12 characters");
+    const save = screen.getByTestId("settings-sync-save");
+    expect(save).toBeDisabled();
+    expect(screen.getByTestId("settings-sync-passphrase-error")).toHaveTextContent(
+      "at least 12 characters",
+    );
+
+    // A disabled button cannot fire the handler at all.
+    fireEvent.click(save);
     expect(commandCalls("sync_save_dataset")).toHaveLength(0);
   });
 
@@ -851,6 +885,100 @@ describe("SettingsPage dataset sync", () => {
     expect(hostCredentials).toBeDisabled();
     expect(screen.getByTestId("settings-sync-content-portForwards")).toBeDisabled();
     expect(screen.getByTestId("settings-sync-content-hostPlugins")).toBeDisabled();
+  });
+
+  it("keeps the credential toggles disabled until an App Vault exists", async () => {
+    useLocalVaultStore.setState({ configured: false, unlocked: false, loading: false, error: null });
+    mockCommands({
+      sync_list_datasets: () => [],
+      local_vault_status: () => ({ configured: false, unlocked: false }),
+    });
+    await openSyncSection();
+
+    const hostCredentials = screen.getByTestId("settings-sync-content-hostCredentials");
+    const s3Credentials = screen.getByTestId("settings-sync-content-s3Credentials");
+    await waitFor(() => expect(hostCredentials).toBeDisabled());
+    expect(s3Credentials).toBeDisabled();
+    expect(screen.getByTestId("settings-sync-hostCredentials-note")).toHaveTextContent(
+      "Set up an App Vault",
+    );
+    expect(screen.getByTestId("settings-sync-s3Credentials-note")).toHaveTextContent(
+      "Set up an App Vault",
+    );
+
+    // A disabled toggle cannot be turned on, so no credential flag can be saved.
+    fireEvent.click(hostCredentials);
+    expect(hostCredentials).not.toBeChecked();
+  });
+
+  it("keeps Save disabled until the required fields are filled", async () => {
+    await openSyncSection();
+
+    const save = screen.getByTestId("settings-sync-save");
+    expect(save).toBeDisabled();
+
+    fillDatasetForm();
+    expect(save).not.toBeDisabled();
+  });
+
+  it("reports a creatable path as writable instead of read-only", async () => {
+    mockCommands({
+      sync_list_datasets: () => [],
+      sync_test_connection: () => ({ ...probe, pathExists: false, writable: true }),
+    });
+    await openSyncSection();
+
+    fillEndpoint();
+    fireEvent.click(screen.getByTestId("settings-sync-test"));
+
+    const result = await screen.findByTestId("settings-sync-test-result");
+    expect(result).toHaveTextContent("will be created on the first sync");
+    expect(result).toHaveTextContent("can create it and write to it");
+    expect(result).not.toHaveTextContent("cannot write to it");
+  });
+
+  it("blocks an owner dataset when the account cannot write to the remote path", async () => {
+    mockCommands({
+      sync_list_datasets: () => [],
+      sync_test_connection: () => ({ ...probe, writable: false }),
+    });
+    await openSyncSection();
+
+    fillDatasetForm();
+    fireEvent.click(screen.getByTestId("settings-sync-test"));
+    await screen.findByTestId("settings-sync-test-result");
+
+    expect(screen.getByTestId("settings-sync-owner-unwritable")).toBeInTheDocument();
+    expect(screen.getByTestId("settings-sync-save")).toBeDisabled();
+
+    // A member only pulls, so the block lifts when the role changes.
+    fireEvent.click(screen.getByTestId("settings-sync-role-member"));
+    expect(screen.queryByTestId("settings-sync-owner-unwritable")).not.toBeInTheDocument();
+    expect(screen.getByTestId("settings-sync-save")).not.toBeDisabled();
+  });
+
+  it("shows the backend's save error inside the form instead of going silent", async () => {
+    mockCommands({
+      sync_list_datasets: () => [],
+      sync_save_dataset: () =>
+        Promise.reject({
+          kind: "decrypt",
+          message: "the dataset passphrase does not open the published generation",
+        }),
+    });
+    await openSyncSection();
+
+    fillDatasetForm();
+    fireEvent.click(screen.getByTestId("settings-sync-save"));
+
+    const banner = await screen.findByTestId("settings-sync-save-error");
+    expect(banner).toHaveAttribute("role", "alert");
+    expect(banner).toHaveTextContent("the dataset passphrase does not open the published generation");
+    expect(banner).toHaveTextContent("Wrong dataset passphrase");
+
+    // Editing the form retires the error along with the attempt that produced it.
+    fireEvent.change(screen.getByTestId("settings-sync-name"), { target: { value: "NOVA-2" } });
+    expect(screen.queryByTestId("settings-sync-save-error")).not.toBeInTheDocument();
   });
 
   it("renders a saved dataset with its generation and last sync time", async () => {

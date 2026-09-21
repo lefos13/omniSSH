@@ -182,6 +182,7 @@ export interface SyncPushPreflight {
   datasetId: string;
   /** Any credential sub-toggle is on, so secrets would travel in the payload. */
   includeCredentials: boolean;
+  /** An App Vault is configured and currently locked, blocking credential reads. */
   vaultLocked: boolean;
   hostsInScope: number;
   credentialsReadable: number;

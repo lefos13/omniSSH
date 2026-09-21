@@ -113,5 +113,13 @@ base64 = "=0.22.1"
 # Use the POSIX record-lock ABI that Chromium's LevelDB environment uses.
 libc = "=0.2.183"
 
+# macOS only: attribute-only keychain lookups. `vault::credential_exists` uses
+# `SecItemCopyMatching` with `kSecReturnAttributes` (no `kSecReturnData`) so an
+# existence check never reads — and so never prompts for — a stored secret.
+# Already in the tree as keyring's apple-native backend, so this adds no bundle
+# weight.
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+
 [dev-dependencies]
 tempfile = "3"

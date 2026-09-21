@@ -238,18 +238,63 @@ pub fn delete_credential(host_id: &str) -> Result<(), VaultError> {
     }
 }
 
-/// Return `true` when a credential exists for `host_id`, without retrieving
-/// the secret value.
+/// Return `true` when a credential exists for `host_id`.
+///
+/// On macOS this does not read the secret value, so it never trips the item's
+/// ACL — see [`exists_in_keychain`].
 pub fn has_credential(host_id: &str) -> bool {
     credential_exists(host_id).unwrap_or(false)
 }
 
 pub fn credential_exists(host_id: &str) -> Result<bool, VaultError> {
-    let Ok(entry) = keyring::Entry::new(service_name(), host_id) else {
-        return Err(VaultError::Keychain(
-            "credential entry unavailable".to_string(),
-        ));
-    };
+    exists_in_keychain(service_name(), host_id)
+}
+
+/* `errSecItemNotFound` from the Security framework, returned when a query
+ * matches nothing. Spelled out rather than pulled from `security-framework-sys`
+ * to avoid a second direct dependency. */
+#[cfg(all(target_os = "macos", not(test)))]
+const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
+
+/* Existence is answered without reading the value where the platform allows it:
+ * on macOS `find_generic_password` (and therefore any keyring value read) goes
+ * through the item's ACL and shows an authorization prompt, so merely listing
+ * which credentials exist would prompt once per item. `SecItemCopyMatching`
+ * with `kSecReturnAttributes` but no `kSecReturnData` returns the metadata and
+ * is not ACL-protected, so it answers "does this exist?" silently.
+ *
+ * `not(test)` keeps the unit tests on the in-memory keyring mock: the direct
+ * Security-framework query would bypass it and hit the real login keychain. */
+#[cfg(all(target_os = "macos", not(test)))]
+fn exists_in_keychain(service: &str, account: &str) -> Result<bool, VaultError> {
+    use security_framework::item::{ItemClass, ItemSearchOptions, Limit, SearchResult};
+
+    let mut options = ItemSearchOptions::new();
+    options
+        .class(ItemClass::generic_password())
+        .service(service)
+        .account(account)
+        .load_attributes(true)
+        .load_data(false)
+        .load_refs(false)
+        .limit(Limit::Max(1));
+
+    match options.search() {
+        Ok(results) => Ok(results
+            .iter()
+            .any(|result| matches!(result, SearchResult::Dict(_)))),
+        Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(false),
+        Err(error) => Err(VaultError::Keychain(error.to_string())),
+    }
+}
+
+/* Every other platform (and the test build): the credential stores do not gate
+ * a value read, so reading and discarding the value is the simplest existence
+ * test. The value is zeroized immediately. */
+#[cfg(not(all(target_os = "macos", not(test))))]
+fn exists_in_keychain(service: &str, account: &str) -> Result<bool, VaultError> {
+    let entry =
+        keyring::Entry::new(service, account).map_err(|e| VaultError::Keychain(e.to_string()))?;
     let mut value = match entry.get_password() {
         Ok(value) => value,
         Err(keyring::Error::NoEntry) => return Ok(false),

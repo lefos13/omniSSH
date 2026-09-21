@@ -25,6 +25,7 @@ import {
 } from "../../stores/sync-store";
 import { useGroupsStore } from "../../stores/groups-store";
 import { useHostsStore } from "../../stores/hosts-store";
+import { useLocalVaultStore } from "../../stores/local-vault-store";
 import { toast } from "../../stores/toast-store";
 import type {
   SyncContentFlags,
@@ -79,6 +80,16 @@ const SYNC_ERROR_HINTS: Partial<Record<SyncErrorKind, string>> = {
   locked: "Another machine is syncing this dataset — try again in a moment.",
   unreachable: "The server could not be reached — sync retries on the next trigger.",
 };
+
+/* Marks a field the backend requires, so a disabled Save button always has a
+ * visible reason. The accessible signal rides on the input's `aria-required`. */
+function RequiredMark() {
+  return (
+    <span aria-hidden="true" className="text-status-error ml-0.5">
+      *
+    </span>
+  );
+}
 
 function ScopePicker({
   legend,
@@ -164,14 +175,12 @@ export interface SyncDatasetModalProps {
   open: boolean;
   editing: SyncDatasetSummary | null;
   onClose: () => void;
-  onCancelEdit?: () => void;
 }
 
 export function SyncDatasetModal({
   open,
   editing,
   onClose,
-  onCancelEdit,
 }: SyncDatasetModalProps) {
   const {
     endpoint,
@@ -180,6 +189,8 @@ export function SyncDatasetModal({
     error,
     errorKind,
     saveOutcome,
+    datasetError,
+    datasetErrorKind,
     setEndpoint,
     testConnection,
     saving,
@@ -189,12 +200,14 @@ export function SyncDatasetModal({
     clearDatasetError,
   } = useSyncStore();
 
+  const vaultConfigured = useLocalVaultStore((s) => s.configured);
+  const loadVaultStatus = useLocalVaultStore((s) => s.loadStatus);
+
   const [password, setPassword] = useState("");
   const [keyPassphrase, setKeyPassphrase] = useState("");
   const [useKey, setUseKey] = useState(false);
   const [name, setName] = useState("");
   const [passphrase, setPassphrase] = useState("");
-  const [formError, setFormError] = useState<string | null>(null);
   const [contentFlags, setContentFlags] = useState<SyncContentFlags>({
     ...DEFAULT_SYNC_CONTENT_FLAGS,
   });
@@ -204,6 +217,22 @@ export function SyncDatasetModal({
 
   const groups = useGroupsStore((s) => s.groups);
   const hosts = useHostsStore((s) => s.hosts);
+
+  /* Any edit invalidates the previous attempt's feedback — the success report
+   * and the save error both describe a form state that no longer exists. */
+  const dismissFeedback = useCallback(() => {
+    clearSaveOutcome();
+    clearDatasetError();
+  }, [clearSaveOutcome, clearDatasetError]);
+
+  /* The credential toggles depend on whether an App Vault exists, so refresh
+   * the status when the form opens rather than trusting a possibly stale store. */
+  useEffect(() => {
+    if (!open) return;
+    void loadVaultStatus().catch(() => {
+      /* a failed status read leaves the credential toggles disabled */
+    });
+  }, [open, loadVaultStatus]);
 
   /* Sync modal form fields when opened or when editing changes */
   useEffect(() => {
@@ -218,8 +247,7 @@ export function SyncDatasetModal({
       setPassword("");
       setPassphrase("");
       setKeyPassphrase("");
-      setFormError(null);
-      clearSaveOutcome();
+      dismissFeedback();
       setEndpoint({
         host: editing.host,
         port: editing.port,
@@ -237,11 +265,10 @@ export function SyncDatasetModal({
       setPassword("");
       setPassphrase("");
       setKeyPassphrase("");
-      setFormError(null);
-      clearSaveOutcome();
+      dismissFeedback();
       setEndpoint({ ...DEFAULT_SYNC_ENDPOINT });
     }
-  }, [open, editing, clearSaveOutcome, setEndpoint]);
+  }, [open, editing, dismissFeedback, setEndpoint]);
 
   const runTest = useCallback(async () => {
     try {
@@ -253,7 +280,7 @@ export function SyncDatasetModal({
 
   const toggleContent = useCallback(
     (kind: SyncContentKind, value: boolean) => {
-      clearSaveOutcome();
+      dismissFeedback();
       setContentFlags((prev) => {
         const next: SyncContentFlags = { ...prev, [kind]: value };
         if (!value) {
@@ -262,26 +289,26 @@ export function SyncDatasetModal({
         return next;
       });
     },
-    [clearSaveOutcome],
+    [dismissFeedback],
   );
 
   const chooseScopeMode = useCallback(
     (mode: SyncScopeMode) => {
-      clearSaveOutcome();
+      dismissFeedback();
       setScopeMode(mode);
       setScopeMemberIds((prev) => (mode === "all" ? [] : prev));
     },
-    [clearSaveOutcome],
+    [dismissFeedback],
   );
 
   const toggleScopeMember = useCallback(
     (id: string, checked: boolean) => {
-      clearSaveOutcome();
+      dismissFeedback();
       setScopeMemberIds((prev) =>
         checked ? [...prev, id] : prev.filter((member) => member !== id),
       );
     },
-    [clearSaveOutcome],
+    [dismissFeedback],
   );
 
   const scopeCount = useMemo(() => {
@@ -307,21 +334,28 @@ export function SyncDatasetModal({
         : "Choose at least one host, or switch the scope back to all hosts."
       : null;
 
+  /* The Save button stays disabled until the form could plausibly succeed, so
+   * the only failure the user can still trigger is a server-side rejection —
+   * which the error banner above the form then spells out. */
+  const canSubmit = useMemo(() => {
+    if (!name.trim()) return false;
+    if (passphrase.length < MIN_DATASET_PASSPHRASE) return false;
+    if (!endpoint.host.trim() || !endpoint.username.trim() || !endpoint.remotePath.trim()) {
+      return false;
+    }
+    if (useKey ? !endpoint.keyPath.trim() : !password) return false;
+    if (role !== "member" && scopeError) return false;
+    if (role === "owner" && testResult !== null && !testResult.writable) return false;
+    return true;
+  }, [name, passphrase, endpoint, useKey, password, role, scopeError, testResult]);
+
   const handleSave = useCallback(async () => {
-    if (!name.trim()) {
-      setFormError("Give the dataset a name so you can tell it apart later.");
-      return;
-    }
-    if (passphrase.length < MIN_DATASET_PASSPHRASE) {
-      setFormError(`Use at least ${MIN_DATASET_PASSPHRASE} characters for the dataset passphrase.`);
-      return;
-    }
-    if (useKey && !endpoint.keyPath.trim()) {
-      setFormError("Enter the path to the private key this dataset connects with.");
-      return;
-    }
-    if (role !== "member" && scopeError) return;
-    setFormError(null);
+    if (!canSubmit) return;
+    /* With no App Vault the credential toggles are disabled, so their flags are
+     * dropped rather than saved as a request this machine cannot fulfil. */
+    const effectiveFlags: SyncContentFlags = vaultConfigured
+      ? contentFlags
+      : { ...contentFlags, hostCredentials: false, s3Credentials: false };
     const effectiveScopeMode: SyncScopeMode = role === "member" ? "all" : scopeMode;
     const input: SyncDatasetInput = {
       name: name.trim(),
@@ -329,7 +363,7 @@ export function SyncDatasetModal({
       port: endpoint.port,
       username: endpoint.username,
       remotePath: endpoint.remotePath,
-      contentFlags,
+      contentFlags: effectiveFlags,
       scopeMode: effectiveScopeMode,
       scopeMemberIds: effectiveScopeMode === "all" ? [] : scopeSelection,
       ...(endpoint.keyPath ? { keyPath: endpoint.keyPath } : {}),
@@ -356,13 +390,22 @@ export function SyncDatasetModal({
       await saveDataset(input, secrets);
       await loadDatasets();
       toast.success(editing ? "Dataset updated." : "Dataset saved.");
+      /* An update is finished, so dismiss the form instead of leaving it open on
+       * a row the user just changed. A brand-new dataset keeps the report, whose
+       * "press Push now" guidance is the next step. */
+      if (editing) {
+        onClose();
+        return;
+      }
       setPassword("");
       setPassphrase("");
       setKeyPassphrase("");
     } catch {
-      /* the dataset card renders the failure */
+      /* the store's `datasetError` renders in this modal's error banner */
     }
   }, [
+    canSubmit,
+    vaultConfigured,
     name,
     passphrase,
     endpoint,
@@ -371,31 +414,24 @@ export function SyncDatasetModal({
     password,
     keyPassphrase,
     editing,
+    onClose,
     saveDataset,
     loadDatasets,
     role,
     scopeMode,
     scopeSelection,
-    scopeError,
   ]);
 
+  /* Cancelling an edit leaves the form entirely: the row keeps its saved
+   * settings, so leaving a half-cleared form open would only invite a mistake.
+   * The open effect resets every field the next time the modal is shown. */
   const handleCancelEdit = useCallback(() => {
-    onCancelEdit?.();
-    setName("");
-    setContentFlags({ ...DEFAULT_SYNC_CONTENT_FLAGS });
-    setScopeMode(DEFAULT_SYNC_SCOPE_MODE);
-    setScopeMemberIds([]);
-    setUseKey(false);
-    setRole("owner");
-    setPassword("");
-    setPassphrase("");
-    setKeyPassphrase("");
-    setFormError(null);
-    clearSaveOutcome();
-    setEndpoint({ ...DEFAULT_SYNC_ENDPOINT });
-  }, [onCancelEdit, clearSaveOutcome, setEndpoint]);
+    dismissFeedback();
+    onClose();
+  }, [dismissFeedback, onClose]);
 
   const passphraseTooShort = passphrase.length > 0 && passphrase.length < MIN_DATASET_PASSPHRASE;
+  const ownerUnwritable = role === "owner" && testResult !== null && !testResult.writable;
 
   const modalFooter = (
     <>
@@ -424,7 +460,7 @@ export function SyncDatasetModal({
         type="button"
         data-testid="settings-sync-save"
         onClick={() => void handleSave()}
-        disabled={saving}
+        disabled={saving || !canSubmit}
         className={BTN_PRIMARY}
       >
         {saving ? (
@@ -456,6 +492,24 @@ export function SyncDatasetModal({
       footer={modalFooter}
     >
       <div className="space-y-5 text-[length:var(--text-sm)]">
+        {/* A save rejection is spelled out here, not only on the dataset card
+         * behind the modal, so an "Update dataset" click never looks dead. */}
+        {datasetError && (
+          <div
+            data-testid="settings-sync-save-error"
+            role="alert"
+            className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-status-error/10 border border-status-error/30"
+          >
+            <AlertCircle size={13} strokeWidth={2} className="text-status-error shrink-0 mt-0.5" />
+            <span className="text-[length:var(--text-xs)] text-text-secondary">
+              {datasetError}
+              {datasetErrorKind && SYNC_ERROR_HINTS[datasetErrorKind]
+                ? ` ${SYNC_ERROR_HINTS[datasetErrorKind]}`
+                : null}
+            </span>
+          </div>
+        )}
+
         {saveOutcome && (
           <SyncSaveReport outcome={saveOutcome} />
         )}
@@ -488,6 +542,7 @@ export function SyncDatasetModal({
             <div>
               <label className={FIELD_LABEL_CLASS} htmlFor="sync-host">
                 Server address
+                <RequiredMark />
               </label>
               <input
                 id="sync-host"
@@ -495,6 +550,7 @@ export function SyncDatasetModal({
                 type="text"
                 autoComplete="off"
                 spellCheck={false}
+                aria-required="true"
                 placeholder="10.0.0.9 or sync.example.com"
                 value={endpoint.host}
                 onChange={(e) => setEndpoint({ host: e.target.value })}
@@ -522,6 +578,7 @@ export function SyncDatasetModal({
             <div>
               <label className={FIELD_LABEL_CLASS} htmlFor="sync-username">
                 Username
+                <RequiredMark />
               </label>
               <input
                 id="sync-username"
@@ -529,6 +586,7 @@ export function SyncDatasetModal({
                 type="text"
                 autoComplete="off"
                 spellCheck={false}
+                aria-required="true"
                 value={endpoint.username}
                 onChange={(e) => setEndpoint({ username: e.target.value })}
                 className={TEXT_INPUT_CLASS}
@@ -537,6 +595,7 @@ export function SyncDatasetModal({
             <div>
               <label className={FIELD_LABEL_CLASS} htmlFor="sync-path">
                 Remote path
+                <RequiredMark />
               </label>
               <input
                 id="sync-path"
@@ -544,6 +603,7 @@ export function SyncDatasetModal({
                 type="text"
                 autoComplete="off"
                 spellCheck={false}
+                aria-required="true"
                 placeholder="/srv/omnissh/my-hosts"
                 value={endpoint.remotePath}
                 onChange={(e) => setEndpoint({ remotePath: e.target.value })}
@@ -590,11 +650,12 @@ export function SyncDatasetModal({
                   type="text"
                   autoComplete="off"
                   spellCheck={false}
+                  aria-required="true"
                   placeholder="~/.ssh/id_ed25519"
                   value={endpoint.keyPath}
                   onChange={(e) => setEndpoint({ keyPath: e.target.value })}
                   className={TEXT_INPUT_CLASS}
-                  aria-label="Private key path"
+                  aria-label="Private key path (required)"
                 />
                 <input
                   data-testid="settings-sync-key-passphrase"
@@ -612,11 +673,12 @@ export function SyncDatasetModal({
                 data-testid="settings-sync-password"
                 type="password"
                 autoComplete="off"
+                aria-required="true"
                 placeholder="Server password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className={TEXT_INPUT_CLASS}
-                aria-label="Server password"
+                aria-label="Server password (required)"
               />
             )}
           </div>
@@ -627,14 +689,17 @@ export function SyncDatasetModal({
               data-testid="settings-sync-test"
               onClick={() => void runTest()}
               disabled={testing}
+              aria-busy={testing}
               className={BTN_ACTION_SECONDARY}
             >
+              {/* The icon slot and the label never change size, so the button
+                  cannot reflow (and spill over its neighbour) while testing. */}
               <RefreshCw
                 size={13}
                 strokeWidth={2}
-                className={`shrink-0 ${testing ? "animate-spin" : ""}`}
+                className={`shrink-0 ${testing ? "motion-safe:animate-spin" : ""}`}
               />
-              <span>{testing ? "Testing…" : "Test connection"}</span>
+              <span>Test connection</span>
             </button>
             <p className={DESC_CLASS}>Probes remote directory over SFTP without writing data.</p>
           </div>
@@ -668,7 +733,9 @@ export function SyncDatasetModal({
                 </li>
                 <li>
                   {testResult.writable
-                    ? "This account can write to it."
+                    ? testResult.pathExists
+                      ? "This account can write to it."
+                      : "This account can create it and write to it."
                     : "This account cannot write to it — you can pull from this dataset but not publish to it."}
                 </li>
                 {testResult.existingDataset ? (
@@ -701,6 +768,7 @@ export function SyncDatasetModal({
             <div>
               <label className={FIELD_LABEL_CLASS} htmlFor="sync-name">
                 Dataset name
+                <RequiredMark />
               </label>
               <input
                 id="sync-name"
@@ -708,12 +776,12 @@ export function SyncDatasetModal({
                 type="text"
                 autoComplete="off"
                 spellCheck={false}
+                aria-required="true"
                 placeholder="Work Laptops"
                 value={name}
                 onChange={(e) => {
                   setName(e.target.value);
-                  setFormError(null);
-                  clearSaveOutcome();
+                  dismissFeedback();
                 }}
                 className={TEXT_INPUT_CLASS}
               />
@@ -721,17 +789,18 @@ export function SyncDatasetModal({
             <div>
               <label className={FIELD_LABEL_CLASS} htmlFor="sync-passphrase">
                 Dataset passphrase
+                <RequiredMark />
               </label>
               <input
                 id="sync-passphrase"
                 data-testid="settings-sync-passphrase"
                 type="password"
                 autoComplete="new-password"
+                aria-required="true"
                 value={passphrase}
                 onChange={(e) => {
                   setPassphrase(e.target.value);
-                  setFormError(null);
-                  clearSaveOutcome();
+                  dismissFeedback();
                 }}
                 className={TEXT_INPUT_CLASS}
               />
@@ -742,13 +811,12 @@ export function SyncDatasetModal({
             The passphrase encrypts the dataset end-to-end on this device before leaving over SFTP.
           </p>
 
-          {(passphraseTooShort || formError) && (
+          {passphraseTooShort && (
             <p
               data-testid="settings-sync-passphrase-error"
               className="mt-1 text-[length:var(--text-xs)] text-status-error"
             >
-              {formError ??
-                `Use at least ${MIN_DATASET_PASSPHRASE} characters for the dataset passphrase.`}
+              {`Use at least ${MIN_DATASET_PASSPHRASE} characters for the dataset passphrase.`}
             </p>
           )}
 
@@ -783,8 +851,7 @@ export function SyncDatasetModal({
                     checked={role === value}
                     onChange={() => {
                       setRole(value);
-                      clearSaveOutcome();
-                      clearDatasetError();
+                      dismissFeedback();
                     }}
                   />
                   <span className="text-[length:var(--text-xs)] text-text-secondary">
@@ -794,6 +861,23 @@ export function SyncDatasetModal({
                 </label>
               ))}
             </div>
+
+            {/* An owner publishes, so an account that cannot write to the path
+             * cannot own a dataset here. The save is refused for the same
+             * reason; this makes it visible before the user tries. */}
+            {ownerUnwritable && (
+              <p
+                data-testid="settings-sync-owner-unwritable"
+                className="flex items-start gap-1.5 mt-2 text-[length:var(--text-xs)] text-status-error"
+              >
+                <AlertTriangle size={13} strokeWidth={2} className="mt-0.5 shrink-0" />
+                <span>
+                  This account cannot write to the remote path, so it cannot own a dataset
+                  here. Pick a path it can create, fix the server permissions, or choose
+                  Member — then save.
+                </span>
+              </p>
+            )}
           </div>
         </div>
 
@@ -903,24 +987,38 @@ export function SyncDatasetModal({
                     contentFlags.hosts ? "opacity-100" : "opacity-40 pointer-events-none"
                   }`}
                 >
-                  <label className="flex items-start gap-2 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      data-testid="settings-sync-content-hostCredentials"
-                      className="mt-0.5 w-3.5 h-3.5 shrink-0 rounded border-border text-accent focus:ring-ring cursor-pointer disabled:cursor-not-allowed"
-                      checked={contentFlags.hostCredentials}
-                      disabled={!contentFlags.hosts}
-                      onChange={(e) => toggleContent("hostCredentials", e.target.checked)}
-                    />
-                    <div>
-                      <span className="text-[length:var(--text-xs)] font-medium text-text-primary block">
-                        Saved host credentials
-                      </span>
-                      <span className="text-[11px] text-text-muted block mt-0.5">
-                        Passwords and private keys stored for those hosts. Off by default — anyone holding the dataset passphrase can read them.
-                      </span>
-                    </div>
-                  </label>
+                  <div>
+                    <label
+                      className={`flex items-start gap-2 select-none ${
+                        !vaultConfigured ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        data-testid="settings-sync-content-hostCredentials"
+                        className="mt-0.5 w-3.5 h-3.5 shrink-0 rounded border-border text-accent focus:ring-ring cursor-pointer disabled:cursor-not-allowed disabled:border-border/50 disabled:opacity-50"
+                        checked={contentFlags.hostCredentials && vaultConfigured}
+                        disabled={!contentFlags.hosts || !vaultConfigured}
+                        onChange={(e) => toggleContent("hostCredentials", e.target.checked)}
+                      />
+                      <div>
+                        <span className="text-[length:var(--text-xs)] font-medium text-text-primary block">
+                          Saved host credentials
+                        </span>
+                        <span className="text-[11px] text-text-muted block mt-0.5">
+                          Passwords and private keys stored for those hosts. Off by default — anyone holding the dataset passphrase can read them.
+                        </span>
+                      </div>
+                    </label>
+                    {!vaultConfigured && (
+                      <p
+                        data-testid="settings-sync-hostCredentials-note"
+                        className="text-[11px] text-text-muted mt-1 ml-6"
+                      >
+                        Set up an App Vault in Settings → Security to include credentials.
+                      </p>
+                    )}
+                  </div>
 
                   <label className="flex items-start gap-2 cursor-pointer select-none">
                     <input
@@ -990,24 +1088,38 @@ export function SyncDatasetModal({
                       contentFlags.s3Connections ? "opacity-100" : "opacity-40 pointer-events-none"
                     }`}
                   >
-                    <label className="flex items-start gap-2 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        data-testid="settings-sync-content-s3Credentials"
-                        className="mt-0.5 w-3.5 h-3.5 shrink-0 rounded border-border text-accent focus:ring-ring cursor-pointer disabled:cursor-not-allowed"
-                        checked={contentFlags.s3Credentials}
-                        disabled={!contentFlags.s3Connections}
-                        onChange={(e) => toggleContent("s3Credentials", e.target.checked)}
-                      />
-                      <div>
-                        <span className="text-[length:var(--text-xs)] font-medium text-text-primary block">
-                          S3 access keys
-                        </span>
-                        <span className="text-[11px] text-text-muted block mt-0.5">
-                          Access keys stored for those connections. Off by default.
-                        </span>
-                      </div>
-                    </label>
+                    <div>
+                      <label
+                        className={`flex items-start gap-2 select-none ${
+                          !vaultConfigured ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          data-testid="settings-sync-content-s3Credentials"
+                          className="mt-0.5 w-3.5 h-3.5 shrink-0 rounded border-border text-accent focus:ring-ring cursor-pointer disabled:cursor-not-allowed disabled:border-border/50 disabled:opacity-50"
+                          checked={contentFlags.s3Credentials && vaultConfigured}
+                          disabled={!contentFlags.s3Connections || !vaultConfigured}
+                          onChange={(e) => toggleContent("s3Credentials", e.target.checked)}
+                        />
+                        <div>
+                          <span className="text-[length:var(--text-xs)] font-medium text-text-primary block">
+                            S3 access keys
+                          </span>
+                          <span className="text-[11px] text-text-muted block mt-0.5">
+                            Access keys stored for those connections. Off by default.
+                          </span>
+                        </div>
+                      </label>
+                      {!vaultConfigured && (
+                        <p
+                          data-testid="settings-sync-s3Credentials-note"
+                          className="text-[11px] text-text-muted mt-1 ml-6"
+                        >
+                          Set up an App Vault in Settings → Security to include credentials.
+                        </p>
+                      )}
+                    </div>
                   </div>
                 </div>
 
