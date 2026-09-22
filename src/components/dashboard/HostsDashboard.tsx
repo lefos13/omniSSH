@@ -69,6 +69,11 @@ const GROUPS_SIDEBAR_MIN = 160;
 const GROUPS_SIDEBAR_MAX = 400;
 const GROUPS_SIDEBAR_STEP = 20;
 
+/* Grouped-view section navigation: a clicked section is parked this far below
+ * the top of the main column, and the same line decides which section the
+ * sidebar highlights while the list is scrolled. */
+const GROUP_SECTION_OFFSET = 16;
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export function HostsDashboard() {
@@ -85,6 +90,9 @@ export function HostsDashboard() {
    * scroll-spy keeps its highlight in sync with the visible section. */
   const [visibleGroupId, setVisibleGroupId] = useState<string | null>(null);
   const mainScrollRef = useRef<HTMLDivElement>(null);
+  /* Set while a sidebar click drives the programmatic scroll, so the spy stays
+   * silent until the next real scroll gesture. */
+  const suppressSpyRef = useRef(false);
   const sidebarWidthRef = useRef(GROUPS_SIDEBAR_DEFAULT);
 
   /* Resizable groups sidebar (persisted in localStorage, like the linked
@@ -336,46 +344,78 @@ export function HostsDashboard() {
   }, [filteredS3]);
 
   /* Scroll the main column to a group section (grouped view). "All Hosts"
-   * returns to the top. */
+   * returns to the top. A click is an explicit selection, so the spy is muted
+   * until the user scrolls again: the highlight stays on the clicked row while
+   * the smooth scroll animates over the sections in between, and it stays there
+   * when the clicked section is too short to ever reach the top of the list. */
   const scrollToGroup = useCallback((groupId: string | null) => {
     const root = mainScrollRef.current;
     if (!root) return;
     if (groupId === null) {
+      suppressSpyRef.current = true;
       root.scrollTo({ top: 0, behavior: "smooth" });
       setVisibleGroupId(null);
       return;
     }
-    const key = groupId === UNGROUPED_ID ? UNGROUPED_ID : groupId;
-    const el = root.querySelector(`#group-section-${CSS.escape(key)}`);
-    if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "start" });
-      setVisibleGroupId(key);
-    }
+    const section = root.querySelector<HTMLElement>(`#group-section-${CSS.escape(groupId)}`);
+    if (!section) return;
+    suppressSpyRef.current = true;
+    const top =
+      section.getBoundingClientRect().top -
+      root.getBoundingClientRect().top +
+      root.scrollTop -
+      GROUP_SECTION_OFFSET;
+    root.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+    setVisibleGroupId(groupId);
   }, []);
 
-  /* Scroll-spy: highlight the sidebar row for the section nearest the top of
-   * the main column while in grouped view. */
+  /* Scroll-spy: the highlighted group is the last section whose header has
+   * crossed the line GROUP_SECTION_OFFSET below the top of the main column.
+   * Trailing sections shorter than the viewport can never reach that line once
+   * the list ends, so the last section wins at the bottom — otherwise the last
+   * groups would be unreachable from the sidebar. */
   useEffect(() => {
     if (hostsViewMode !== "grouped") return;
     const root = mainScrollRef.current;
-    if (!root || typeof IntersectionObserver === "undefined") return;
-    const sections = Array.from(root.querySelectorAll<HTMLElement>("[id^='group-section-']"));
-    if (sections.length === 0) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const visible = entries
-          .filter((e) => e.isIntersecting)
-          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
-        if (visible.length > 0) {
-          const id = visible[0].target.id.replace(/^group-section-/, "");
-          setVisibleGroupId(id === UNGROUPED_ID ? UNGROUPED_ID : id);
+    if (!root) return;
+    suppressSpyRef.current = false;
+
+    const sync = () => {
+      if (suppressSpyRef.current) return;
+      const sections = Array.from(root.querySelectorAll<HTMLElement>("[id^='group-section-']"));
+      if (sections.length === 0) return;
+      const rootTop = root.getBoundingClientRect().top;
+      let active: HTMLElement | null = null;
+      if (root.scrollTop + root.clientHeight >= root.scrollHeight - 1) {
+        active = sections[sections.length - 1];
+      } else {
+        for (const section of sections) {
+          if (section.getBoundingClientRect().top - rootTop > GROUP_SECTION_OFFSET) break;
+          active = section;
         }
-      },
-      { root, rootMargin: "-20% 0px -70% 0px", threshold: 0 },
-    );
-    for (const s of sections) observer.observe(s);
-    return () => observer.disconnect();
-  }, [hostsViewMode, filteredHosts, filteredS3, groups]);
+      }
+      setVisibleGroupId(active ? active.id.replace(/^group-section-/, "") : null);
+    };
+
+    /* A smooth scroll emits scroll events too, so only real user gestures
+     * resume the spy after a sidebar click. */
+    const resumeSpy = () => {
+      suppressSpyRef.current = false;
+    };
+
+    root.addEventListener("scroll", sync, { passive: true });
+    root.addEventListener("wheel", resumeSpy, { passive: true });
+    root.addEventListener("touchstart", resumeSpy, { passive: true });
+    root.addEventListener("pointerdown", resumeSpy);
+    root.addEventListener("keydown", resumeSpy);
+    return () => {
+      root.removeEventListener("scroll", sync);
+      root.removeEventListener("wheel", resumeSpy);
+      root.removeEventListener("touchstart", resumeSpy);
+      root.removeEventListener("pointerdown", resumeSpy);
+      root.removeEventListener("keydown", resumeSpy);
+    };
+  }, [hostsViewMode]);
 
   // ─── Connect handlers ──────────────────────────────────────────────────────
 
@@ -781,7 +821,11 @@ export function HostsDashboard() {
           {...sidebarResizeHandle}
         />
 
-        <div ref={mainScrollRef} className="flex-1 min-w-0 overflow-y-scroll">
+        <div
+          ref={mainScrollRef}
+          data-testid="hosts-scroll-area"
+          className="flex-1 min-w-0 overflow-y-scroll"
+        >
           <div className="max-w-4xl w-full mx-auto px-8 py-8 flex flex-col gap-8">
 
           {/* ── Page title ── */}
