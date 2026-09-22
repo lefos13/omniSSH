@@ -19,6 +19,17 @@ async function openSettingsAppearance(): Promise<void> {
     await appearanceTab.click();
 }
 
+/** Open the special-theme CustomSelect and pick an option by its value. */
+async function pickSpecialTheme(value: string): Promise<void> {
+    const trigger = await $("[data-testid='theme-special-select']");
+    await trigger.waitForClickable({ timeout: 10_000 });
+    await trigger.click();
+
+    const option = await $(`[data-testid='theme-special-select-option-${value}']`);
+    await option.waitForClickable({ timeout: 10_000 });
+    await option.click();
+}
+
 describe("theme and narrow layout", () => {
     beforeEach(async () => {
         await resetApp();
@@ -54,10 +65,8 @@ describe("theme and narrow layout", () => {
         const darkTheme = await browser.execute(() => document.documentElement.dataset.theme);
         expect(darkTheme).to.equal("dark");
 
-        // 3. Select a special theme from the gallery and confirm it applies
-        const sakuraCard = await $("[data-testid='theme-special-sakura']");
-        await sakuraCard.waitForClickable({ timeout: 10_000 });
-        await sakuraCard.click();
+        // 3. Select a special theme from the dropdown and confirm it applies
+        await pickSpecialTheme("sakura");
 
         await browser.waitUntil(
             async () =>
@@ -66,6 +75,10 @@ describe("theme and narrow layout", () => {
         );
         const specialTheme = await browser.execute(() => document.documentElement.dataset.theme);
         expect(specialTheme).to.equal("sakura");
+
+        // The dropdown reflects the active selection
+        const specialSelect = await $("[data-testid='theme-special-select']");
+        expect(await specialSelect.getAttribute("data-value")).to.equal("sakura");
 
         // Return to a base theme so the narrow-layout checks below run on it
         const darkAgain = await $("[data-testid='s-light-theme-dark']");
@@ -103,9 +116,9 @@ describe("theme and narrow layout", () => {
             const themeControl = await $("#s-light-theme");
             expect(await themeControl.isDisplayed()).to.equal(true);
 
-            // Verify the special-theme gallery still renders within the viewport
-            const galleryCard = await $("#theme-special-deepsea");
-            expect(await galleryCard.isDisplayed()).to.equal(true);
+            // Verify the special-theme dropdown still renders within the viewport
+            const specialSelectControl = await $("[data-testid='theme-special-select']");
+            expect(await specialSelectControl.isDisplayed()).to.equal(true);
         } finally {
             // Restore original window dimensions
             await browser.setWindowSize(originalSize.width, originalSize.height);

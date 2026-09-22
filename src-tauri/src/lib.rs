@@ -125,6 +125,8 @@ pub fn run() {
                             | "sakura"
                             | "sakura-night"
                             | "erdtree"
+                            | "embers"
+                            | "lava"
                     ) =>
                 {
                     v

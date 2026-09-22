@@ -80,6 +80,8 @@ describe("Theme and narrow layout constraints", () => {
         sakura: 350,
         "sakura-night": 320,
         erdtree: 85,
+        embers: 38,
+        lava: 18,
       };
 
       for (const [mode, hue] of Object.entries(expected) as [ThemeMode, number | null][]) {
@@ -144,6 +146,8 @@ describe("Theme and narrow layout constraints", () => {
         ["sakura", "#116329"],
         ["sakura-night", "#8ad8a8"],
         ["erdtree", "#9aa84c"],
+        ["embers", "#94b858"],
+        ["lava", "#88b850"],
       ];
 
       const seen = new Set<string>(["#0dbc79"]);

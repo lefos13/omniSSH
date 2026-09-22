@@ -47,7 +47,7 @@ function PillButton({
   const [hovered, setHovered] = useState(false);
 
   return (
-    <div className="relative">
+    <div className={`relative ${hovered ? "z-10" : ""}`}>
       <button
         ref={buttonRef}
         onClick={onClick}
@@ -101,6 +101,7 @@ function PillButton({
       {/* Tooltip — collapsed only */}
       {!expanded && hovered && (
         <div
+          role="tooltip"
           className={[
             "absolute left-full ml-3 top-1/2 -translate-y-1/2 z-50",
             "px-2.5 py-1 rounded-lg",
@@ -171,12 +172,18 @@ export function Sidebar() {
 
   return (
     <>
+      {/*
+       * Elevated with relative positioning and z-40 so pop-out hover labels
+       * in collapsed mode render cleanly above the main page content (z-10),
+       * header tabs, and themes with backdrop-filter compositing layers,
+       * while remaining safely beneath application modals (z-50).
+       */}
       <nav
         data-testid="sidebar"
         data-sidebar-expanded={expanded}
         aria-label="Main navigation"
         className={[
-          "no-select flex flex-col shrink-0 h-[calc(100%-16px)] py-3 ml-2 mt-2",
+          "no-select relative z-40 flex flex-col shrink-0 h-[calc(100%-16px)] py-3 ml-2 mt-2",
           "bg-bg-surface border border-border/60 rounded-lg",
           "transition-[width] duration-[var(--duration-base)] ease-[var(--ease-expo-out)]",
           expanded ? "w-[208px] items-stretch px-3" : "w-[48px] items-center",

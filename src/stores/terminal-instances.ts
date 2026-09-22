@@ -287,6 +287,52 @@ const ANSI_PALETTE_ERDTREE = {
   brightWhite: "#fff6d8",
 };
 
+/*
+ * Warm forge coals palette for Embers theme terminal sessions: warm amber,
+ * flame red, and glowing coals over dark charcoal ash.
+ */
+const ANSI_PALETTE_EMBERS = {
+  black: "#120a07",
+  red: "#e05338",
+  green: "#94b858",
+  yellow: "#f5a623",
+  blue: "#6888b8",
+  magenta: "#b56ca8",
+  cyan: "#4eb8a8",
+  white: "#f0dfd5",
+  brightBlack: "#3b2219",
+  brightRed: "#ff6b4a",
+  brightGreen: "#b0d870",
+  brightYellow: "#ffbe45",
+  brightBlue: "#88a8d8",
+  brightMagenta: "#d284c2",
+  brightCyan: "#6ed8c8",
+  brightWhite: "#ffffff",
+};
+
+/*
+ * Obsidian magma palette for Lava theme terminal sessions: incandescent
+ * magma red, bright volcanic yellow, and fiery white over obsidian basalt.
+ */
+const ANSI_PALETTE_LAVA = {
+  black: "#100706",
+  red: "#f03a24",
+  green: "#88b850",
+  yellow: "#ffb830",
+  blue: "#707ca8",
+  magenta: "#c04878",
+  cyan: "#50a8a0",
+  white: "#f7ded5",
+  brightBlack: "#351512",
+  brightRed: "#ff5a42",
+  brightGreen: "#a4d868",
+  brightYellow: "#ffd050",
+  brightBlue: "#909cc8",
+  brightMagenta: "#dc6494",
+  brightCyan: "#70c8be",
+  brightWhite: "#ffffff",
+};
+
 /** Theme id → contrast-tuned ANSI palette. Unknown ids fall back to dark. */
 const ANSI_PALETTES: Record<string, typeof ANSI_PALETTE_DARK> = {
   matrix: ANSI_PALETTE_MATRIX,
@@ -297,6 +343,8 @@ const ANSI_PALETTES: Record<string, typeof ANSI_PALETTE_DARK> = {
   sakura: ANSI_PALETTE_SAKURA,
   "sakura-night": ANSI_PALETTE_SAKURA_NIGHT,
   erdtree: ANSI_PALETTE_ERDTREE,
+  embers: ANSI_PALETTE_EMBERS,
+  lava: ANSI_PALETTE_LAVA,
 };
 
 /** Read OKLCH CSS custom properties and convert to hex for xterm.js. */

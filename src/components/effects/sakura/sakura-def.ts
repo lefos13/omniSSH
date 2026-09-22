@@ -1,11 +1,11 @@
 /*
  * Sakura effect definition: cherry petals drifting down with a lateral sway and a
- * slow tumble, plus converging light shafts and occasional wind gusts.
+ * slow tumble, plus occasional wind gusts.
  *
  * Shipped as two themes built from one factory:
- *  - `sakura`      — the light variant (petals over a soft off-white base).
- *  - `sakura-night` — the dark variant (pale petals, a moon disc and additive
- *    moonlight shafts over a near-black base).
+ *  - `sakura`       — the light variant (petals over a soft off-white base).
+ *  - `sakura-night` — the dark variant (pale petals and an optional moon disc
+ *    over a near-black base).
  *
  * A palette only recolours the canvas; `color-scheme` and the UI tokens come from
  * the `data-theme` attribute. That is why the dark look is a separate theme id
@@ -13,7 +13,7 @@
  * set) rather than just another palette on the light theme.
  */
 
-import { Flower2, Sun, Wind, Leaf, Moon } from "lucide-react";
+import { Flower2, Wind, Leaf, Moon } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type {
   ControlSpec,
@@ -22,9 +22,9 @@ import type {
   FrameEnv,
   Palette,
   PaletteOption,
+  ToggleOption,
 } from "../types";
 import { DEFAULT_DIMMER_PRESETS, SPEED_PRESETS } from "../types";
-import { drawLightShafts, type LightShaft } from "../lightShafts";
 
 const TAU = Math.PI * 2;
 
@@ -37,7 +37,6 @@ const LIGHT_PALETTES: Record<string, Palette> = {
     deep: "#d98aa8",
     accent: "#ff8fb5",
     petal: "#ffb3cf",
-    ray: "#f7a8c4",
   },
   ume: {
     head: "#ffffff",
@@ -47,7 +46,6 @@ const LIGHT_PALETTES: Record<string, Palette> = {
     deep: "#b83b55",
     accent: "#dd4a6a",
     petal: "#f2879f",
-    ray: "#e86a86",
   },
   yuzu: {
     head: "#ffffff",
@@ -57,7 +55,6 @@ const LIGHT_PALETTES: Record<string, Palette> = {
     deep: "#b8853a",
     accent: "#f2c14e",
     petal: "#f7d08a",
-    ray: "#e6b45c",
   },
   momiji: {
     head: "#ffffff",
@@ -67,7 +64,6 @@ const LIGHT_PALETTES: Record<string, Palette> = {
     deep: "#b04a2c",
     accent: "#e2603a",
     petal: "#ef8f6a",
-    ray: "#e0734f",
   },
 };
 
@@ -80,7 +76,6 @@ const NIGHT_PALETTES: Record<string, Palette> = {
     deep: "#4a2a3a",
     accent: "#ff9ec4",
     petal: "#ffd9e6",
-    ray: "#c8b0d8",
   },
   yozakura: {
     head: "#ffffff",
@@ -90,7 +85,6 @@ const NIGHT_PALETTES: Record<string, Palette> = {
     deep: "#2a1a3a",
     accent: "#b06ad8",
     petal: "#c98ad8",
-    ray: "#8f6ab8",
   },
   lantern: {
     head: "#ffffff",
@@ -100,7 +94,6 @@ const NIGHT_PALETTES: Record<string, Palette> = {
     deep: "#3a2a12",
     accent: "#ffb85e",
     petal: "#ffcf8a",
-    ray: "#c98a3a",
   },
   ash: {
     head: "#ffffff",
@@ -110,7 +103,6 @@ const NIGHT_PALETTES: Record<string, Palette> = {
     deep: "#22262f",
     accent: "#a8b2c4",
     petal: "#c9ced8",
-    ray: "#7f8a9c",
   },
 };
 
@@ -128,31 +120,24 @@ interface Petal {
   tint: number;
 }
 
-interface SakuraShaft extends LightShaft {
-  phase: number;
-  baseAlpha: number;
-  shimmer: number;
-}
-
 interface SakuraScene {
   w: number;
   h: number;
   petals: Petal[];
-  shafts: SakuraShaft[];
   wind: number;
   windPhase: number;
   gust: number;
 }
 
-function densityConfig(density: Density): { petals: number; shafts: number } {
+function densityConfig(density: Density): { petals: number } {
   switch (density) {
     case "low":
-      return { petals: 30, shafts: 4 };
+      return { petals: 30 };
     case "high":
-      return { petals: 140, shafts: 7 };
+      return { petals: 140 };
     case "medium":
     default:
-      return { petals: 70, shafts: 5 };
+      return { petals: 70 };
   }
 }
 
@@ -166,21 +151,18 @@ interface SakuraVariant {
   defaultPalette: string;
   paletteOptions: PaletteOption[];
   defaultBrightness: number;
-  /** Icon/label for the light toggle — "Sun Rays" or "Moonlight". */
-  raysIcon: LucideIcon;
-  raysLabel: string;
-  /** Palette role used for the shaft colour. */
-  rayColorRole: string;
-  /** Additive shafts for light-over-dark; source-over for the light theme. */
-  rayAdditive: boolean;
-  /** Base shaft opacity and the amplitude of its slow shimmer. */
-  rayAlpha: number;
-  rayShimmer: number;
-  /** Draw a soft moon disc (dark variant only). */
+  /** Offer a moon-disc toggle (dark variant only). */
   moon: boolean;
 }
 
 function createSakuraDefinition(cfg: SakuraVariant): EffectDefinition<SakuraScene> {
+  const toggles: ToggleOption[] = [{ key: "petals", label: "Petals", icon: Flower2 }];
+  if (cfg.moon) toggles.push({ key: "moon", label: "Moon", icon: Moon });
+  toggles.push({ key: "gusts", label: "Gusts", icon: Wind });
+
+  const defaultToggles: Record<string, boolean> = { petals: true, gusts: true };
+  if (cfg.moon) defaultToggles.moon = true;
+
   const controls: ControlSpec = {
     palettes: cfg.paletteOptions,
     density: [
@@ -188,11 +170,7 @@ function createSakuraDefinition(cfg: SakuraVariant): EffectDefinition<SakuraScen
       { key: "medium", label: "Medium" },
       { key: "high", label: "High" },
     ],
-    toggles: [
-      { key: "petals", label: "Petals", icon: Flower2 },
-      { key: "rays", label: cfg.raysLabel, icon: cfg.raysIcon },
-      { key: "gusts", label: "Gusts", icon: Wind },
-    ],
+    toggles,
     speedPresets: SPEED_PRESETS,
     dimmerPresets: DEFAULT_DIMMER_PRESETS,
   };
@@ -218,26 +196,7 @@ function createSakuraDefinition(cfg: SakuraVariant): EffectDefinition<SakuraScen
       });
     }
 
-    // Light enters from a high corner and fans down across the frame.
-    const originX = w * (cfg.moon ? 0.78 : 0.62);
-    const originY = -h * 0.22;
-    const shafts: SakuraShaft[] = [];
-    for (let i = 0; i < counts.shafts; i++) {
-      const spread = counts.shafts > 1 ? i / (counts.shafts - 1) : 0.5;
-      shafts.push({
-        x: originX,
-        y: originY,
-        angle: (spread - 0.5) * 0.85,
-        length: h * 1.9 + Math.random() * h * 0.4,
-        halfWidth: 70 + Math.random() * 150,
-        alpha: cfg.rayAlpha,
-        baseAlpha: cfg.rayAlpha,
-        phase: Math.random() * TAU,
-        shimmer: cfg.rayShimmer,
-      });
-    }
-
-    return { w, h, petals, shafts, wind: 0, windPhase: Math.random() * TAU, gust: 0 };
+    return { w, h, petals, wind: 0, windPhase: Math.random() * TAU, gust: 0 };
   }
 
   function drawMoon(ctx: CanvasRenderingContext2D, scene: SakuraScene, env: FrameEnv) {
@@ -263,7 +222,12 @@ function createSakuraDefinition(cfg: SakuraVariant): EffectDefinition<SakuraScen
     ctx.restore();
   }
 
-  function drawPetals(ctx: CanvasRenderingContext2D, scene: SakuraScene, env: FrameEnv, speed: number) {
+  function drawPetals(
+    ctx: CanvasRenderingContext2D,
+    scene: SakuraScene,
+    env: FrameEnv,
+    speed: number
+  ) {
     const { palette, brightness } = env;
     const gust = scene.gust;
 
@@ -302,23 +266,6 @@ function createSakuraDefinition(cfg: SakuraVariant): EffectDefinition<SakuraScen
     }
   }
 
-  function drawRays(ctx: CanvasRenderingContext2D, scene: SakuraScene, env: FrameEnv) {
-    for (const shaft of scene.shafts) {
-      shaft.phase += 0.007;
-      shaft.alpha =
-        shaft.baseAlpha *
-        (1 - shaft.shimmer + shaft.shimmer * (0.5 + 0.5 * Math.sin(shaft.phase)));
-    }
-    if (cfg.moon) drawMoon(ctx, scene, env);
-    drawLightShafts(ctx, scene.shafts, {
-      color: env.palette[cfg.rayColorRole],
-      brightness: env.brightness,
-      strips: 8,
-      focus: 0.04,
-      additive: cfg.rayAdditive,
-    });
-  }
-
   function draw(ctx: CanvasRenderingContext2D, scene: SakuraScene, env: FrameEnv) {
     const speed = env.speed;
 
@@ -331,7 +278,7 @@ function createSakuraDefinition(cfg: SakuraVariant): EffectDefinition<SakuraScen
       scene.gust = 0;
     }
 
-    if (env.toggles.rays !== false) drawRays(ctx, scene, env);
+    if (cfg.moon && env.toggles.moon !== false) drawMoon(ctx, scene, env);
     if (env.toggles.petals !== false) drawPetals(ctx, scene, env, speed);
   }
 
@@ -347,7 +294,7 @@ function createSakuraDefinition(cfg: SakuraVariant): EffectDefinition<SakuraScen
       speed: 1,
       brightness: cfg.defaultBrightness,
       density: "medium",
-      toggles: { petals: true, rays: true, gusts: true },
+      toggles: defaultToggles,
     },
     fps: 30,
     controls,
@@ -371,12 +318,6 @@ export const SAKURA_DEF = createSakuraDefinition({
     { key: "momiji", label: "Momiji", dot: "bg-orange-500" },
   ],
   defaultBrightness: 0.65,
-  raysIcon: Sun,
-  raysLabel: "Sun Rays",
-  rayColorRole: "ray",
-  rayAdditive: false,
-  rayAlpha: 0.22,
-  rayShimmer: 0.3,
   moon: false,
 });
 
@@ -395,11 +336,5 @@ export const SAKURA_NIGHT_DEF = createSakuraDefinition({
     { key: "ash", label: "Ash", dot: "bg-slate-400" },
   ],
   defaultBrightness: 0.5,
-  raysIcon: Moon,
-  raysLabel: "Moonlight",
-  rayColorRole: "ray",
-  rayAdditive: true,
-  rayAlpha: 0.18,
-  rayShimmer: 0.4,
   moon: true,
 });

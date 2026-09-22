@@ -1,14 +1,12 @@
 /*
- * Erdtree effect definition: golden motes rising with a warm bloom, faint rune
- * glyphs fading in and out at random positions, and soft god-rays falling from
- * the top. A gnarled great-tree watermark is layered above the canvas by the
- * component (see ErdtreeBackground).
+ * Erdtree effect definition: golden motes rising with a warm bloom and faint rune
+ * glyphs fading in and out at random positions. A gnarled great-tree watermark is
+ * layered above the canvas by the component (see ErdtreeBackground).
  */
 
-import { Flame, Sparkles, TreeDeciduous, Sun } from "lucide-react";
+import { Flame, Sparkles, TreeDeciduous } from "lucide-react";
 import type { ControlSpec, Density, EffectDefinition, FrameEnv, Palette } from "../types";
 import { DEFAULT_DIMMER_PRESETS, SPEED_PRESETS } from "../types";
-import { drawLightShafts, type LightShaft } from "../lightShafts";
 
 const TAU = Math.PI * 2;
 
@@ -22,7 +20,6 @@ const PALETTES: Record<string, Palette> = {
     accent: "#ffd45e",
     mote: "#ffcf6a",
     rune: "#f0c860",
-    ray: "#e0b040",
   },
   grace: {
     head: "#fffdf0",
@@ -33,7 +30,6 @@ const PALETTES: Record<string, Palette> = {
     accent: "#ffe9a0",
     mote: "#ffe7a8",
     rune: "#f5e2a8",
-    ray: "#e8d192",
   },
   rot: {
     head: "#ffd9cf",
@@ -44,7 +40,6 @@ const PALETTES: Record<string, Palette> = {
     accent: "#e2604f",
     mote: "#e07a5a",
     rune: "#c25a4a",
-    ray: "#b8433a",
   },
   night: {
     head: "#eaf2ff",
@@ -55,7 +50,6 @@ const PALETTES: Record<string, Palette> = {
     accent: "#a8c4ff",
     mote: "#bcd4ff",
     rune: "#9fc0ff",
-    ray: "#8fa8e0",
   },
 };
 
@@ -75,7 +69,6 @@ const CONTROLS: ControlSpec = {
     { key: "motes", label: "Motes", icon: Flame },
     { key: "runes", label: "Runes", icon: Sparkles },
     { key: "tree", label: "Tree", icon: TreeDeciduous },
-    { key: "rays", label: "God Rays", icon: Sun },
   ],
   speedPresets: SPEED_PRESETS,
   dimmerPresets: DEFAULT_DIMMER_PRESETS,
@@ -115,27 +108,22 @@ interface Rune {
   rot: number;
 }
 
-interface ErdtreeShaft extends LightShaft {
-  phase: number;
-}
-
 interface ErdtreeScene {
   w: number;
   h: number;
   motes: Mote[];
   runes: Rune[];
-  shafts: ErdtreeShaft[];
 }
 
-function densityConfig(density: Density): { motes: number; runes: number; rays: number } {
+function densityConfig(density: Density): { motes: number; runes: number } {
   switch (density) {
     case "low":
-      return { motes: 30, runes: 4, rays: 4 };
+      return { motes: 30, runes: 4 };
     case "high":
-      return { motes: 150, runes: 14, rays: 7 };
+      return { motes: 150, runes: 14 };
     case "medium":
     default:
-      return { motes: 70, runes: 8, rays: 5 };
+      return { motes: 70, runes: 8 };
   }
 }
 
@@ -177,34 +165,7 @@ function createScene(size: { w: number; h: number }, cfg: { density: Density }):
     rune.life = Math.random() * rune.maxLife;
     runes.push(rune);
   }
-  // God-rays converge from above the canopy rather than sitting as free shapes.
-  const shafts: ErdtreeShaft[] = [];
-  for (let i = 0; i < counts.rays; i++) {
-    const spread = counts.rays > 1 ? i / (counts.rays - 1) : 0.5;
-    shafts.push({
-      x: w * (0.12 + spread * 0.76),
-      y: -h * 0.42,
-      angle: (spread - 0.5) * 0.5,
-      length: h * 1.8 + Math.random() * h * 0.4,
-      halfWidth: 60 + Math.random() * 120,
-      alpha: 0.16 + Math.random() * 0.12,
-      phase: Math.random() * TAU,
-    });
-  }
-  return { w, h, motes, runes, shafts };
-}
-
-function drawShafts(ctx: CanvasRenderingContext2D, scene: ErdtreeScene, env: FrameEnv) {
-  for (const shaft of scene.shafts) {
-    shaft.phase += 0.006;
-  }
-  drawLightShafts(ctx, scene.shafts, {
-    color: env.palette.ray,
-    brightness: env.brightness,
-    strips: 10,
-    focus: 0.04,
-    additive: true,
-  });
+  return { w, h, motes, runes };
 }
 
 function drawRunes(ctx: CanvasRenderingContext2D, scene: ErdtreeScene, env: FrameEnv) {
@@ -267,7 +228,6 @@ function drawMotes(ctx: CanvasRenderingContext2D, scene: ErdtreeScene, env: Fram
 
 function draw(ctx: CanvasRenderingContext2D, scene: ErdtreeScene, env: FrameEnv) {
   const speed = env.speed;
-  if (env.toggles.rays !== false) drawShafts(ctx, scene, env);
   if (env.toggles.runes !== false) drawRunes(ctx, scene, env);
   if (env.toggles.motes !== false) drawMotes(ctx, scene, env, speed);
 }
@@ -284,7 +244,7 @@ export const ERDTREE_DEF: EffectDefinition<ErdtreeScene> = {
     speed: 1,
     brightness: 0.3,
     density: "medium",
-    toggles: { motes: true, runes: true, tree: true, rays: true },
+    toggles: { motes: true, runes: true, tree: true },
   },
   fps: 30,
   controls: CONTROLS,

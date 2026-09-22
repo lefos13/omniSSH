@@ -19,3 +19,5 @@ export type {
   SpeedMultiplier,
   ToggleOption,
 } from "./types";
+export { EmbersBackground, EMBERS_DEF } from "./embers";
+export { LavaBackground, LAVA_DEF, triggerLavaBurst, resetActiveLavaScene } from "./lava";

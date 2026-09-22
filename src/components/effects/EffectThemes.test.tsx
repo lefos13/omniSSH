@@ -15,6 +15,8 @@ import { StarfieldBackground } from "./starfield";
 import { FogBackground } from "./fog";
 import { SakuraBackground, SakuraNightBackground } from "./sakura";
 import { ErdtreeBackground } from "./erdtree";
+import { EmbersBackground } from "./embers";
+import { LavaBackground } from "./lava";
 import { installCanvasMock } from "./canvasTestUtils";
 
 beforeAll(installCanvasMock);
@@ -31,6 +33,8 @@ const THEMES: { id: string; label: string; Component: ComponentType; defaultPale
     defaultPalette: "moon",
   },
   { id: "erdtree", label: "Erdtree", Component: ErdtreeBackground, defaultPalette: "erdtree" },
+  { id: "embers", label: "Embers", Component: EmbersBackground, defaultPalette: "forge" },
+  { id: "lava", label: "Lava", Component: LavaBackground, defaultPalette: "magma" },
 ];
 
 describe.each(THEMES)("$label theme", ({ id, Component, defaultPalette }) => {
@@ -72,5 +76,49 @@ describe("Erdtree theme specifics", () => {
     fireEvent.click(screen.getByTestId("erdtree-controls-toggle"));
     fireEvent.click(screen.getByTestId("erdtree-control-tree"));
     expect(screen.queryByTestId("erdtree-watermark")).not.toBeInTheDocument();
+  });
+});
+
+describe("Embers theme specifics", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  it("renders all four effect toggles and toggles soot flakes", () => {
+    render(<EmbersBackground />);
+    fireEvent.click(screen.getByTestId("embers-controls-toggle"));
+
+    expect(screen.getByTestId("embers-control-embers")).toBeInTheDocument();
+    expect(screen.getByTestId("embers-control-glowLine")).toBeInTheDocument();
+    expect(screen.getByTestId("embers-control-shimmer")).toBeInTheDocument();
+    expect(screen.getByTestId("embers-control-soot")).toBeInTheDocument();
+
+    const sootBtn = screen.getByTestId("embers-control-soot");
+    expect(sootBtn).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(sootBtn);
+    expect(sootBtn).toHaveAttribute("aria-pressed", "true");
+  });
+});
+
+describe("Lava theme specifics", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  it("renders fissure, spark and heat pulse toggles and attaches pointer listener", () => {
+    const { unmount } = render(<LavaBackground />);
+    fireEvent.click(screen.getByTestId("lava-controls-toggle"));
+
+    expect(screen.getByTestId("lava-control-fissures")).toBeInTheDocument();
+    expect(screen.getByTestId("lava-control-sparks")).toBeInTheDocument();
+    expect(screen.getByTestId("lava-control-heatPulse")).toBeInTheDocument();
+
+    // Trigger window pointerdown
+    expect(() => {
+      window.dispatchEvent(new PointerEvent("pointerdown", { clientX: 300, clientY: 200 }));
+    }).not.toThrow();
+
+    // Unmount cleanly cleans up event listener
+    expect(() => unmount()).not.toThrow();
   });
 });

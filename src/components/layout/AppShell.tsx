@@ -39,6 +39,8 @@ import { StarfieldBackground } from "../effects/starfield";
 import { FogBackground } from "../effects/fog";
 import { SakuraBackground, SakuraNightBackground } from "../effects/sakura";
 import { ErdtreeBackground } from "../effects/erdtree";
+import { EmbersBackground } from "../effects/embers";
+import { LavaBackground } from "../effects/lava";
 
 /*
  * Registry of animated special themes → their background canvas component.
@@ -53,6 +55,8 @@ const SPECIAL_THEME_BACKGROUNDS: Partial<Record<ThemeMode, ComponentType>> = {
   sakura: SakuraBackground,
   "sakura-night": SakuraNightBackground,
   erdtree: ErdtreeBackground,
+  embers: EmbersBackground,
+  lava: LavaBackground,
 };
 
 export function AppShell() {

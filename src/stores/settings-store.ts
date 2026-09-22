@@ -13,7 +13,9 @@ export type ThemeMode =
   | "fog"
   | "sakura"
   | "sakura-night"
-  | "erdtree";
+  | "erdtree"
+  | "embers"
+  | "lava";
 
 /*
  * Animated "special" themes render a full-viewport canvas behind a transparent
@@ -31,6 +33,8 @@ export const SPECIAL_THEME_HUES: Record<string, number> = {
   sakura: 350,
   "sakura-night": 320,
   erdtree: 85,
+  embers: 38,
+  lava: 18,
 };
 
 /** Whether a persisted/selected theme id is one of the animated special themes. */

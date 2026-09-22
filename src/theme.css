@@ -543,6 +543,78 @@
   --shadow-lg:  0 8px 28px oklch(0 0 0 / 0.7), 0 0 28px oklch(0.740 0.170 320 / 0.22);
 }
 
+/*
+ * Embers theme tokens: dark charcoal ash translucent surfaces with warm parchment
+ * text, a glowing warm amber accent, and orange/amber bloom shadows.
+ */
+:root[data-theme="embers"] {
+  color-scheme: dark;
+
+  --color-bg-base:      oklch(0.080 0.025 35 / 0.05);
+  --color-bg-surface:   oklch(0.125 0.028 35 / 0.78);
+  --color-bg-overlay:   oklch(0.165 0.032 35 / 0.88);
+  --color-bg-subtle:    oklch(0.205 0.035 35 / 0.90);
+  --color-bg-muted:     oklch(0.245 0.035 35 / 0.94);
+
+  --color-text-primary:   oklch(0.965 0.030 45);
+  --color-text-secondary: oklch(0.840 0.050 45);
+  --color-text-muted:     oklch(0.670 0.045 40);
+  --color-text-inverse:   oklch(0.090 0.025 35);
+
+  --color-accent:       oklch(0.760 0.160 var(--accent-hue, 38));
+  --color-accent-hover: oklch(0.700 0.160 var(--accent-hue, 38));
+  --color-accent-muted: oklch(0.760 0.160 var(--accent-hue, 38) / 0.22);
+
+  --color-status-connected:    oklch(0.780 0.170 145);
+  --color-status-connecting:   oklch(0.800 0.160 85);
+  --color-status-error:        oklch(0.680 0.220 25);
+  --color-status-disconnected: oklch(0.560 0.035 35);
+
+  --color-border:       oklch(0.340 0.055 35 / 0.50);
+  --color-border-focus: oklch(0.760 0.160 var(--accent-hue, 38));
+  --color-ring:         oklch(0.760 0.160 var(--accent-hue, 38) / 0.40);
+
+  --shadow-sm:  0 1px 3px oklch(0 0 0 / 0.5);
+  --shadow-md:  0 2px 10px oklch(0 0 0 / 0.6), 0 0 14px oklch(0.760 0.160 38 / 0.18);
+  --shadow-lg:  0 8px 28px oklch(0 0 0 / 0.7), 0 0 28px oklch(0.760 0.160 38 / 0.22);
+}
+
+/*
+ * Lava theme tokens: obsidian basalt translucent surfaces with incandescent
+ * ash-white text, a molten magma red-orange accent, and fiery glow shadows.
+ */
+:root[data-theme="lava"] {
+  color-scheme: dark;
+
+  --color-bg-base:      oklch(0.070 0.020 20 / 0.05);
+  --color-bg-surface:   oklch(0.115 0.025 20 / 0.80);
+  --color-bg-overlay:   oklch(0.155 0.030 20 / 0.88);
+  --color-bg-subtle:    oklch(0.195 0.032 20 / 0.90);
+  --color-bg-muted:     oklch(0.235 0.032 20 / 0.94);
+
+  --color-text-primary:   oklch(0.960 0.025 30);
+  --color-text-secondary: oklch(0.835 0.045 30);
+  --color-text-muted:     oklch(0.665 0.040 25);
+  --color-text-inverse:   oklch(0.085 0.020 20);
+
+  --color-accent:       oklch(0.700 0.190 var(--accent-hue, 18));
+  --color-accent-hover: oklch(0.640 0.190 var(--accent-hue, 18));
+  --color-accent-muted: oklch(0.700 0.190 var(--accent-hue, 18) / 0.22);
+
+  --color-status-connected:    oklch(0.780 0.170 145);
+  --color-status-connecting:   oklch(0.800 0.160 85);
+  --color-status-error:        oklch(0.680 0.220 25);
+  --color-status-disconnected: oklch(0.560 0.030 20);
+
+  --color-border:       oklch(0.330 0.050 25 / 0.50);
+  --color-border-focus: oklch(0.700 0.190 var(--accent-hue, 18));
+  --color-ring:         oklch(0.700 0.190 var(--accent-hue, 18) / 0.40);
+
+  --shadow-sm:  0 1px 3px oklch(0 0 0 / 0.5);
+  --shadow-md:  0 2px 10px oklch(0 0 0 / 0.6), 0 0 14px oklch(0.700 0.190 18 / 0.20);
+  --shadow-lg:  0 8px 28px oklch(0 0 0 / 0.7), 0 0 28px oklch(0.700 0.190 18 / 0.24);
+}
+
 /* Opaque fallback layers painted behind the transparent effect canvases. */
 :root[data-theme="deepsea"],
 :root[data-theme="deepsea"] body,
@@ -580,6 +652,18 @@
   background-color: #140a12;
 }
 
+:root[data-theme="embers"],
+:root[data-theme="embers"] body,
+:root[data-theme="embers"] #root {
+  background-color: #0d0806;
+}
+
+:root[data-theme="lava"],
+:root[data-theme="lava"] body,
+:root[data-theme="lava"] #root {
+  background-color: #0c0605;
+}
+
 /* See the Matrix rule above: inputs are excluded from the backdrop-filter so
    input adornment icons stay visible. Applies to every effect theme. */
 :root[data-theme="deepsea"] nav[data-testid="sidebar"],
@@ -605,7 +689,15 @@
 :root[data-theme="sakura-night"] nav[data-testid="sidebar"],
 :root[data-theme="sakura-night"] aside[data-testid="groups-sidebar"],
 :root[data-theme="sakura-night"] [data-testid^="host-card-"],
-:root[data-theme="sakura-night"] .bg-bg-surface:not(input):not(textarea):not(select) {
+:root[data-theme="sakura-night"] .bg-bg-surface:not(input):not(textarea):not(select),
+:root[data-theme="embers"] nav[data-testid="sidebar"],
+:root[data-theme="embers"] aside[data-testid="groups-sidebar"],
+:root[data-theme="embers"] [data-testid^="host-card-"],
+:root[data-theme="embers"] .bg-bg-surface:not(input):not(textarea):not(select),
+:root[data-theme="lava"] nav[data-testid="sidebar"],
+:root[data-theme="lava"] aside[data-testid="groups-sidebar"],
+:root[data-theme="lava"] [data-testid^="host-card-"],
+:root[data-theme="lava"] .bg-bg-surface:not(input):not(textarea):not(select) {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
 }
@@ -637,6 +729,41 @@
   background-color: oklch(0.135 0.025 80 / 0.94);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
+}
+
+:root[data-theme="embers"] [role="dialog"],
+:root[data-theme="embers"] dialog {
+  background-color: oklch(0.125 0.028 35 / 0.94);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+:root[data-theme="lava"] [role="dialog"],
+:root[data-theme="lava"] dialog {
+  background-color: oklch(0.115 0.025 20 / 0.94);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+/*
+ * Lava and embers paint bright molten highlights directly behind page text,
+ * because --color-bg-base is nearly transparent on effect themes and headings,
+ * labels and descriptions carry no surface of their own. A dark halo behind
+ * glyphs keeps that text legible over the hottest blobs without dimming or
+ * otherwise changing the effect itself. Terminal output opts out so terminal
+ * color schemes are never outlined.
+ */
+:root[data-theme="embers"],
+:root[data-theme="lava"] {
+  text-shadow:
+    0 1px 2px oklch(0 0 0 / 0.85),
+    0 0 4px oklch(0 0 0 / 0.60),
+    0 0 10px oklch(0 0 0 / 0.45);
+}
+
+:root[data-theme="embers"] .xterm,
+:root[data-theme="lava"] .xterm {
+  text-shadow: none;
 }
 
 /* Modal treatment for the light Sakura theme. */

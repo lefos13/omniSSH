@@ -1,7 +1,7 @@
 /*
  * Fog effect definition: layered volumetric fog bands drifting horizontally over
- * a heavy vignette, converging light shafts through the mist, curling mist wisps,
- * and distant tree/pole silhouettes that fade in and out of the haze.
+ * a heavy vignette, curling mist wisps, and distant tree/pole silhouettes that
+ * fade in and out of the haze.
  *
  * Deliberately low-contrast — no bright highlights, the antithesis of the Matrix
  * rain. An earlier high-frequency grain overlay was removed because the per-pixel
@@ -12,10 +12,9 @@
  * is no per-pixel work per frame.
  */
 
-import { CloudFog, Sun, Wind, Trees, CircleDashed } from "lucide-react";
+import { CloudFog, Wind, Trees, CircleDashed } from "lucide-react";
 import type { ControlSpec, Density, EffectDefinition, FrameEnv, Palette } from "../types";
 import { DEFAULT_DIMMER_PRESETS, SPEED_PRESETS } from "../types";
-import { drawLightShafts, type LightShaft } from "../lightShafts";
 
 const TAU = Math.PI * 2;
 const SPRITE_SIZE = 128;
@@ -30,7 +29,6 @@ const PALETTES: Record<string, Palette> = {
     accent: "#a7b5a9",
     fog: "#7d8c82",
     wisp: "#93a29a",
-    shaft: "#cbd6cf",
     silhouette: "#1d2420",
   },
   ash: {
@@ -42,7 +40,6 @@ const PALETTES: Record<string, Palette> = {
     accent: "#b3a795",
     fog: "#8c8378",
     wisp: "#a3968a",
-    shaft: "#ded3c6",
     silhouette: "#221d19",
   },
   mire: {
@@ -54,7 +51,6 @@ const PALETTES: Record<string, Palette> = {
     accent: "#9fb27a",
     fog: "#7c8c5e",
     wisp: "#93a876",
-    shaft: "#d3e0bd",
     silhouette: "#1e2418",
   },
   pale: {
@@ -66,7 +62,6 @@ const PALETTES: Record<string, Palette> = {
     accent: "#a4b8c9",
     fog: "#7d8d9c",
     wisp: "#93a6b8",
-    shaft: "#cfdbe6",
     silhouette: "#1a2027",
   },
 };
@@ -84,7 +79,6 @@ const CONTROLS: ControlSpec = {
     { key: "high", label: "High" },
   ],
   toggles: [
-    { key: "beams", label: "Light Shafts", icon: Sun },
     { key: "wisps", label: "Wisps", icon: Wind },
     { key: "silhouettes", label: "Silhouettes", icon: Trees },
     { key: "vignette", label: "Vignette", icon: CircleDashed },
@@ -124,19 +118,12 @@ interface Silhouette {
   vx: number;
 }
 
-interface FogShaft extends LightShaft {
-  baseAlpha: number;
-  phase: number;
-  shimmer: number;
-}
-
 interface FogScene {
   w: number;
   h: number;
   bands: FogBand[];
   wisps: Wisp[];
   silhouettes: Silhouette[];
-  shafts: FogShaft[];
   /** Cached soft radial sprites keyed by colour, rebuilt when the palette changes. */
   sprites: Map<string, HTMLCanvasElement | null>;
 }
@@ -145,16 +132,15 @@ function densityConfig(density: Density): {
   bands: number;
   wisps: number;
   silhouettes: number;
-  shafts: number;
 } {
   switch (density) {
     case "low":
-      return { bands: 5, wisps: 5, silhouettes: 7, shafts: 3 };
+      return { bands: 5, wisps: 5, silhouettes: 7 };
     case "high":
-      return { bands: 16, wisps: 14, silhouettes: 20, shafts: 7 };
+      return { bands: 16, wisps: 14, silhouettes: 20 };
     case "medium":
     default:
-      return { bands: 9, wisps: 9, silhouettes: 12, shafts: 5 };
+      return { bands: 9, wisps: 9, silhouettes: 12 };
   }
 }
 
@@ -246,30 +232,7 @@ function createScene(size: { w: number; h: number }, cfg: { density: Density }):
     });
   }
 
-  // Two light sources above the frame; shafts fan out and converge there, which
-  // reads as sun breaking through a canopy rather than free-floating rectangles.
-  const sources = [
-    { x: w * 0.16, y: -h * 0.3, angle: 0.34 },
-    { x: w * 0.74, y: -h * 0.26, angle: -0.24 },
-  ];
-  const shafts: FogShaft[] = [];
-  for (let i = 0; i < counts.shafts; i++) {
-    const source = sources[i % sources.length];
-    const baseAlpha = 0.14 + Math.random() * 0.12;
-    shafts.push({
-      x: source.x,
-      y: source.y,
-      angle: source.angle + (Math.random() - 0.5) * 0.34,
-      length: h * 1.7 + Math.random() * h * 0.5,
-      halfWidth: 70 + Math.random() * 150,
-      alpha: baseAlpha,
-      baseAlpha,
-      phase: Math.random() * TAU,
-      shimmer: 0.14 + Math.random() * 0.16,
-    });
-  }
-
-  return { w, h, bands, wisps, silhouettes, shafts, sprites: new Map() };
+  return { w, h, bands, wisps, silhouettes, sprites: new Map() };
 }
 
 function drawBands(ctx: CanvasRenderingContext2D, scene: FogScene, env: FrameEnv, speed: number) {
@@ -313,10 +276,7 @@ function drawWisps(ctx: CanvasRenderingContext2D, scene: FogScene, env: FrameEnv
       const radius = wisp.scale * Math.sin(Math.PI * (0.18 + t * 0.82));
       if (radius <= 0.5) continue;
 
-      ctx.globalAlpha = Math.min(
-        1,
-        wisp.alpha * Math.sin(Math.PI * t) * env.brightness * 2
-      );
+      ctx.globalAlpha = Math.min(1, wisp.alpha * Math.sin(Math.PI * t) * env.brightness * 2);
       ctx.drawImage(sprite, px - radius, py - radius, radius * 2, radius * 2);
     }
   }
@@ -331,9 +291,7 @@ function drawRidge(ctx: CanvasRenderingContext2D, scene: FogScene, env: FrameEnv
   ctx.moveTo(0, scene.h);
   for (let x = 0; x <= scene.w; x += 40) {
     const y =
-      scene.h * 0.82 +
-      Math.sin(x * 0.004 + 1.3) * 26 +
-      Math.sin(x * 0.011 + 0.4) * 12;
+      scene.h * 0.82 + Math.sin(x * 0.004 + 1.3) * 26 + Math.sin(x * 0.011 + 0.4) * 12;
     ctx.lineTo(x, y);
   }
   ctx.lineTo(scene.w, scene.h);
@@ -373,7 +331,12 @@ function drawSilhouettes(ctx: CanvasRenderingContext2D, scene: FogScene, env: Fr
       ctx.lineTo(shape.x + half * 1.35, shape.baseY - shape.size * 0.18);
       ctx.closePath();
       ctx.fill();
-      ctx.fillRect(shape.x - shape.size * 0.03, shape.baseY - 2, shape.size * 0.06, shape.size * 0.12);
+      ctx.fillRect(
+        shape.x - shape.size * 0.03,
+        shape.baseY - 2,
+        shape.size * 0.06,
+        shape.size * 0.12
+      );
     } else {
       const top = shape.baseY - shape.size;
       ctx.lineWidth = Math.max(1.5, shape.size * 0.03);
@@ -389,20 +352,6 @@ function drawSilhouettes(ctx: CanvasRenderingContext2D, scene: FogScene, env: Fr
     }
   }
   ctx.restore();
-}
-
-function drawShafts(ctx: CanvasRenderingContext2D, scene: FogScene, env: FrameEnv) {
-  for (const shaft of scene.shafts) {
-    shaft.phase += 0.008;
-    shaft.alpha = shaft.baseAlpha * (1 - shaft.shimmer + shaft.shimmer * (0.5 + 0.5 * Math.sin(shaft.phase)));
-  }
-  drawLightShafts(ctx, scene.shafts, {
-    color: env.palette.shaft,
-    brightness: env.brightness,
-    strips: 9,
-    focus: 0.05,
-    additive: true,
-  });
 }
 
 function drawVignette(ctx: CanvasRenderingContext2D, scene: FogScene, env: FrameEnv) {
@@ -429,7 +378,6 @@ function draw(ctx: CanvasRenderingContext2D, scene: FogScene, env: FrameEnv) {
   if (env.toggles.silhouettes !== false) drawSilhouettes(ctx, scene, env);
   drawBands(ctx, scene, env, speed);
   if (env.toggles.wisps !== false) drawWisps(ctx, scene, env, speed);
-  if (env.toggles.beams !== false) drawShafts(ctx, scene, env);
   if (env.toggles.vignette !== false) drawVignette(ctx, scene, env);
 }
 
@@ -445,7 +393,7 @@ export const FOG_DEF: EffectDefinition<FogScene> = {
     speed: 1,
     brightness: 0.3,
     density: "medium",
-    toggles: { beams: true, wisps: true, silhouettes: true, vignette: true },
+    toggles: { wisps: true, silhouettes: true, vignette: true },
   },
   fps: 20,
   controls: CONTROLS,
