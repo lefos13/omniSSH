@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.4] - 2026-09-22
+
+### 🚀 Highlights & New Features
+
+#### 1. Reusable Effect Framework With Animated Themes
+* **Shared Effect Pipeline**: Every animated background now runs through a single framework (`EffectTheme`, `useCanvasEffect`, `useEffectControls`) that owns the canvas lifecycle — high-DPI scaling, debounced resize scene rebuilds, FPS throttling, tab-hidden pausing, pointer-proximity tracking, and `prefers-reduced-motion` support — while each theme ships a declarative `EffectDefinition` with its own palettes, density steps, and toggles.
+* **Generic Controls Panel**: A floating per-theme panel exposes palette swatches, density, speed, and dimmer presets plus that theme's toggles, persists every choice to local storage, and offers "Restore defaults"; palette changes recolor the live scene instantly.
+* **Five New Themes**: Deep Sea, Starfield, Fog, Sakura (day & night), and Erdtree join the theme picker with themed tokens, blur-backed surfaces, and unit-tested effect definitions.
+
+#### 2. Embers Theme
+* **Forge Glow Background**: A rising ember field buoyed from a radiant bottom glow line, with convective heat-shimmer turbulence and optional falling soot flakes; four palettes (Forge, Apocalypse, Blue Flame, Ash), density and speed controls, and a 30 FPS throttle.
+* **Terminal Palette**: Terminal sessions adopt a warm forge ANSI palette while the theme is active, keeping the ember look consistent inside the shell.
+
+#### 3. Lava Theme
+* **Molten Flow Field**: A domain-warped value-noise magma surface — dark cooling crust islands drifting over incandescent veins and white-hot cores — with convective heat-pulse breathing, pointer-proximity heating, and click-triggered spark eruptions that break out at the hottest vein peaks; four palettes (Magma, Caldera, Brimstone, Cryovolcano) rendered through a bounded low-res noise buffer that keeps the effect near 30 FPS on large displays.
+* **Terminal Palette**: Terminal sessions adopt an obsidian-magma ANSI palette while the theme is active.
+* **Legibility Halo**: A dark halo behind glyphs keeps headings, labels, and descriptions readable over the brightest molten highlights without dimming the effect itself; terminal output is exempt so color schemes stay untouched.
+
 ## [1.6.3] - 2026-09-21
 
 ### 🚀 Highlights & New Features
