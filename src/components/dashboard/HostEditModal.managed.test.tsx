@@ -92,6 +92,30 @@ describe("HostEditModal — managed hosts", () => {
     expect(save).toHaveAttribute("title", "A managed host saves only its credential");
   });
 
+  /* The lock must be legible per-control: swatches render dimmed with a
+   * not-allowed cursor and explain themselves on hover, and Cancel is never
+   * held hostage by the managed state — only by an in-flight save/connect. */
+  it("reads as read-only per control and keeps Cancel clickable", async () => {
+    respondWith([{ datasetId: "ds-1", name: "NOVA" }]);
+    openModal();
+
+    await screen.findByTestId("host-modal-managed-banner");
+
+    const swatch = await screen.findByTestId("host-modal-theme-nord");
+    expect(swatch).toBeDisabled();
+    expect(swatch.className).toContain("disabled:opacity-50");
+    expect(swatch.className).toContain("disabled:cursor-not-allowed");
+    expect(swatch).toHaveAttribute("title", "Managed by NOVA");
+
+    // Locked field wrappers carry the same hover reason.
+    expect(screen.getByTestId("host-modal-label").parentElement).toHaveAttribute(
+      "title",
+      "Managed by NOVA",
+    );
+
+    expect(screen.getByTestId("host-modal-cancel")).not.toBeDisabled();
+  });
+
   it("saves a managed host's credential without touching the synced row", async () => {
     respondWith([{ datasetId: "ds-1", name: "NOVA" }]);
     openModal();

@@ -14,6 +14,7 @@ import {
   History,
   Settings,
   ArrowUpDown,
+  Rocket,
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
@@ -31,6 +32,7 @@ const PAGE_ICONS: Record<PageId, React.ElementType> = {
   history: History,
   settings: Settings,
   transfers: ArrowUpDown,
+  changelog: Rocket,
 };
 
 function getTabIcon(tab: UnifiedTab): React.ElementType {

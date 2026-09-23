@@ -27,6 +27,9 @@ import { HistoryPage } from "../history";
 import { TransfersPage } from "../transfers";
 import { usePortForwardEvents } from "../../hooks/use-port-forward-events";
 import { UpdateDialog } from "../updater/UpdateDialog";
+import { UpdateAnnounceDialog } from "../updater/UpdateAnnounceDialog";
+import { TipPopup } from "../tips";
+import { ChangelogPage } from "../changelog";
 import { Toaster } from "../shared/Toaster";
 import { closeExplorerSession, resolveExplorerTransport } from "../../lib/explorer-transport";
 import { useLocalVaultStore } from "../../stores/local-vault-store";
@@ -483,13 +486,18 @@ export function AppShell() {
 
   // Check for updates once on launch, after settings load so the auto-update
   // preference is known. The check always runs; the silent download/install
-  // only happens in packaged builds (see updater store).
+  // only happens in packaged builds (see updater store). The same tick also
+  // loads the running version and decides whether the "you've been updated"
+  // announcement should open (both need settings + version loaded).
   const settingsLoaded = useSettingsStore((s) => s.loaded);
   const didUpdateCheck = useRef(false);
   useEffect(() => {
     if (!settingsLoaded || didUpdateCheck.current) return;
     didUpdateCheck.current = true;
-    void useUpdaterStore.getState().loadAppVersion();
+    void (async () => {
+      await useUpdaterStore.getState().loadAppVersion();
+      await useUpdaterStore.getState().maybeAnnounceUpdate();
+    })();
     void useUpdaterStore.getState().checkOnStartup();
   }, [settingsLoaded]);
 
@@ -635,6 +643,8 @@ export function AppShell() {
                   <SettingsPage />
                 ) : activePageType === "transfers" ? (
                   <TransfersPage />
+                ) : activePageType === "changelog" ? (
+                  <ChangelogPage />
                 ) : null}
               </div>
             )}
@@ -651,12 +661,20 @@ export function AppShell() {
       {/* Update-available popup */}
       <UpdateDialog />
 
+      {/* "You've been updated" announcement — mounted after UpdateDialog so it
+          paints above it when both would show on the same launch. */}
+      <UpdateAnnounceDialog />
+
       {/* Snippet command palette */}
       <SnippetPalette />
 
       {/* Transient notifications (errors, etc.) */}
       <Toaster />
     </div>
+    {/* Tip card lives at root level so it can stack above the effect-theme
+        controls badge (z-40, also root-level) — inside the z-10 container it
+        could never win. Below the root-level vault prompt (z-50). */}
+    <TipPopup />
     {/* Rendered after every other modal so it paints above them at equal z-index. */}
     <GlobalVaultUnlockPrompt />
     </>

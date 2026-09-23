@@ -18,8 +18,15 @@ interface UpdaterState {
   error: string | null;
   appVersion: string | null;
   dialogOpen: boolean;
+  // Open while the "you've been updated" announcement is showing (distinct from
+  // dialogOpen, which means a NEWER release is available to install).
+  announceOpen: boolean;
 
   loadAppVersion: () => Promise<void>;
+  /** Compare the persisted seen version against appVersion and open the
+   *  announcement when the app was updated since the last launch. */
+  maybeAnnounceUpdate: () => Promise<void>;
+  dismissAnnounce: () => void;
   checkOnStartup: () => Promise<void>;
   checkManually: () => Promise<void>;
   installAndRelaunch: () => Promise<void>;
@@ -82,6 +89,7 @@ export const useUpdaterStore = create<UpdaterState>((set, get) => ({
   error: null,
   appVersion: null,
   dialogOpen: false,
+  announceOpen: false,
 
   loadAppVersion: async () => {
     try {
@@ -90,6 +98,35 @@ export const useUpdaterStore = create<UpdaterState>((set, get) => ({
     } catch {
       /* best-effort */
     }
+  },
+
+  /*
+   * Startup announcement gate: compares the running version against the last
+   * one we announced. A null seen version means first-ever run — seed it
+   * silently so new installs never see the dialog. Otherwise a mismatch means
+   * the app was updated and the "what's new" dialog should open.
+   */
+  maybeAnnounceUpdate: async () => {
+    const settings = useSettingsStore.getState();
+    let version = get().appVersion;
+    if (!version) {
+      await get().loadAppVersion();
+      version = get().appVersion;
+    }
+    if (!version) return;
+    if (settings.seenVersion === null) {
+      useSettingsStore.getState().setSeenVersion(version);
+      return;
+    }
+    if (settings.seenVersion !== version) set({ announceOpen: true });
+  },
+
+  // Marks the current version as announced (both "See what's new" and "Later"
+  // must persist it, or the dialog would reappear on the next launch).
+  dismissAnnounce: () => {
+    set({ announceOpen: false });
+    const version = get().appVersion;
+    if (version) useSettingsStore.getState().setSeenVersion(version);
   },
 
   // Runs once on launch. With auto-update on, silently downloads + installs the

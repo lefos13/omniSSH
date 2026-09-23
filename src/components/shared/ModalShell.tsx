@@ -6,16 +6,16 @@ import { ModalBackdrop } from "./ModalBackdrop";
 // Import these in any modal footer so every button looks identical.
 
 export const BTN_GHOST =
-  "inline-flex items-center justify-center gap-2 px-4 py-1.5 text-[length:var(--text-sm)] font-medium text-text-secondary hover:text-text-primary rounded-lg transition-colors duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer";
+  "inline-flex items-center justify-center gap-2 px-4 py-1.5 text-[length:var(--text-sm)] font-medium text-text-secondary hover:text-text-primary rounded-lg transition-colors duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap shrink-0 cursor-pointer";
 
 export const BTN_SECONDARY =
-  "inline-flex items-center justify-center gap-2 px-4 py-1.5 text-[length:var(--text-sm)] font-medium text-text-secondary hover:text-text-primary bg-bg-subtle hover:bg-bg-muted border border-border disabled:opacity-50 rounded-lg transition-all duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring whitespace-nowrap shrink-0 cursor-pointer";
+  "inline-flex items-center justify-center gap-2 px-4 py-1.5 text-[length:var(--text-sm)] font-medium text-text-secondary hover:text-text-primary bg-bg-subtle hover:bg-bg-muted border border-border disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-all duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring whitespace-nowrap shrink-0 cursor-pointer";
 
 export const BTN_PRIMARY =
-  "inline-flex items-center justify-center gap-2 px-4 py-1.5 text-[length:var(--text-sm)] font-medium text-text-inverse bg-accent hover:bg-accent-hover disabled:opacity-50 rounded-lg transition-colors duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-bg-overlay whitespace-nowrap shrink-0 cursor-pointer";
+  "inline-flex items-center justify-center gap-2 px-4 py-1.5 text-[length:var(--text-sm)] font-medium text-text-inverse bg-accent hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-bg-overlay whitespace-nowrap shrink-0 cursor-pointer";
 
 export const BTN_DANGER =
-  "inline-flex items-center justify-center gap-2 px-4 py-1.5 text-[length:var(--text-sm)] font-medium text-text-inverse bg-status-error hover:opacity-90 active:opacity-80 disabled:opacity-50 rounded-lg transition-opacity duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring whitespace-nowrap shrink-0 cursor-pointer";
+  "inline-flex items-center justify-center gap-2 px-4 py-1.5 text-[length:var(--text-sm)] font-medium text-text-inverse bg-status-error hover:opacity-90 active:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-opacity duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring whitespace-nowrap shrink-0 cursor-pointer";
 
 // ─── ModalShell ───────────────────────────────────────────────────────────────
 

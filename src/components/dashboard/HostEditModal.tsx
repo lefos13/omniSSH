@@ -133,10 +133,12 @@ function TerminalThemePicker({
   value,
   onChange,
   disabled,
+  lockReason,
 }: {
   value: string;
   onChange: (id: string) => void;
   disabled?: boolean;
+  lockReason?: string;
 }) {
   const previews = [
     {
@@ -169,12 +171,16 @@ function TerminalThemePicker({
           type="button"
           onClick={() => onChange(p.id)}
           disabled={disabled}
+          title={disabled ? lockReason : undefined}
           aria-pressed={value === p.id}
           data-testid={`host-modal-theme-${p.id || "app"}`}
           className={[
             "rounded-md border p-2 text-left",
             "transition-[border-color,box-shadow] duration-[var(--duration-fast)]",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            /* Locked cards must read as disabled: dimmed, not-allowed cursor, and
+             * the hover border suppressed so they don't look interactive. */
+            "disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-border",
             value === p.id
               ? "border-border-focus ring-2 ring-ring"
               : "border-border hover:border-border-focus",
@@ -649,9 +655,17 @@ export function HostEditModal() {
    * owner enabled credential sync, so the password stays editable and saving a
    * managed host writes only that. */
   const fieldsLocked = isBusy || managed;
+  /* Hover reason shown on locked fields so a dataset-managed host explains
+   * itself per-control, not just in the banner at the top. Undefined when the
+   * lock is only transient (saving/connecting) or the host isn't managed. */
+  const lockReason = managed
+    ? `Managed by ${managedBy.map((m) => m.name).join(", ")}`
+    : undefined;
   // ── Shared input class ───────────────────────────────────────────────────────
+  /* The trailing disabled:* variants are what make a locked field read as
+   * read-only (dimmed value, not-allowed cursor) instead of looking editable. */
   const inputClass =
-    "w-full rounded-lg bg-bg-base border border-border px-3 py-2 text-[length:var(--text-sm)] text-text-primary placeholder:text-text-muted outline-none focus:border-border-focus focus:ring-2 focus:ring-ring transition-[border-color,box-shadow] duration-[var(--duration-fast)]";
+    "w-full rounded-lg bg-bg-base border border-border px-3 py-2 text-[length:var(--text-sm)] text-text-primary placeholder:text-text-muted outline-none focus:border-border-focus focus:ring-2 focus:ring-ring transition-[border-color,box-shadow] duration-[var(--duration-fast)] disabled:opacity-50 disabled:cursor-not-allowed disabled:text-text-muted";
 
   const labelClass =
     "block text-[length:var(--text-xs)] font-medium text-text-secondary mb-1";
@@ -694,7 +708,7 @@ export function HostEditModal() {
       footer={
         !deleteConfirm ? (
           <>
-            <button type="button" data-testid="host-modal-cancel" onClick={close} disabled={fieldsLocked} className={BTN_GHOST}>
+            <button type="button" data-testid="host-modal-cancel" onClick={close} disabled={isBusy} className={BTN_GHOST}>
               Cancel
             </button>
             <button type="button" data-testid="host-modal-save" onClick={handleSave} disabled={isBusy || loadingHost} title={managed ? "A managed host saves only its credential" : undefined} className={BTN_SECONDARY}>
@@ -769,7 +783,7 @@ export function HostEditModal() {
               {/* ════════════════ CONNECTION ════════════════ */}
               <SectionHeader>Connection</SectionHeader>
               {/* Label */}
-              <div>
+              <div title={lockReason}>
                 <label htmlFor="hem-label" className={labelClass}>
                   Label
                   <span className="ml-1 text-text-muted font-normal">(optional)</span>
@@ -788,7 +802,7 @@ export function HostEditModal() {
               </div>
 
               {/* Host + Port row */}
-              <div className="flex gap-3">
+              <div className="flex gap-3" title={lockReason}>
                 <div className="flex-1">
                   <label htmlFor="hem-host" className={labelClass}>
                     Host <RequiredMark />
@@ -823,7 +837,7 @@ export function HostEditModal() {
               </div>
 
               {/* Username */}
-              <div>
+              <div title={lockReason}>
                 <label htmlFor="hem-username" className={labelClass}>
                   Username <RequiredMark />
                 </label>
@@ -840,7 +854,7 @@ export function HostEditModal() {
               </div>
 
               {/* Auth Type + Group row */}
-              <div className="flex gap-3">
+              <div className="flex gap-3" title={lockReason}>
                 <div className="flex-1">
                   <label htmlFor="hem-auth" className={labelClass}>
                     Auth Type
@@ -940,7 +954,7 @@ export function HostEditModal() {
                 </div>
               ) : (
                 <>
-                  <div>
+                  <div title={lockReason}>
                     <label htmlFor="hem-keypath" className={labelClass}>
                       SSH Key
                     </label>
@@ -1010,7 +1024,7 @@ export function HostEditModal() {
                           "hover:border-border-focus hover:text-text-primary hover:bg-bg-overlay",
                           "transition-all duration-[var(--duration-fast)]",
                           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                          "disabled:opacity-50",
+                          "disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-border disabled:hover:text-text-secondary disabled:hover:bg-bg-base",
                         ].join(" ")}
                       >
                         Browse
@@ -1022,7 +1036,7 @@ export function HostEditModal() {
                       </p>
                     )}
                   </div>
-                  <div>
+                  <div title={lockReason}>
                     <label htmlFor="hem-passphrase" className={labelClass}>
                       Passphrase
                       <span className="ml-1 text-text-muted font-normal">(optional)</span>
@@ -1065,10 +1079,11 @@ export function HostEditModal() {
                 currentHostId={originalHost?.id ?? null}
                 disabled={fieldsLocked}
                 labelClass={labelClass}
+                lockReason={lockReason}
               />
 
               {/* Keep Alive + Default Shell row */}
-              <div className="flex gap-3">
+              <div className="flex gap-3" title={lockReason}>
                 <div className="flex-1">
                   <label htmlFor="hem-keepalive" className={labelClass}>
                     Keep Alive
@@ -1102,7 +1117,7 @@ export function HostEditModal() {
               </div>
 
               {/* Startup Command */}
-              <div>
+              <div title={lockReason}>
                 <label htmlFor="hem-startup" className={labelClass}>
                   Startup Command
                   <span className="ml-1 text-text-muted font-normal">(optional)</span>
@@ -1122,7 +1137,7 @@ export function HostEditModal() {
               </div>
 
               {/* Start Directory */}
-              <div>
+              <div title={lockReason}>
                 <label htmlFor="hem-start-dir" className={labelClass}>
                   Start Directory
                   <span className="ml-1 text-text-muted font-normal">(optional)</span>
@@ -1146,7 +1161,7 @@ export function HostEditModal() {
               <SectionHeader>Appearance</SectionHeader>
 
               {/* Color swatches */}
-              <div>
+              <div title={lockReason}>
                 <span className={labelClass}>Color</span>
                 <div className="flex items-center gap-2 flex-wrap">
                   {/* Auto option — clears custom color */}
@@ -1154,13 +1169,14 @@ export function HostEditModal() {
                     type="button"
                     onClick={() => setField("color", "")}
                     disabled={fieldsLocked}
-                    title="Auto (hash-based)"
+                    title={fieldsLocked && lockReason ? lockReason : "Auto (hash-based)"}
                     aria-label="Auto color"
                     className={[
                       "w-6 h-6 rounded-full border-2 text-[11px] font-bold",
                       "flex items-center justify-center",
                       "transition-[border-color,box-shadow] duration-[var(--duration-fast)]",
                       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      "disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100",
                       form.color === ""
                         ? "border-border-focus ring-2 ring-ring"
                         : "border-border hover:border-border-focus",
@@ -1176,13 +1192,14 @@ export function HostEditModal() {
                       type="button"
                       onClick={() => setField("color", c)}
                       disabled={fieldsLocked}
-                      title={c}
+                      title={fieldsLocked && lockReason ? lockReason : c}
                       aria-label={`Color ${c}`}
                       aria-pressed={form.color === c}
                       className={[
                         "w-6 h-6 rounded-full border-2",
                         "transition-[border-color,box-shadow] duration-[var(--duration-fast)]",
                         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-bg-overlay",
+                        "disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100",
                         form.color === c
                           ? "border-white ring-2 ring-ring scale-110"
                           : "border-transparent hover:border-white/60 hover:scale-105",
@@ -1194,12 +1211,13 @@ export function HostEditModal() {
               </div>
 
               {/* Terminal color scheme */}
-              <div>
+              <div title={lockReason}>
                 <span className={labelClass}>Terminal theme</span>
                 <TerminalThemePicker
                   value={form.terminalTheme}
                   onChange={(v) => setField("terminalTheme", v)}
                   disabled={fieldsLocked}
+                  lockReason={lockReason}
                 />
                 <p className="mt-1 text-[length:var(--text-xs)] text-text-muted">
                   Colors this host&apos;s terminal uses. Hosts without a theme follow the
@@ -1208,7 +1226,7 @@ export function HostEditModal() {
               </div>
 
               {/* Environment + OS Type row */}
-              <div className="flex gap-3">
+              <div className="flex gap-3" title={lockReason}>
                 <div className="flex-1">
                   <label htmlFor="hem-env" className={labelClass}>
                     Environment
@@ -1253,7 +1271,7 @@ export function HostEditModal() {
               {/* ════════════════ NOTES ════════════════ */}
               <SectionHeader>Notes</SectionHeader>
 
-              <div>
+              <div title={lockReason}>
                 <label htmlFor="hem-notes" className={labelClass}>
                   Notes
                   <span className="ml-1 text-text-muted font-normal">(optional)</span>
@@ -1355,6 +1373,8 @@ interface TunnelSectionProps {
   currentHostId: string | null;
   disabled: boolean;
   labelClass: string;
+  /** Hover reason shown when the section is locked by a managing dataset. */
+  lockReason?: string;
 }
 
 /**
@@ -1371,6 +1391,7 @@ function TunnelSection({
   currentHostId,
   disabled,
   labelClass,
+  lockReason,
 }: TunnelSectionProps) {
   const candidates = hosts.filter((h) => h.id !== currentHostId);
   const hasCandidates = candidates.length > 0;
@@ -1386,7 +1407,7 @@ function TunnelSection({
   }));
 
   return (
-    <div className="flex flex-col gap-2.5">
+    <div className="flex flex-col gap-2.5" title={disabled ? lockReason : undefined}>
       {/* Checkbox row. Disabled when there's nothing to tunnel through (and not
           already enabled) so the user can't enter a dead-end required-field state. */}
       <label

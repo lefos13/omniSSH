@@ -77,6 +77,10 @@ interface SettingsState {
   // Updates
   autoUpdate: boolean;
   skippedUpdateVersion: string | null;
+  // Version last announced on the "what's new" dialog; null = never run.
+  seenVersion: string | null;
+  // Rotation pointer for the once-per-launch tip card.
+  tipIndex: number;
 
   // Terminal appearance
   terminalFontSize: number;
@@ -120,6 +124,8 @@ interface SettingsState {
   setInterfaceMonoFont: (font: string) => void;
   setAutoUpdate: (enabled: boolean) => void;
   setSkippedUpdateVersion: (version: string) => void;
+  setSeenVersion: (version: string) => void;
+  setTipIndex: (index: number) => void;
   setHostsViewMode: (mode: HostsViewMode) => void;
   setTerminalFontSize: (size: number) => void;
   setTerminalFontFamily: (family: string) => void;
@@ -154,6 +160,8 @@ const DEFAULTS = {
   interfaceMonoFont: "'JetBrains Mono', 'Fira Code', ui-monospace, monospace",
   autoUpdate: true,
   skippedUpdateVersion: null as string | null,
+  seenVersion: null as string | null,
+  tipIndex: 0,
   hostsViewMode: "cards" as HostsViewMode,
   terminalFontSize: 14,
   terminalFontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace",
@@ -344,6 +352,16 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     set({ skippedUpdateVersion: version });
     persist("app_skipped_update", version);
   },
+
+  setSeenVersion: (version) => {
+    set({ seenVersion: version });
+    persist("app_seen_version", version);
+  },
+
+  setTipIndex: (index) => {
+    set({ tipIndex: index });
+    persist("app_tip_index", String(index));
+  },
   setHostsViewMode: (mode) => {
     set({ hostsViewMode: mode });
     persist("hosts_view_mode", mode);
@@ -517,6 +535,12 @@ export const useSettingsStore = create<SettingsState>((set) => ({
           case "app_interface_mono_font": updates.interfaceMonoFont = value || DEFAULTS.interfaceMonoFont; break;
           case "app_auto_update": updates.autoUpdate = value !== "false"; break;
           case "app_skipped_update": updates.skippedUpdateVersion = value || null; break;
+          case "app_seen_version": updates.seenVersion = value || null; break;
+          case "app_tip_index": {
+            const n = Number(value);
+            updates.tipIndex = Number.isInteger(n) && n >= 0 ? n : DEFAULTS.tipIndex;
+            break;
+          }
           case "hosts_view_mode": updates.hostsViewMode = value === "list" ? "list" : value === "grouped" ? "grouped" : "cards"; break;
           case "default_credential_storage": updates.defaultCredentialStorage = value === "localVault" ? "localVault" : "keychain"; break;
           case "plugins_enabled": updates.pluginsEnabled = value !== "false"; break;

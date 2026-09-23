@@ -11,6 +11,7 @@ import type { CursorStyle, ThemeMode, EditorConfig, PasteButton, DoubleClickActi
 import type { BackupPreflightSummary, BulkMigrationResult, CredentialStorage, MigrationPreflightSummary, TerminalHighlightRule, SyncAppliedCounts, SyncConflictEntry, SyncDatasetSummary, SyncErrorKind, SyncHistoryCounts, SyncHistoryEntry, SyncPhase, SyncPushOutcome, SyncStatusSnapshot } from "../../types";
 import { useLocalVaultStore } from "../../stores/local-vault-store";
 import { useHostsStore } from "../../stores/hosts-store";
+import { useTabStore } from "../../stores/tab-store";
 import { useGroupsStore } from "../../stores/groups-store";
 import { useSyncStore } from "../../stores/sync-store";
 import type { SyncScheduleInput } from "../../stores/sync-store";
@@ -3224,6 +3225,28 @@ function AboutCard() {
         >
           <ExternalLink size={13} strokeWidth={2} />
           GitHub
+        </button>
+      </div>
+
+      <div className="mt-3 pt-3 border-t border-border/50 flex items-center justify-between gap-4">
+        <div>
+          <p className={LABEL_CLASS}>What's new</p>
+          <p className={DESC_CLASS}>Release notes and changelog for every version</p>
+        </div>
+        <button
+          onClick={() => useTabStore.getState().openPageTab("changelog", "What's new")}
+          data-testid="about-changelog"
+          className={[
+            "flex items-center gap-1.5 px-3 py-1.5 rounded-lg shrink-0",
+            "text-[length:var(--text-sm)] font-medium",
+            "bg-bg-base border border-border text-text-secondary",
+            "hover:text-text-primary hover:border-border-focus",
+            "transition-all duration-[var(--duration-fast)]",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          ].join(" ")}
+        >
+          <History size={13} strokeWidth={2} />
+          Changelog
         </button>
       </div>
     </div>
