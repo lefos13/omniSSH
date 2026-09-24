@@ -263,11 +263,12 @@ services:
       start_period: 5s
 
   # ─── S3-compatible storage (MinIO) ──────────────────────────────────────────
-  # Pulled from quay.io: MinIO's Docker Hub repositories (`minio/minio`,
-  # `minio/mc`) stopped serving anonymous pulls, so Hub pulls now fail with
-  # "pull access denied". quay.io is MinIO's other official registry.
+  # MinIO no longer serves anonymous pulls from either official registry
+  # (Docker Hub `minio/*` denies, quay.io `minio/*` returns 401), so the suite
+  # uses Pigsty's community rebuilds of the same upstream binaries. Tags are
+  # pinned so a new upstream release cannot change the S3 target under CI.
   minio:
-    image: quay.io/minio/minio:latest
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
     container_name: anyscp-e2e-minio
     command: server /data --console-address ":9001"
     environment:
@@ -278,7 +279,7 @@ services:
   # One-shot bucket seed — creates the test bucket and uploads two objects
   # so the S3 explorer specs have something to render.
   minio-seed:
-    image: quay.io/minio/mc:latest
+    image: pgsty/mc:RELEASE.2026-09-16T00-00-00Z
     container_name: anyscp-e2e-minio-seed
     depends_on:
       minio:
