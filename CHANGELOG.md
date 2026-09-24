@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [1.6.5] - 2026-09-24
+
+### 🚀 Highlights & New Features
+
+#### 1. Drag-and-Drop Tab Reordering
+* **Drag-and-Drop Reordering**: Drag any open tab (terminal, SFTP/SCP, S3, or page tab) along the top tab bar to a new position. Dragging begins after a 5px move so a plain click still activates the tab, while middle-click and the close button continue to close it.
+* **Pinned Hosts Tab**: The Hosts tab stays pinned as the first tab; it cannot be dragged, and other tabs cannot be dropped in front of it.
+* **Keyboard Reordering**: Cmd+Shift+[ and Cmd+Shift+] on macOS (Ctrl+Shift+[ and Ctrl+Shift+] on Windows and Linux) move the active tab one position left or right with no wrap-around. Tab switching shortcuts (Cmd/Ctrl+1…9 and Cmd/Ctrl+[ / ]) follow the updated order.
+* **Per-Session Ordering**: Tab order is maintained per session in memory and is not restored after an application restart.
+
+### 🐛 Bug Fixes
+
+* **Animated Background Loop Leak**: A repeated "window visible" event while an animated theme was already running (for example un-minimizing or switching Spaces) started an extra `requestAnimationFrame` loop that could never be cancelled, so hidden copies of the effect kept drawing after theme changes or remounts. The shared effect framework and the Matrix and Berserk backgrounds now keep a single animation loop, with regression tests.
 
 ## [1.6.4] - 2026-09-22
 
