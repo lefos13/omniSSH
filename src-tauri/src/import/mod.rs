@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod mobaxterm;
+pub mod password_file;
 pub mod termius;
 
 use serde::{Deserialize, Serialize};
@@ -8,6 +9,7 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use tracing::info;
 
+use crate::db::CredentialStorage;
 use crate::types::SshError;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -67,6 +69,64 @@ pub struct ImportResult {
     pub imported: u32,
     pub skipped: u32,
     pub errors: Vec<String>,
+}
+
+/* Preview of a password file matched against saved hosts.
+ *
+ * The contract is deliberately secret-free: it names the hosts a file would
+ * write to and how that write would land, so the save step can re-read the
+ * file and stay stateless between the two calls. */
+#[derive(Debug, Clone, Serialize)]
+pub struct PasswordFilePreview {
+    pub matches: Vec<PasswordFileMatch>,
+    pub unmatched_entries: u32,
+    pub conflicts: u32,
+    pub malformed_lines: u32,
+}
+
+/// One saved host a password entry matches. Never carries the password itself.
+#[derive(Debug, Clone, Serialize)]
+pub struct PasswordFileMatch {
+    pub host_id: String,
+    pub host_label: String,
+    pub username: String,
+    pub host: String,
+    pub port: u16,
+    pub storage: CredentialStorage,
+    pub status: PasswordFileStatus,
+}
+
+/* Whether a match would add a password, replace one, or is skipped because the
+ * host authenticates with a key — a password in the file is not assumed to be
+ * a key passphrase. */
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PasswordFileStatus {
+    New,
+    Replaces,
+    KeyAuth,
+}
+
+/* Outcome of writing a password file into the storage each selected host is
+ * configured for.
+ *
+ * Writes are independent per host, so one unreachable store cannot hide the
+ * hosts that were written: the counts say what landed and `failed` names the
+ * rest. Error text comes from `VaultError` and never carries a password. */
+#[derive(Debug, Clone, Serialize)]
+pub struct PasswordFileSaveResult {
+    pub stored_in_keychain: u32,
+    pub stored_in_vault: u32,
+    pub skipped: u32,
+    pub failed: Vec<PasswordFileFailure>,
+}
+
+/// One host whose password could not be written, named by id and label only.
+#[derive(Debug, Clone, Serialize)]
+pub struct PasswordFileFailure {
+    pub host_id: String,
+    pub host_label: String,
+    pub error: String,
 }
 
 pub use mobaxterm::parse_mobaxterm;

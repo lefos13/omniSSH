@@ -68,7 +68,7 @@ fn source_drive_root(path: &str) -> Option<PathBuf> {
     None
 }
 
-fn decode_mobaxterm_bytes(bytes: &[u8]) -> Result<String, SshError> {
+pub(super) fn decode_mobaxterm_bytes(bytes: &[u8]) -> Result<String, SshError> {
     let content = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes);
     match std::str::from_utf8(content) {
         Ok(text) => Ok(text.to_string()),

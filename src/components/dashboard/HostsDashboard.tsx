@@ -5,7 +5,7 @@ import {
   useCallback,
   useMemo,
 } from "react";
-import { Search, Plus, Import, Cloud, LayoutGrid, List, ListTree } from "lucide-react";
+import { Search, Plus, Import, Cloud, LayoutGrid, List, ListTree, KeyRound } from "lucide-react";
 import {
   DndContext,
   closestCenter,
@@ -24,6 +24,7 @@ import {
   sortableKeyboardCoordinates,
 } from "@dnd-kit/sortable";
 import { ImportSshConfigModal, type ImportSource } from "./ImportSshConfigModal";
+import { ImportPasswordsModal } from "./ImportPasswordsModal";
 import { S3ConnectDialog } from "../s3/S3ConnectDialog";
 import { useHostsStore } from "../../stores/hosts-store";
 import { useGroupsStore } from "../../stores/groups-store";
@@ -154,6 +155,7 @@ export function HostsDashboard() {
   // Group modal state
   const [groupModalOpen, setGroupModalOpen] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
+  const [importPasswordsOpen, setImportPasswordsOpen] = useState(false);
   const [importSource, setImportSource] = useState<ImportSource>("ssh");
   const [s3DialogOpen, setS3DialogOpen] = useState(false);
 
@@ -923,6 +925,22 @@ export function HostsDashboard() {
               <Import size={14} strokeWidth={2} aria-hidden="true" />
               Import
             </button>
+
+            <button
+              data-testid="import-passwords-button"
+              onClick={() => setImportPasswordsOpen(true)}
+              className={[
+                "flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium uppercase tracking-wide",
+                "bg-bg-surface border border-border text-text-secondary",
+                "hover:border-border-focus hover:text-text-primary hover:bg-bg-overlay",
+                "transition-all duration-[var(--duration-fast)]",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              ].join(" ")}
+              title="Import passwords from a file"
+            >
+              <KeyRound size={14} strokeWidth={2} aria-hidden="true" />
+              Import Passwords
+            </button>
           </div>
 
           {/* ── Hosts section ── */}
@@ -1152,6 +1170,15 @@ export function HostsDashboard() {
           onClose={() => setImportModalOpen(false)}
           onImported={() => void Promise.all([loadHosts(), loadGroups()])}
           initialSource={importSource}
+        />
+      )}
+
+      {importPasswordsOpen && (
+        <ImportPasswordsModal
+          onClose={() => setImportPasswordsOpen(false)}
+          onSaved={() => {
+            void loadHosts();
+          }}
         />
       )}
 

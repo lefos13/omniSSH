@@ -4,6 +4,7 @@ import { ModalShell, BTN_GHOST, BTN_PRIMARY } from "../shared/ModalShell";
 import { useSettingsStore } from "../../stores/settings-store";
 import { useVaultGuard } from "../vault";
 import { CustomSelect } from "../shared/CustomSelect";
+import { PasswordFileImport } from "./PasswordFileImport";
 import type {
   CredentialStorage,
   ImportResult,
@@ -94,6 +95,8 @@ export function ImportSshConfigModal({
   const [includeCredentials, setIncludeCredentials] = useState(false);
   const [credentialsConfirmed, setCredentialsConfirmed] = useState(false);
   const [termiusResult, setTermiusResult] = useState<TermiusCommitResponse | null>(null);
+  const [passwordStoredCount, setPasswordStoredCount] = useState(0);
+  const [passwordStepKey, setPasswordStepKey] = useState(0);
   const [credentialStorage, setCredentialStorage] = useState<CredentialStorage>(
     useSettingsStore.getState().defaultCredentialStorage
   );
@@ -198,10 +201,17 @@ export function ImportSshConfigModal({
     if (initialSource === "ssh" || initialSource === "termius") void scan(initialSource, null);
   }, []);
 
+  /* Abandon the optional password step. Remounting resets preview and selection. */
+  const resetPasswordStep = () => {
+    setPasswordStepKey((k) => k + 1);
+    setPasswordStoredCount(0);
+  };
+
   const handleSourceChange = (nextSource: ImportSource) => {
     if (nextSource === source) return;
     sourceGeneration.current += 1;
     scanRequest.current += 1;
+    resetPasswordStep();
     setSource(nextSource);
     setConfigPath(null);
     setEntries([]);
@@ -247,6 +257,7 @@ export function ImportSshConfigModal({
     }
 
     const importGeneration = ++sourceGeneration.current;
+    resetPasswordStep();
     setImporting(true);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
@@ -331,6 +342,9 @@ export function ImportSshConfigModal({
     ])]
     : [];
   const showingResult = source === "termius" ? termiusResult !== null : result !== null;
+
+  /* Step 2 belongs to a finished MobaXterm import only. */
+  const showPasswordStep = source === "mobaxterm" && result !== null;
 
   useEffect(() => {
     if (showingResult) resultRef.current?.focus();
@@ -429,6 +443,7 @@ export function ImportSshConfigModal({
 
           {/* Result view */}
           {showingResult ? (
+            <>
             <div ref={resultRef} data-testid="import-result" role="status" tabIndex={-1} aria-live="polite" className="flex flex-col items-center gap-4 py-8">
               <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-status-connected/10">
                 <Check size={26} strokeWidth={2} className="text-status-connected" />
@@ -451,11 +466,13 @@ export function ImportSshConfigModal({
                   </p>
                 ) : null}
                 {/* Tell the user what is still missing before they try to
-                    connect: file sources never carry secrets, and a Termius
-                    run only carries them when credential import was opted in. */}
+                    connect: file sources never carry secrets, a Termius run
+                    only carries them when credential import was opted in, and
+                    a MobaXterm run has nothing left to add once step 2 stored
+                    at least one password. */}
                 {(source === "termius"
                   ? (termiusResult?.imported_hosts ?? 0) > 0 && (termiusResult?.credentials_stored ?? 0) === 0
-                  : (result?.imported ?? 0) > 0) ? (
+                  : (result?.imported ?? 0) > 0 && passwordStoredCount === 0) ? (
                   <p
                     data-testid="import-add-credentials-reminder"
                     className="text-[length:var(--text-xs)] text-text-muted mt-2 max-w-xs"
@@ -472,6 +489,37 @@ export function ImportSshConfigModal({
                 ) : null}
               </div>
             </div>
+            {/* Step 2 stays optional: a MobaXterm session file carries no
+                secrets, so the user may finish here and add passwords later.
+                Remounting via key resets child state when a new run completes. */}
+            {showPasswordStep ? (
+              <div className="mt-6">
+                <PasswordFileImport
+                  key={passwordStepKey}
+                  heading={
+                    <>
+                      <p className="text-[length:var(--text-2xs)] uppercase tracking-wide font-semibold text-text-muted">
+                        Step 2 of 2 · optional
+                      </p>
+                      <p className="mt-1 text-[length:var(--text-sm)] font-medium text-text-primary">
+                        Import passwords (optional)
+                      </p>
+                    </>
+                  }
+                  description={
+                    <p className="mt-1 text-[length:var(--text-2xs)] text-text-muted">
+                      Choose MobaXterm&apos;s stored-passwords text export. Each password goes to the
+                      storage that host is already configured for, and a password already saved for a
+                      matching host is replaced.
+                    </p>
+                  }
+                  disabled={importing}
+                  onSaved={(r) => setPasswordStoredCount(r.stored_in_keychain + r.stored_in_vault)}
+                  emptyMessage="No saved hosts match this file. Import the MobaXterm sessions that use these passwords first, then pick the file again."
+                />
+              </div>
+            ) : null}
+            </>
           ) : scanning ? (
             <div className="flex flex-col items-center gap-4 py-12">
               <Loader2 size={26} strokeWidth={2} className="text-accent motion-safe:animate-spin" />
@@ -673,6 +721,16 @@ export function ImportSshConfigModal({
                   settings only. Add a password for each imported host before connecting, or leave it
                   empty for hosts that authenticate with a key.
                 </p>
+                {/* MobaXterm keeps its passwords in a separate plaintext export,
+                    so this source can offer them right after the import. The
+                    OpenSSH notice is unchanged: a config file has no companion
+                    password export. */}
+                {source === "mobaxterm" && (
+                  <p className="mt-1 text-[length:var(--text-2xs)] text-text-muted">
+                    After importing, you can optionally add passwords from MobaXterm&apos;s
+                    stored-passwords text export in the next step.
+                  </p>
+                )}
               </div>
 
               {/* Select all / none */}

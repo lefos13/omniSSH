@@ -174,13 +174,22 @@ describe("Host UI enhancements", () => {
   });
 
   describe("HostsDashboard", () => {
-    it("renders single Import button in toolbar", () => {
+    it("renders single Import button and Import Passwords button in toolbar", () => {
       render(<HostsDashboard />);
 
       expect(screen.getByTestId("import-ssh-config-button")).toBeInTheDocument();
       expect(screen.getByTestId("import-ssh-config-button")).toHaveTextContent("Import");
+      expect(screen.getByTestId("import-passwords-button")).toBeInTheDocument();
+      expect(screen.getByTestId("import-passwords-button")).toHaveTextContent("Import Passwords");
       expect(screen.queryByTestId("import-mobaxterm-button")).not.toBeInTheDocument();
       expect(screen.queryByTestId("import-termius-button")).not.toBeInTheDocument();
+    });
+
+    it("opens Import Passwords modal when clicking import-passwords-button", () => {
+      render(<HostsDashboard />);
+
+      fireEvent.click(screen.getByTestId("import-passwords-button"));
+      expect(screen.getByRole("heading", { name: "Import Passwords" })).toBeInTheDocument();
     });
 
     it("toggles between cards view and list view", () => {

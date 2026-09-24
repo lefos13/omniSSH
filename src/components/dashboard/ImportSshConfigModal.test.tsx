@@ -200,12 +200,32 @@ describe("ImportSshConfigModal — MobaXterm source", () => {
     const notice = await screen.findByTestId("import-file-no-credentials-notice");
     expect(notice).toHaveTextContent(/No passwords are included in this import/i);
     expect(notice).toHaveTextContent(/MobaXterm session files/i);
+    /* MobaXterm has a companion plaintext export, so the notice points at the
+     * optional second step. */
+    expect(notice).toHaveTextContent(
+      "After importing, you can optionally add passwords from MobaXterm's stored-passwords text export in the next step.",
+    );
 
     fireEvent.click(screen.getByTestId("import-mobaxterm-submit"));
 
     expect(await screen.findByTestId("import-add-credentials-reminder")).toHaveTextContent(
       /add its password before connecting/i
     );
+  });
+
+  it("keeps the OpenSSH notice unchanged and free of the password step", async () => {
+    invoke.mockImplementation(async (command: string) => {
+      if (command === "import_parse_ssh_config") return [entry];
+      return undefined;
+    });
+    render(<ImportSshConfigModal onClose={() => {}} onImported={() => {}} />);
+
+    const notice = await screen.findByTestId("import-file-no-credentials-notice");
+    expect(notice).toHaveTextContent(
+      "SSH config files store connection settings only. Add a password for each imported host before connecting, or leave it empty for hosts that authenticate with a key.",
+    );
+    expect(notice).not.toHaveTextContent(/optional/i);
+    expect(notice).not.toHaveTextContent(/stored-passwords/i);
   });
 });
 
@@ -522,5 +542,128 @@ describe("ImportSshConfigModal — Termius source", () => {
     );
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/encrypted metadata could not be decrypted/i);
+  });
+});
+
+/* Integration tests verifying that the extracted PasswordFileImport component
+ * appears conditionally for MobaXterm imports and clears the credential reminder. */
+describe("ImportSshConfigModal — password step integration", () => {
+  const sessionEntry = {
+    host_alias: "Production web",
+    hostname: "web.example",
+    user: "root",
+    port: 22,
+    identity_file: null,
+    proxy_jump: null,
+    keep_alive_interval: null,
+    is_pattern: false,
+    already_exists: false,
+    group_path: null,
+    startup_command: null,
+    notes: null,
+    start_directory: null,
+    warnings: [],
+  };
+
+  const termiusPreview = {
+    preview_token: "password-step-token",
+    metadata_only: true,
+    hosts: [
+      {
+        id: "t1",
+        label: "Termius host",
+        address: "termius.example",
+        username: "alice",
+        port: 22,
+        already_exists: false,
+        credential_available: false,
+        warnings: [],
+      },
+    ],
+    groups: [],
+    counts: { hosts: 1, groups: 0, credential_available: 0, already_exists: 0 },
+    warnings: [],
+  };
+
+  const passwordPreview = {
+    matches: [
+      { host_id: "h-new", host_label: "Alpha", username: "root", host: "alpha.example", port: 22, storage: "keychain", status: "new" },
+      { host_id: "h-replace", host_label: "Bravo", username: "root", host: "bravo.example", port: 2222, storage: "localVault", status: "replaces" },
+    ],
+    unmatched_entries: 0,
+    conflicts: 0,
+    malformed_lines: 0,
+  };
+
+  beforeEach(() => {
+    useSettingsStore.setState({ defaultCredentialStorage: "keychain" });
+    useLocalVaultStore.setState({
+      loadStatus: vi.fn().mockResolvedValue({ configured: true, unlocked: true }),
+      unlockVault: vi.fn().mockResolvedValue(undefined),
+    });
+    invoke.mockReset();
+    dialogOpen.mockReset();
+    dialogOpen.mockResolvedValue("/tmp/passwords.txt");
+    invoke.mockImplementation(async (command: string) => {
+      if (command === "import_parse_mobaxterm") return [sessionEntry];
+      if (command === "import_parse_ssh_config") return [sessionEntry];
+      if (command === "import_save_mobaxterm_hosts") return { imported: 1, skipped: 0, errors: [] };
+      if (command === "import_save_ssh_hosts") return { imported: 1, skipped: 0, errors: [] };
+      if (command === "import_preview_password_file") return passwordPreview;
+      if (command === "import_save_password_file") {
+        return { stored_in_keychain: 1, stored_in_vault: 0, skipped: 0, failed: [] };
+      }
+      if (command === "import_preview_termius") return termiusPreview;
+      if (command === "import_commit_termius") {
+        return { imported_hosts: 1, imported_groups: 0, skipped_hosts: 0, credentials_stored: 0, warnings: [] };
+      }
+      return undefined;
+    });
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
+  });
+
+  it("shows password step card for MobaXterm results only", async () => {
+    render(<ImportSshConfigModal initialSource="mobaxterm" onClose={() => {}} onImported={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Browse for MobaXterm file" }));
+    fireEvent.click(await screen.findByTestId("import-mobaxterm-submit"));
+
+    expect(await screen.findByTestId("password-file-import-card")).toBeInTheDocument();
+  });
+
+  it("shows no password step for the OpenSSH source", async () => {
+    render(<ImportSshConfigModal onClose={() => {}} onImported={() => {}} />);
+    fireEvent.click(await screen.findByTestId("import-ssh-config-submit"));
+
+    await screen.findByTestId("import-result");
+    expect(screen.queryByTestId("password-file-import-card")).not.toBeInTheDocument();
+  });
+
+  it("shows no password step for the Termius source", async () => {
+    render(<ImportSshConfigModal initialSource="termius" onClose={() => {}} onImported={() => {}} />);
+    await screen.findByTestId("import-termius-host-t1");
+    fireEvent.click(screen.getByTestId("import-termius-submit"));
+
+    await screen.findByTestId("import-result");
+    expect(screen.queryByTestId("password-file-import-card")).not.toBeInTheDocument();
+  });
+
+  it("hides add-credentials reminder after a password file save", async () => {
+    render(<ImportSshConfigModal initialSource="mobaxterm" onClose={() => {}} onImported={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Browse for MobaXterm file" }));
+    fireEvent.click(await screen.findByTestId("import-mobaxterm-submit"));
+    await screen.findByTestId("password-file-import-card");
+
+    expect(screen.getByTestId("import-add-credentials-reminder")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("password-file-import-browse"));
+    await screen.findByTestId("password-file-import-row-h-new");
+
+    // Untick replacing row to avoid needing confirmation
+    fireEvent.click(screen.getByLabelText("Include Bravo"));
+
+    fireEvent.click(screen.getByTestId("password-file-import-save"));
+    await screen.findByTestId("password-file-import-result");
+
+    expect(screen.queryByTestId("import-add-credentials-reminder")).not.toBeInTheDocument();
   });
 });

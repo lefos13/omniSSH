@@ -5,10 +5,15 @@ use tauri::State;
 use tokio::task;
 use tracing::instrument;
 
-use crate::db::{DbError, HostDb, HostGroup, SavedHost};
+use crate::db::{CredentialStorage, DbError, HostDb, HostGroup, SavedHost};
 use crate::types::SshError;
+use crate::vault::{LocalVault, StoredCredential, VaultError};
 
-use super::{ImportResult, MobaXtermEntry, SshConfigEntry, SshConfigImportEntry};
+use super::password_file::ParsedPasswordFile;
+use super::{
+    ImportResult, MobaXtermEntry, PasswordFileFailure, PasswordFileMatch, PasswordFilePreview,
+    PasswordFileSaveResult, PasswordFileStatus, SshConfigEntry, SshConfigImportEntry,
+};
 
 /// Parse SSH config and return a preview of importable hosts.
 #[tauri::command]
@@ -258,6 +263,249 @@ pub async fn import_save_mobaxterm_hosts(
     db: State<'_, Arc<HostDb>>,
 ) -> Result<ImportResult, DbError> {
     save_imported_hosts_command(entries, credential_storage, Arc::clone(&db)).await
+}
+
+/// Preview which saved hosts a password file matches.
+#[tauri::command]
+/* The password file contains plaintext passwords, so the command span skips the path
+ * and the response carries host ids, labels, and statuses only. */
+#[instrument(skip(path, db))]
+pub async fn import_preview_password_file(
+    path: String,
+    db: State<'_, Arc<HostDb>>,
+) -> Result<PasswordFilePreview, SshError> {
+    let db = Arc::clone(&db);
+
+    task::spawn_blocking(move || {
+        let parsed = super::password_file::read_password_file(&path)?;
+
+        /* The keychain probe is prompt-free: it asks the OS whether the item
+         * exists rather than reading the secret behind it. */
+        preview_password_file(&db, &parsed, |host_id| {
+            crate::vault::credential_exists(host_id).unwrap_or(false)
+        })
+    })
+    .await
+    .map_err(|e| SshError::IoError(format!("task panicked: {e}")))?
+}
+
+/* Match a parsed password file against saved hosts.
+ *
+ * A `user@host` entry satisfies every saved host with that host
+ * (case-insensitive) and username, on any port, so one entry can produce
+ * several rows. Keys in the file twice with different passwords are
+ * conflicts: they never surface as matches, and the count explains why a host
+ * the user expected is missing instead of silently writing nothing. */
+pub fn preview_password_file(
+    db: &HostDb,
+    parsed: &ParsedPasswordFile,
+    keychain_has: impl Fn(&str) -> bool,
+) -> Result<PasswordFilePreview, SshError> {
+    let hosts = db
+        .list_hosts()
+        .map_err(|error| SshError::IoError(format!("Cannot read saved hosts: {error}")))?;
+
+    /* Entries are unique per (user, host) after parsing, so a key set is enough
+     * to tell which entries matched no saved host. */
+    let mut matched_entry_keys: HashSet<(String, String)> = HashSet::new();
+    let mut matches: Vec<PasswordFileMatch> = Vec::new();
+
+    for host in &hosts {
+        if parsed.is_conflict(&host.username, &host.host) {
+            continue;
+        }
+        let Some(entry) = parsed.find(&host.username, &host.host) else {
+            continue;
+        };
+        matched_entry_keys.insert((entry.user.clone(), entry.host.to_ascii_lowercase()));
+
+        let status = if host.auth_type != "password" {
+            PasswordFileStatus::KeyAuth
+        } else {
+            let has_stored_password = match host.credential_storage {
+                CredentialStorage::LocalVault => db
+                    .get_local_vault_credential(&host.id)
+                    .map_err(|error| {
+                        SshError::IoError(format!("Cannot read saved hosts: {error}"))
+                    })?
+                    .is_some(),
+                CredentialStorage::Keychain => keychain_has(&host.id),
+            };
+            if has_stored_password {
+                PasswordFileStatus::Replaces
+            } else {
+                PasswordFileStatus::New
+            }
+        };
+
+        matches.push(PasswordFileMatch {
+            host_id: host.id.clone(),
+            host_label: host.label.clone(),
+            username: host.username.clone(),
+            host: host.host.clone(),
+            port: host.port,
+            storage: host.credential_storage,
+            status,
+        });
+    }
+
+    matches.sort_by(|a, b| {
+        a.host_label
+            .cmp(&b.host_label)
+            .then_with(|| a.port.cmp(&b.port))
+    });
+
+    let unmatched_entries = parsed
+        .entries
+        .iter()
+        .filter(|entry| {
+            !matched_entry_keys.contains(&(entry.user.clone(), entry.host.to_ascii_lowercase()))
+        })
+        .count() as u32;
+
+    Ok(PasswordFilePreview {
+        matches,
+        unmatched_entries,
+        conflicts: parsed.conflicts.len() as u32,
+        malformed_lines: parsed.malformed_lines.len() as u32,
+    })
+}
+
+/// Save passwords from a password file into each selected host's storage.
+#[tauri::command]
+/* The password file holds plaintext passwords, so the command span skips the path, the
+ * host id list, and the managed state, and the response reports per-host
+ * outcomes without any secret. */
+#[instrument(skip(path, host_ids, db, local_vault))]
+pub async fn import_save_password_file(
+    path: String,
+    host_ids: Vec<String>,
+    db: State<'_, Arc<HostDb>>,
+    local_vault: State<'_, Arc<LocalVault>>,
+) -> Result<PasswordFileSaveResult, SshError> {
+    let db = Arc::clone(&db);
+    let local_vault = Arc::clone(&local_vault);
+
+    task::spawn_blocking(move || {
+        let parsed = super::password_file::read_password_file(&path)?;
+        save_password_file(&db, &parsed, &host_ids, &KeychainSink, &local_vault)
+    })
+    .await
+    .map_err(|e| SshError::IoError(format!("task panicked: {e}")))?
+}
+
+/* The keychain destination is a parameter rather than a direct call so a test
+ * can inject a failing store; the App Vault takes the managed vault directly
+ * because its write needs the session key and the database. */
+pub(crate) trait PasswordSink {
+    fn save(&self, host_id: &str, credential: &StoredCredential) -> Result<(), VaultError>;
+}
+
+/// Writes to the OS keychain, overwriting any existing entry for the host.
+struct KeychainSink;
+
+impl PasswordSink for KeychainSink {
+    fn save(&self, host_id: &str, credential: &StoredCredential) -> Result<(), VaultError> {
+        crate::vault::save_credential(host_id, credential)
+    }
+}
+
+/* Write a matched password file into the storage each selected host is
+ * already configured for.
+ *
+ * The file is re-parsed by the caller, so only hosts that still match a
+ * password-auth host by username and host are written; everything else is
+ * counted as skipped. Writes are best-effort per host: a failing store records
+ * a failure and the remaining hosts still run, which keeps a locked App Vault
+ * from blocking keychain-configured hosts in the same run. The host's stored
+ * `credential_storage` marker is never changed — each destination writes the
+ * storage that marker already points at, and neither falls back to the other. */
+pub(crate) fn save_password_file(
+    db: &HostDb,
+    parsed: &ParsedPasswordFile,
+    host_ids: &[String],
+    keychain: &impl PasswordSink,
+    local_vault: &LocalVault,
+) -> Result<PasswordFileSaveResult, SshError> {
+    let mut result = PasswordFileSaveResult {
+        stored_in_keychain: 0,
+        stored_in_vault: 0,
+        skipped: 0,
+        failed: Vec::new(),
+    };
+    let mut visited: HashSet<&str> = HashSet::new();
+
+    for host_id in host_ids {
+        /* A repeated id would write the same host twice and inflate the counts;
+         * the first pass already decided its outcome. */
+        if !visited.insert(host_id.as_str()) {
+            continue;
+        }
+
+        let host = match db.get_host(host_id) {
+            Ok(Some(host)) => host,
+            Ok(None) => {
+                result.skipped += 1;
+                continue;
+            }
+            Err(error) => {
+                result.failed.push(PasswordFileFailure {
+                    host_id: host_id.clone(),
+                    host_label: host_id.clone(),
+                    error: error.to_string(),
+                });
+                continue;
+            }
+        };
+
+        /* Key-auth hosts cannot take a password, and a key the parser dropped
+         * as a conflict has no password left to write. */
+        if host.auth_type != "password" || parsed.is_conflict(&host.username, &host.host) {
+            result.skipped += 1;
+            continue;
+        }
+
+        /* An entry that no longer matches this host — the file changed between
+         * preview and save — must not write an unrelated password. */
+        let Some(entry) = parsed.find(&host.username, &host.host) else {
+            result.skipped += 1;
+            continue;
+        };
+
+        /* One plaintext copy serves whichever store this host uses. It is
+         * dropped as soon as the destination returns: `StoredCredential`
+         * zeroizes on drop, so the secret never outlives the write instead of
+         * being held for the rest of the loop. */
+        let credential = StoredCredential::Password {
+            password: entry.password.to_string(),
+        };
+        let outcome = match host.credential_storage {
+            CredentialStorage::Keychain => keychain.save(&host.id, &credential),
+            /* The vault encrypts in memory, upserts the ciphertext, and purges
+             * any stale keychain copy. A locked vault fails here per host. */
+            CredentialStorage::LocalVault => {
+                crate::vault::store_host_credential_in_vault(db, local_vault, &host.id, &credential)
+            }
+        };
+        drop(credential);
+
+        match outcome {
+            Ok(()) => {
+                if host.credential_storage == CredentialStorage::Keychain {
+                    result.stored_in_keychain += 1;
+                } else {
+                    result.stored_in_vault += 1;
+                }
+            }
+            Err(error) => result.failed.push(PasswordFileFailure {
+                host_id: host.id.clone(),
+                host_label: host.label.clone(),
+                error: error.to_string(),
+            }),
+        }
+    }
+
+    Ok(result)
 }
 
 /* Keep source-specific IPC commands thin while preserving a single save path
@@ -774,5 +1022,926 @@ mod tests {
             .single()
             .unwrap();
         assert_eq!(format_timestamp(leap_day), "2024-02-29T23:59:59.000Z");
+    }
+
+    /* ── MobaXterm password preview ────────────────────────────────────────── */
+
+    /// Saved host with explicit login identity, auth type, and credential route
+    /// so preview statuses can be exercised per storage backend.
+    fn routed_host(
+        id: &str,
+        label: &str,
+        hostname: &str,
+        username: &str,
+        port: u16,
+        auth_type: &str,
+        credential_storage: CredentialStorage,
+    ) -> SavedHost {
+        SavedHost {
+            username: username.to_string(),
+            port,
+            auth_type: auth_type.to_string(),
+            credential_storage,
+            ..host(id, label, hostname)
+        }
+    }
+
+    fn parsed(line: &str) -> ParsedPasswordFile {
+        super::super::password_file::parse_password_bytes(line.as_bytes())
+            .expect("parse password fixture")
+    }
+
+    /// Every combination of storage backend and credential presence, plus the
+    /// key-auth skip, in one pass over a single password file.
+    #[test]
+    fn password_file_preview_statuses_cover_both_storages() {
+        let fixture = test_db();
+        fixture
+            .db
+            .save_host(&routed_host(
+                "kc-new",
+                "Keychain new",
+                "kc-new.example",
+                "alice",
+                22,
+                "password",
+                CredentialStorage::Keychain,
+            ))
+            .expect("save kc-new");
+        fixture
+            .db
+            .save_host(&routed_host(
+                "kc-old",
+                "Keychain replaces",
+                "kc-old.example",
+                "alice",
+                22,
+                "password",
+                CredentialStorage::Keychain,
+            ))
+            .expect("save kc-old");
+        fixture
+            .db
+            .save_host(&routed_host(
+                "vault-new",
+                "Vault new",
+                "vault-new.example",
+                "alice",
+                22,
+                "password",
+                CredentialStorage::LocalVault,
+            ))
+            .expect("save vault-new");
+        fixture
+            .db
+            .save_host(&routed_host(
+                "vault-old",
+                "Vault replaces",
+                "vault-old.example",
+                "alice",
+                22,
+                "password",
+                CredentialStorage::LocalVault,
+            ))
+            .expect("save vault-old");
+        fixture
+            .db
+            .save_host(&routed_host(
+                "key-auth",
+                "Key auth",
+                "key-auth.example",
+                "alice",
+                22,
+                "privateKey",
+                CredentialStorage::Keychain,
+            ))
+            .expect("save key-auth");
+        fixture
+            .db
+            .save_local_vault_credential("vault-old", b"stored ciphertext")
+            .expect("save vault blob");
+
+        let file = parsed(
+            "alice@kc-new.example = one\n\
+             alice@kc-old.example = two\n\
+             alice@vault-new.example = three\n\
+             alice@vault-old.example = four\n\
+             alice@key-auth.example = five",
+        );
+
+        let preview = preview_password_file(&fixture.db, &file, |host_id| host_id == "kc-old")
+            .expect("preview");
+
+        assert_eq!(preview.matches.len(), 5);
+        let status = |host_id: &str| {
+            preview
+                .matches
+                .iter()
+                .find(|m| m.host_id == host_id)
+                .expect("match row")
+                .status
+        };
+        assert_eq!(status("kc-new"), PasswordFileStatus::New);
+        assert_eq!(status("kc-old"), PasswordFileStatus::Replaces);
+        assert_eq!(status("vault-new"), PasswordFileStatus::New);
+        assert_eq!(status("vault-old"), PasswordFileStatus::Replaces);
+        /* Key auth wins even when a keychain entry exists for the host. */
+        assert_eq!(status("key-auth"), PasswordFileStatus::KeyAuth);
+
+        let storage_of = |host_id: &str| {
+            preview
+                .matches
+                .iter()
+                .find(|m| m.host_id == host_id)
+                .expect("match row")
+                .storage
+        };
+        assert_eq!(storage_of("vault-old"), CredentialStorage::LocalVault);
+        assert_eq!(storage_of("kc-old"), CredentialStorage::Keychain);
+
+        /* Matches are ordered by label, then port. */
+        let labels: Vec<&str> = preview
+            .matches
+            .iter()
+            .map(|m| m.host_label.as_str())
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                "Key auth",
+                "Keychain new",
+                "Keychain replaces",
+                "Vault new",
+                "Vault replaces",
+            ]
+        );
+    }
+
+    /// The password file has no port, so one key lands on every saved host that shares
+    /// the host and username.
+    #[test]
+    fn password_file_preview_matches_every_port() {
+        let fixture = test_db();
+        for (id, port) in [("port-22", 22u16), ("port-2222", 2222u16)] {
+            fixture
+                .db
+                .save_host(&routed_host(
+                    id,
+                    id,
+                    "multi.example",
+                    "deploy",
+                    port,
+                    "password",
+                    CredentialStorage::Keychain,
+                ))
+                .expect("save host");
+        }
+
+        let file = parsed("deploy@multi.example = secret");
+        let preview = preview_password_file(&fixture.db, &file, |_| false).expect("preview");
+
+        assert_eq!(preview.matches.len(), 2);
+        assert_eq!(preview.matches[0].host_id, "port-22");
+        assert_eq!(preview.matches[0].port, 22);
+        assert_eq!(preview.matches[1].host_id, "port-2222");
+        assert_eq!(preview.matches[1].port, 2222);
+        assert_eq!(preview.unmatched_entries, 0);
+    }
+
+    /// Host matching ignores case, while the username stays exact.
+    #[test]
+    fn password_file_preview_matches_host_case_insensitively_only() {
+        let fixture = test_db();
+        fixture
+            .db
+            .save_host(&routed_host(
+                "mixed-case",
+                "Mixed case",
+                "Web.Example.COM",
+                "Alice",
+                22,
+                "password",
+                CredentialStorage::Keychain,
+            ))
+            .expect("save host");
+
+        let matched = parsed("Alice@web.example.com = secret");
+        let preview = preview_password_file(&fixture.db, &matched, |_| false).expect("preview");
+        assert_eq!(preview.matches.len(), 1);
+        assert_eq!(preview.matches[0].host_id, "mixed-case");
+
+        let other_user = parsed("alice@web.example.com = secret");
+        let preview = preview_password_file(&fixture.db, &other_user, |_| false).expect("preview");
+        assert!(preview.matches.is_empty());
+        assert_eq!(preview.unmatched_entries, 1);
+    }
+
+    /// A key exported twice with different passwords is refused and counted
+    /// instead of surfacing as a row the save step would have to reject.
+    #[test]
+    fn password_file_preview_excludes_conflicts() {
+        let fixture = test_db();
+        fixture
+            .db
+            .save_host(&routed_host(
+                "conflicted",
+                "Conflicted",
+                "conflict.example",
+                "alice",
+                22,
+                "password",
+                CredentialStorage::Keychain,
+            ))
+            .expect("save conflicted host");
+        fixture
+            .db
+            .save_host(&routed_host(
+                "clean",
+                "Clean",
+                "clean.example",
+                "alice",
+                22,
+                "password",
+                CredentialStorage::Keychain,
+            ))
+            .expect("save clean host");
+
+        let file = parsed(
+            "alice@conflict.example = first\n\
+             alice@conflict.example = second\n\
+             alice@clean.example = only",
+        );
+
+        let preview = preview_password_file(&fixture.db, &file, |_| false).expect("preview");
+
+        assert_eq!(preview.conflicts, 1);
+        assert_eq!(preview.matches.len(), 1);
+        assert_eq!(preview.matches[0].host_id, "clean");
+        assert_eq!(preview.unmatched_entries, 0);
+        assert_eq!(preview.malformed_lines, 0);
+    }
+
+    /// Entries that match nothing are reported so the user can tell a partial
+    /// match from a silently ignored file.
+    #[test]
+    fn password_file_preview_counts_unmatched_entries() {
+        let fixture = test_db();
+        fixture
+            .db
+            .save_host(&routed_host(
+                "known",
+                "Known",
+                "known.example",
+                "alice",
+                22,
+                "password",
+                CredentialStorage::Keychain,
+            ))
+            .expect("save host");
+
+        let file = parsed(
+            "alice@known.example = one\n\
+             alice@unknown.example = two\n\
+             bob@known.example = three\n\
+             broken line",
+        );
+
+        let preview = preview_password_file(&fixture.db, &file, |_| false).expect("preview");
+
+        assert_eq!(preview.matches.len(), 1);
+        assert_eq!(preview.unmatched_entries, 2);
+        assert_eq!(preview.malformed_lines, 1);
+    }
+
+    /// The preview is the only thing the frontend receives, so its wire shape
+    /// must not leak the plaintext values or even a password-bearing key.
+    #[test]
+    fn password_file_preview_wire_shape_omits_secrets() {
+        let fixture = test_db();
+        fixture
+            .db
+            .save_host(&routed_host(
+                "wire-keychain",
+                "Wire keychain",
+                "wire.example",
+                "alice",
+                22,
+                "password",
+                CredentialStorage::Keychain,
+            ))
+            .expect("save keychain host");
+        fixture
+            .db
+            .save_host(&routed_host(
+                "wire-vault",
+                "Wire vault",
+                "wire-vault.example",
+                "alice",
+                22,
+                "password",
+                CredentialStorage::LocalVault,
+            ))
+            .expect("save vault host");
+        fixture
+            .db
+            .save_host(&routed_host(
+                "wire-key-auth",
+                "Wire key auth",
+                "wire-key.example",
+                "alice",
+                22,
+                "privateKey",
+                CredentialStorage::Keychain,
+            ))
+            .expect("save key-auth host");
+
+        let file = parsed(
+            "alice@wire.example = fixture-keychain-secret\n\
+             alice@wire-vault.example = fixture-vault-secret\n\
+             alice@wire-key.example = fixture-ignored-secret",
+        );
+        let preview = preview_password_file(&fixture.db, &file, |_| false).expect("preview");
+        let json = serde_json::to_string(&preview).expect("serialize preview");
+
+        assert!(!json.contains("fixture-keychain-secret"));
+        assert!(!json.contains("fixture-vault-secret"));
+        assert!(!json.contains("fixture-ignored-secret"));
+        assert!(!json.contains("\"password\""));
+        assert!(json.contains("\"keyAuth\""));
+        assert!(json.contains("\"new\""));
+        assert!(json.contains("\"localVault\""));
+        assert!(json.contains("\"unmatched_entries\":0"));
+    }
+
+    /* ── Password file save ──────────────────────────────────────────── */
+
+    /* Records every write and can fail on the nth call, so per-host isolation
+     * and the overwrite path can be asserted without a real credential store.
+     * Keeping the written password lets a test prove exactly what was sent. */
+    struct FakePasswordSink {
+        saved: std::cell::RefCell<Vec<(String, String)>>,
+        calls: std::cell::Cell<usize>,
+        fail_at: Option<usize>,
+    }
+
+    impl FakePasswordSink {
+        fn new(fail_at: Option<usize>) -> Self {
+            Self {
+                saved: std::cell::RefCell::new(Vec::new()),
+                calls: std::cell::Cell::new(0),
+                fail_at,
+            }
+        }
+
+        fn saved(&self) -> Vec<(String, String)> {
+            self.saved.borrow().clone()
+        }
+    }
+
+    impl PasswordSink for FakePasswordSink {
+        fn save(&self, host_id: &str, credential: &StoredCredential) -> Result<(), VaultError> {
+            let call = self.calls.get() + 1;
+            self.calls.set(call);
+            match credential {
+                StoredCredential::Password { password } => self
+                    .saved
+                    .borrow_mut()
+                    .push((host_id.to_string(), password.clone())),
+                other => panic!("unexpected credential: {other:?}"),
+            }
+            if self.fail_at == Some(call) {
+                Err(VaultError::Keychain(
+                    "synthetic keychain failure".to_string(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    /// Ids in these tests are unique per run so the process-global test
+    /// keychain cannot collide with a parallel test.
+    fn unique_host_id(prefix: &str) -> String {
+        format!("{prefix}-{}", uuid::Uuid::new_v4())
+    }
+
+    /// A password-auth host on the keychain route, named by its unique id so
+    /// the file fixture can be built from the same value.
+    fn keychain_password_host(id: &str, label: &str) -> SavedHost {
+        routed_host(
+            id,
+            label,
+            &format!("{id}.example"),
+            "alice",
+            22,
+            "password",
+            CredentialStorage::Keychain,
+        )
+    }
+
+    /// An unlocked vault whose session key lives only in memory: writes and
+    /// their read-back share one key, so a round trip needs no vault metadata.
+    fn unlocked_vault() -> LocalVault {
+        let vault = LocalVault::new();
+        vault.set_session_key([0; 32]).expect("set session key");
+        vault
+    }
+
+    /// A new password reaches the keychain, and the host's storage marker is
+    /// exactly what the user configured before the step ran.
+    #[test]
+    fn password_file_save_writes_new_keychain_password() {
+        crate::vault::test_keychain::install();
+        let fixture = test_db();
+        let host_id = unique_host_id("save-new");
+        fixture
+            .db
+            .save_host(&keychain_password_host(&host_id, "New password"))
+            .expect("save host");
+        let file = parsed(&format!("alice@{host_id}.example = fixture-new-secret"));
+
+        let result = save_password_file(
+            &fixture.db,
+            &file,
+            std::slice::from_ref(&host_id),
+            &KeychainSink,
+            &unlocked_vault(),
+        )
+        .expect("save passwords");
+
+        assert_eq!(result.stored_in_keychain, 1);
+        assert_eq!(result.stored_in_vault, 0);
+        assert_eq!(result.skipped, 0);
+        assert!(result.failed.is_empty());
+
+        let stored = crate::vault::get_credential(&host_id).expect("read back credential");
+        match &stored {
+            StoredCredential::Password { password } => assert_eq!(password, "fixture-new-secret"),
+            other => panic!("unexpected credential: {other:?}"),
+        }
+        assert_eq!(
+            fixture
+                .db
+                .get_host(&host_id)
+                .expect("get host")
+                .expect("host present")
+                .credential_storage,
+            CredentialStorage::Keychain
+        );
+
+        crate::vault::delete_credential(&host_id).expect("cleanup");
+    }
+
+    /// An existing keychain password is replaced by the file's value.
+    #[test]
+    fn password_file_save_overwrites_existing_password() {
+        crate::vault::test_keychain::install();
+        let fixture = test_db();
+        let host_id = unique_host_id("save-replace");
+        fixture
+            .db
+            .save_host(&keychain_password_host(&host_id, "Replace password"))
+            .expect("save host");
+        crate::vault::save_credential(
+            &host_id,
+            &StoredCredential::Password {
+                password: "fixture-previous".to_string(),
+            },
+        )
+        .expect("seed credential");
+        let file = parsed(&format!("alice@{host_id}.example = fixture-replacement"));
+
+        let result = save_password_file(
+            &fixture.db,
+            &file,
+            std::slice::from_ref(&host_id),
+            &KeychainSink,
+            &unlocked_vault(),
+        )
+        .expect("save passwords");
+
+        assert_eq!(result.stored_in_keychain, 1);
+        assert!(result.failed.is_empty());
+        let stored = crate::vault::get_credential(&host_id).expect("read back credential");
+        match &stored {
+            StoredCredential::Password { password } => assert_eq!(password, "fixture-replacement"),
+            other => panic!("unexpected credential: {other:?}"),
+        }
+
+        crate::vault::delete_credential(&host_id).expect("cleanup");
+    }
+
+    /// Key-auth hosts, keys the parser dropped as conflicts, hosts whose
+    /// username no longer matches, and ids that no longer exist are counted as
+    /// skipped and never written. A repeated id is not counted twice.
+    #[test]
+    fn password_file_save_skips_unwritable_targets() {
+        crate::vault::test_keychain::install();
+        let fixture = test_db();
+        let key_id = unique_host_id("skip-key");
+        let conflict_id = unique_host_id("skip-conflict");
+        let user_id = unique_host_id("skip-user");
+        let ghost_id = unique_host_id("ghost");
+
+        fixture
+            .db
+            .save_host(&routed_host(
+                &key_id,
+                "Key auth",
+                &format!("{key_id}.example"),
+                "alice",
+                22,
+                "privateKey",
+                CredentialStorage::Keychain,
+            ))
+            .expect("save key-auth host");
+        fixture
+            .db
+            .save_host(&keychain_password_host(&conflict_id, "Conflicted"))
+            .expect("save conflicted host");
+        fixture
+            .db
+            .save_host(&routed_host(
+                &user_id,
+                "Username changed",
+                &format!("{user_id}.example"),
+                "bob",
+                22,
+                "password",
+                CredentialStorage::Keychain,
+            ))
+            .expect("save renamed host");
+
+        let file = parsed(&format!(
+            "alice@{key_id}.example = fixture-key-auth\n\
+             alice@{conflict_id}.example = fixture-first\n\
+             alice@{conflict_id}.example = fixture-second\n\
+             alice@{user_id}.example = fixture-renamed\n\
+             alice@{ghost_id}.example = fixture-ghost",
+        ));
+
+        let host_ids = vec![
+            key_id.clone(),
+            conflict_id.clone(),
+            user_id.clone(),
+            ghost_id.clone(),
+            key_id.clone(),
+        ];
+        let result = save_password_file(
+            &fixture.db,
+            &file,
+            &host_ids,
+            &KeychainSink,
+            &unlocked_vault(),
+        )
+        .expect("save passwords");
+
+        assert_eq!(result.stored_in_keychain, 0);
+        assert_eq!(result.stored_in_vault, 0);
+        assert_eq!(result.skipped, 4);
+        assert!(result.failed.is_empty());
+        assert!(!crate::vault::has_credential(&key_id));
+        assert!(!crate::vault::has_credential(&conflict_id));
+        assert!(!crate::vault::has_credential(&user_id));
+    }
+
+    /// A host the user did not tick keeps whatever credential it already had,
+    /// even when the same password file entry matches it.
+    #[test]
+    fn password_file_save_leaves_unselected_hosts_untouched() {
+        crate::vault::test_keychain::install();
+        let fixture = test_db();
+        let selected_id = unique_host_id("selected");
+        let unselected_id = unique_host_id("unselected");
+        fixture
+            .db
+            .save_host(&keychain_password_host(&selected_id, "Selected"))
+            .expect("save selected host");
+        fixture
+            .db
+            .save_host(&keychain_password_host(&unselected_id, "Unselected"))
+            .expect("save unselected host");
+        crate::vault::save_credential(
+            &unselected_id,
+            &StoredCredential::Password {
+                password: "fixture-untouched".to_string(),
+            },
+        )
+        .expect("seed unselected credential");
+
+        /* Both hosts share host and username, so only the ticked id decides. */
+        let file = parsed(&format!(
+            "alice@{selected_id}.example = fixture-selected\n\
+             alice@{unselected_id}.example = fixture-would-replace",
+        ));
+        let result = save_password_file(
+            &fixture.db,
+            &file,
+            std::slice::from_ref(&selected_id),
+            &KeychainSink,
+            &unlocked_vault(),
+        )
+        .expect("save passwords");
+
+        assert_eq!(result.stored_in_keychain, 1);
+        let selected =
+            crate::vault::get_credential(&selected_id).expect("read selected credential");
+        match &selected {
+            StoredCredential::Password { password } => assert_eq!(password, "fixture-selected"),
+            other => panic!("unexpected credential: {other:?}"),
+        }
+        let untouched =
+            crate::vault::get_credential(&unselected_id).expect("read unselected credential");
+        match &untouched {
+            StoredCredential::Password { password } => assert_eq!(password, "fixture-untouched"),
+            other => panic!("unexpected credential: {other:?}"),
+        }
+
+        crate::vault::delete_credential(&selected_id).expect("cleanup");
+        crate::vault::delete_credential(&unselected_id).expect("cleanup");
+    }
+
+    /// One failing store records a labeled failure and the remaining hosts are
+    /// still written; no failure text carries a password.
+    #[test]
+    fn password_file_save_records_a_failure_and_writes_the_rest() {
+        let fixture = test_db();
+        let first_id = unique_host_id("partial-first");
+        let second_id = unique_host_id("partial-second");
+        let third_id = unique_host_id("partial-third");
+        for (id, label) in [
+            (&first_id, "First"),
+            (&second_id, "Second"),
+            (&third_id, "Third"),
+        ] {
+            fixture
+                .db
+                .save_host(&keychain_password_host(id, label))
+                .expect("save host");
+        }
+
+        let file = parsed(&format!(
+            "alice@{first_id}.example = fixture-one\n\
+             alice@{second_id}.example = fixture-two\n\
+             alice@{third_id}.example = fixture-three",
+        ));
+        let sink = FakePasswordSink::new(Some(2));
+        let result = save_password_file(
+            &fixture.db,
+            &file,
+            &[first_id.clone(), second_id.clone(), third_id.clone()],
+            &sink,
+            &unlocked_vault(),
+        )
+        .expect("save passwords");
+
+        assert_eq!(result.stored_in_keychain, 2);
+        assert_eq!(result.skipped, 0);
+        assert_eq!(result.failed.len(), 1);
+        assert_eq!(result.failed[0].host_id, second_id);
+        assert_eq!(result.failed[0].host_label, "Second");
+        assert!(
+            result.failed[0]
+                .error
+                .contains("synthetic keychain failure"),
+            "unexpected error: {}",
+            result.failed[0].error
+        );
+        assert!(!result.failed[0].error.contains("fixture-two"));
+
+        let written = sink.saved();
+        assert_eq!(written.len(), 3);
+        assert!(written.contains(&(first_id, "fixture-one".to_string())));
+        assert!(written.contains(&(third_id, "fixture-three".to_string())));
+
+        /* The wire shape reports counts, ids, labels, and error text only. */
+        let json = serde_json::to_string(&result).expect("serialize result");
+        assert!(!json.contains("fixture-one"));
+        assert!(!json.contains("fixture-two"));
+        assert!(!json.contains("fixture-three"));
+        assert!(json.contains("\"stored_in_keychain\":2"));
+    }
+
+    /// A vault-configured host — a password-auth host whose marker points at
+    /// the App Vault, named by its unique id so the file fixture can be built
+    /// from the same value.
+    fn vault_password_host(id: &str, label: &str) -> SavedHost {
+        routed_host(
+            id,
+            label,
+            &format!("{id}.example"),
+            "alice",
+            22,
+            "password",
+            CredentialStorage::LocalVault,
+        )
+    }
+
+    /// Read one host's password back through the resolver the connection path
+    /// uses, so the assertion covers the stored ciphertext and the marker.
+    fn resolved_password(db: &HostDb, vault: &LocalVault, host_id: &str) -> String {
+        let stored = crate::vault::resolve_host_credential(
+            db,
+            vault,
+            host_id,
+            CredentialStorage::LocalVault,
+        )
+        .expect("resolve vault credential");
+        match &stored {
+            StoredCredential::Password { password } => password.clone(),
+            other => panic!("unexpected credential: {other:?}"),
+        }
+    }
+
+    /// An unlocked vault takes the password as ciphertext, the resolver reads
+    /// it back, and no plaintext copy is left in the keychain.
+    #[test]
+    fn password_file_save_writes_vault_password_without_keychain_copy() {
+        crate::vault::test_keychain::install();
+        let fixture = test_db();
+        let vault = unlocked_vault();
+        let host_id = unique_host_id("save-vault");
+        fixture
+            .db
+            .save_host(&vault_password_host(&host_id, "Vault host"))
+            .expect("save vault host");
+        let file = parsed(&format!("alice@{host_id}.example = fixture-vault-secret"));
+
+        let result = save_password_file(
+            &fixture.db,
+            &file,
+            std::slice::from_ref(&host_id),
+            &KeychainSink,
+            &vault,
+        )
+        .expect("save passwords");
+
+        assert_eq!(result.stored_in_vault, 1);
+        assert_eq!(result.stored_in_keychain, 0);
+        assert_eq!(result.skipped, 0);
+        assert!(result.failed.is_empty());
+        assert_eq!(
+            resolved_password(&fixture.db, &vault, &host_id),
+            "fixture-vault-secret"
+        );
+        /* The keychain must never hold a copy of a vault-configured password. */
+        assert!(!crate::vault::has_credential(&host_id));
+        assert_eq!(
+            fixture
+                .db
+                .get_host(&host_id)
+                .expect("get host")
+                .expect("host present")
+                .credential_storage,
+            CredentialStorage::LocalVault
+        );
+    }
+
+    /// An existing vault blob is replaced by the file's value.
+    #[test]
+    fn password_file_save_replaces_existing_vault_blob() {
+        crate::vault::test_keychain::install();
+        let fixture = test_db();
+        let vault = unlocked_vault();
+        let host_id = unique_host_id("replace-vault");
+        fixture
+            .db
+            .save_host(&vault_password_host(&host_id, "Replace vault"))
+            .expect("save vault host");
+        crate::vault::store_host_credential_in_vault(
+            &fixture.db,
+            &vault,
+            &host_id,
+            &StoredCredential::Password {
+                password: "fixture-previous".to_string(),
+            },
+        )
+        .expect("seed vault blob");
+        assert_eq!(
+            resolved_password(&fixture.db, &vault, &host_id),
+            "fixture-previous"
+        );
+
+        let file = parsed(&format!("alice@{host_id}.example = fixture-replacement"));
+        let result = save_password_file(
+            &fixture.db,
+            &file,
+            std::slice::from_ref(&host_id),
+            &KeychainSink,
+            &vault,
+        )
+        .expect("save passwords");
+
+        assert_eq!(result.stored_in_vault, 1);
+        assert!(result.failed.is_empty());
+        assert_eq!(
+            resolved_password(&fixture.db, &vault, &host_id),
+            "fixture-replacement"
+        );
+        assert!(!crate::vault::has_credential(&host_id));
+    }
+
+    /// A run that covers both storages routes each host to its own marker and
+    /// counts them separately.
+    #[test]
+    fn password_file_save_stores_both_storages_in_one_run() {
+        crate::vault::test_keychain::install();
+        let fixture = test_db();
+        let vault = unlocked_vault();
+        let vault_id = unique_host_id("mixed-vault");
+        let keychain_id = unique_host_id("mixed-keychain");
+        fixture
+            .db
+            .save_host(&vault_password_host(&vault_id, "Mixed vault"))
+            .expect("save vault host");
+        fixture
+            .db
+            .save_host(&keychain_password_host(&keychain_id, "Mixed keychain"))
+            .expect("save keychain host");
+        let file = parsed(&format!(
+            "alice@{vault_id}.example = fixture-to-vault\n\
+             alice@{keychain_id}.example = fixture-to-keychain",
+        ));
+
+        let result = save_password_file(
+            &fixture.db,
+            &file,
+            &[vault_id.clone(), keychain_id.clone()],
+            &KeychainSink,
+            &vault,
+        )
+        .expect("save passwords");
+
+        assert_eq!(result.stored_in_vault, 1);
+        assert_eq!(result.stored_in_keychain, 1);
+        assert_eq!(result.skipped, 0);
+        assert!(result.failed.is_empty());
+        assert_eq!(
+            resolved_password(&fixture.db, &vault, &vault_id),
+            "fixture-to-vault"
+        );
+        assert!(crate::vault::has_credential(&keychain_id));
+        assert!(!crate::vault::has_credential(&vault_id));
+
+        crate::vault::delete_credential(&keychain_id).expect("cleanup");
+    }
+
+    /// A locked vault fails its own hosts with the locked message and leaves
+    /// the keychain-configured hosts in the same run untouched by that failure.
+    /// Nothing is written to the keychain as a fallback.
+    #[test]
+    fn password_file_save_reports_locked_vault_and_still_writes_keychain() {
+        crate::vault::test_keychain::install();
+        let fixture = test_db();
+        /* No session key: the vault is locked. */
+        let vault = LocalVault::new();
+        let vault_id = unique_host_id("locked-vault");
+        let keychain_id = unique_host_id("locked-keychain");
+        fixture
+            .db
+            .save_host(&vault_password_host(&vault_id, "Locked vault"))
+            .expect("save vault host");
+        fixture
+            .db
+            .save_host(&keychain_password_host(&keychain_id, "Still written"))
+            .expect("save keychain host");
+        let file = parsed(&format!(
+            "alice@{vault_id}.example = fixture-locked\n\
+             alice@{keychain_id}.example = fixture-written",
+        ));
+
+        let result = save_password_file(
+            &fixture.db,
+            &file,
+            &[vault_id.clone(), keychain_id.clone()],
+            &KeychainSink,
+            &vault,
+        )
+        .expect("save passwords");
+
+        assert_eq!(result.stored_in_vault, 0);
+        assert_eq!(result.stored_in_keychain, 1);
+        assert_eq!(result.skipped, 0);
+        assert_eq!(result.failed.len(), 1);
+        assert_eq!(result.failed[0].host_id, vault_id);
+        assert_eq!(result.failed[0].host_label, "Locked vault");
+        assert!(
+            result.failed[0].error.contains("Local vault is locked"),
+            "unexpected error: {}",
+            result.failed[0].error
+        );
+        assert!(!result.failed[0].error.contains("fixture-locked"));
+
+        /* The locked host keeps no credential anywhere, and no vault blob was
+         * written for it. */
+        assert!(!crate::vault::has_credential(&vault_id));
+        assert!(fixture
+            .db
+            .get_local_vault_credential(&vault_id)
+            .expect("read vault blob")
+            .is_none());
+        assert!(crate::vault::has_credential(&keychain_id));
+
+        crate::vault::delete_credential(&keychain_id).expect("cleanup");
     }
 }

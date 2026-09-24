@@ -216,6 +216,43 @@ export interface ImportResult {
   errors: string[];
 }
 
+/* Password file preview exposes matching host ids, labels, and statuses
+ * only — password values stay inside Rust and are re-read on save. */
+export type PasswordFileStatus = "new" | "replaces" | "keyAuth";
+
+export interface PasswordFileMatch {
+  host_id: string;
+  host_label: string;
+  username: string;
+  host: string;
+  port: number;
+  storage: CredentialStorage;
+  status: PasswordFileStatus;
+}
+
+export interface PasswordFilePreview {
+  matches: PasswordFileMatch[];
+  unmatched_entries: number;
+  conflicts: number;
+  malformed_lines: number;
+}
+
+/* Saving reports what landed per storage plus a labeled row per host whose
+ * write failed. The counts say what was actually written, and no entry ever
+ * carries a password value. */
+export interface PasswordFileFailure {
+  host_id: string;
+  host_label: string;
+  error: string;
+}
+
+export interface PasswordFileSaveResult {
+  stored_in_keychain: number;
+  stored_in_vault: number;
+  skipped: number;
+  failed: PasswordFileFailure[];
+}
+
 /* Termius IPC exposes only bounded metadata and opaque identifiers. Credential
  * material is deliberately absent from these frontend contracts and remains
  * inside the Rust preview/commit workflow. */

@@ -451,6 +451,8 @@ pub fn run() {
             import::commands::import_save_ssh_hosts,
             import::commands::import_parse_mobaxterm,
             import::commands::import_save_mobaxterm_hosts,
+            import::commands::import_preview_password_file,
+            import::commands::import_save_password_file,
             // Termius v1 — opaque preview and atomic commit
             import::termius::workflow::import_preview_termius,
             import::termius::workflow::import_commit_termius,
