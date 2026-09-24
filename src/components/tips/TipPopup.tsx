@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ChevronLeft, ChevronRight, Lightbulb, X } from "lucide-react";
 import { useSettingsStore } from "../../stores/settings-store";
 import { useToastStore } from "../../stores/toast-store";
@@ -10,12 +10,33 @@ import { TIPS } from "./tips";
 const SHOW_DELAY_MS = 3000;
 
 /*
+ * Modal-presence store for useSyncExternalStore. Most modals render inside
+ * the app container (`relative z-10`), so this root-level card would paint
+ * over their footers and swallow clicks on buttons such as Save. A subtree
+ * MutationObserver re-checks for an `aria-modal` element on each DOM batch;
+ * the no-op subscriber keeps it detached while the card cannot show.
+ */
+function subscribeModals(onChange: () => void): () => void {
+  const observer = new MutationObserver(onChange);
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ["aria-modal"],
+  });
+  return () => observer.disconnect();
+}
+const noopSubscribe = () => () => {};
+const isModalOpen = () => document.querySelector('[aria-modal="true"]') !== null;
+
+/*
  * Bottom-right tip card, shown once per app launch but fully browsable: the
  * prev/next arrows step through the whole tip list (wrapping around) so the
  * user can read more than one. Waits for settings to load, starts at the
  * persisted rotation index (and advances it immediately so the next launch
  * rotates), then reveals itself after a short delay. It hides while toasts
- * occupy the same corner and while the update announcement modal is open.
+ * occupy the same corner, while the update announcement modal is open, and
+ * while any other modal dialog is open.
  *
  * Mounted at the AppShell ROOT level with z-[45]: the theme controls badge is
  * a `z-40` fixed element also at root level (rendered by the effect
@@ -32,6 +53,10 @@ export function TipPopup() {
   const [ready, setReady] = useState(false);
   const [dismissed, setDismissed] = useState(false);
   const started = useRef(false);
+  const modalOpen = useSyncExternalStore(
+    ready && !dismissed ? subscribeModals : noopSubscribe,
+    isModalOpen,
+  );
 
   // Capture the starting tip + advance the rotation pointer exactly once per
   // mount (the ref guards React strict-mode's double-invoked effects).
@@ -51,7 +76,7 @@ export function TipPopup() {
     setCursor((c) => (c === null ? c : (c + delta + TIPS.length) % TIPS.length));
 
   if (!ready || dismissed || cursor === null) return null;
-  if (toastCount > 0 || announceOpen) return null;
+  if (toastCount > 0 || announceOpen || modalOpen) return null;
   const tip = TIPS[cursor];
 
   const navBtn =

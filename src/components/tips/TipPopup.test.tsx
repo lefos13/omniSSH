@@ -134,4 +134,21 @@ describe("TipPopup", () => {
     expect(tipSaves).toHaveLength(1);
     expect(tipSaves[0][1]).toMatchObject({ value: "1" });
   });
+
+  it("hides while a modal dialog is open and returns when it closes", async () => {
+    await renderAndSettle();
+    expect(screen.getByTestId("tip-popup")).toBeInTheDocument();
+
+    const modal = document.createElement("div");
+    modal.setAttribute("aria-modal", "true");
+    await act(async () => {
+      document.body.appendChild(modal);
+    });
+    expect(screen.queryByTestId("tip-popup")).not.toBeInTheDocument();
+
+    await act(async () => {
+      modal.remove();
+    });
+    expect(screen.getByTestId("tip-popup")).toBeInTheDocument();
+  });
 });

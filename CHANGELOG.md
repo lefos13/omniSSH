@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### 🐛 Bug Fixes
 
 * **Animated Background Loop Leak**: A repeated "window visible" event while an animated theme was already running (for example un-minimizing or switching Spaces) started an extra `requestAnimationFrame` loop that could never be cancelled, so hidden copies of the effect kept drawing after theme changes or remounts. The shared effect framework and the Matrix and Berserk backgrounds now keep a single animation loop, with regression tests.
+* **Tip Card Over Dialogs**: The startup "Did you know?" tip card no longer covers modal dialogs; it hides while any dialog is open (so buttons such as the dataset sync Save are clickable) and returns when the dialog closes.
 
 ## [1.6.4] - 2026-09-22
 
