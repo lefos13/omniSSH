@@ -22,7 +22,15 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: (...args: unknown[]) => listen(...args),
 }));
 
+let originalPlatform: string;
+
 beforeEach(() => {
+  originalPlatform = navigator.platform;
+  Object.defineProperty(navigator, "platform", {
+    value: "MacIntel",
+    configurable: true,
+  });
+
   invoke.mockReset();
   invoke.mockImplementation(async (cmd: string) => {
     if (cmd === "list_hosts" || cmd === "get_recent_connections" || cmd === "list_groups" || cmd === "list_connections" || cmd === "s3_list_connections") {
@@ -55,6 +63,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  Object.defineProperty(navigator, "platform", {
+    value: originalPlatform,
+    configurable: true,
+  });
   vi.unstubAllGlobals();
 });
 
@@ -126,3 +138,122 @@ describe("AppShell close shortcut", () => {
     expect(useTabStore.getState().tabs.has("session-1")).toBe(false);
   });
 });
+
+/*
+ * Exercise AppShell's Cmd+Shift+[ and Cmd+Shift+] shortcuts to confirm
+ * they reorder tabs in tabOrder without changing activeTabId, respect
+ * boundary and pinned Hosts constraints, and do not regress plain Cmd+[ / Cmd+].
+ */
+describe("AppShell tab reorder shortcuts", () => {
+  const hostsId = pageTabId("hosts");
+  const tabA = "tab-a";
+  const tabB = "tab-b";
+  const tabC = "tab-c";
+
+  function seedTabs(order: string[] = [hostsId, tabA, tabB, tabC], activeId: string = tabB) {
+    const tabs = new Map<string, UnifiedTab>([
+      [hostsId, { type: "page", id: hostsId, label: "Hosts", page: "hosts" }],
+      [tabA, { type: "page", id: tabA, label: "Tab A", page: "settings" }],
+      [tabB, { type: "page", id: tabB, label: "Tab B", page: "settings" }],
+      [tabC, { type: "page", id: tabC, label: "Tab C", page: "settings" }],
+    ]);
+    useTabStore.setState({
+      tabs,
+      tabOrder: [...order],
+      activeTabId: activeId,
+    });
+  }
+
+  function triggerKey(key: string, options: { shift?: boolean } = {}) {
+    const isMac = navigator.platform.includes("Mac") || navigator.platform === "MacIntel";
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key,
+        metaKey: isMac,
+        ctrlKey: !isMac,
+        shiftKey: options.shift ?? false,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  }
+
+  it("moves the active tab right by one using ']' and '}' without changing activeTabId", () => {
+    seedTabs([hostsId, tabA, tabB, tabC], tabA);
+    render(<AppShell />);
+
+    // Test ']' moves tabA from index 1 to index 2
+    triggerKey("]", { shift: true });
+    expect(useTabStore.getState().tabOrder).toEqual([hostsId, tabB, tabA, tabC]);
+    expect(useTabStore.getState().activeTabId).toBe(tabA);
+
+    // Test '}' moves tabA from index 2 to index 3
+    triggerKey("}", { shift: true });
+    expect(useTabStore.getState().tabOrder).toEqual([hostsId, tabB, tabC, tabA]);
+    expect(useTabStore.getState().activeTabId).toBe(tabA);
+  });
+
+  it("moves the active tab left by one using '[' and '{' without changing activeTabId", () => {
+    seedTabs([hostsId, tabA, tabB, tabC], tabC);
+    render(<AppShell />);
+
+    // Test '[' moves tabC from index 3 to index 2
+    triggerKey("[", { shift: true });
+    expect(useTabStore.getState().tabOrder).toEqual([hostsId, tabA, tabC, tabB]);
+    expect(useTabStore.getState().activeTabId).toBe(tabC);
+
+    // Test '{' moves tabC from index 2 to index 1
+    triggerKey("{", { shift: true });
+    expect(useTabStore.getState().tabOrder).toEqual([hostsId, tabC, tabA, tabB]);
+    expect(useTabStore.getState().activeTabId).toBe(tabC);
+  });
+
+  it("does not move the tab when at the right edge", () => {
+    seedTabs([hostsId, tabA, tabB, tabC], tabC);
+    render(<AppShell />);
+
+    triggerKey("]", { shift: true });
+    expect(useTabStore.getState().tabOrder).toEqual([hostsId, tabA, tabB, tabC]);
+    expect(useTabStore.getState().activeTabId).toBe(tabC);
+
+    triggerKey("}", { shift: true });
+    expect(useTabStore.getState().tabOrder).toEqual([hostsId, tabA, tabB, tabC]);
+    expect(useTabStore.getState().activeTabId).toBe(tabC);
+  });
+
+  it("does not move the tab left when at index 1 next to Hosts", () => {
+    seedTabs([hostsId, tabA, tabB, tabC], tabA);
+    render(<AppShell />);
+
+    triggerKey("[", { shift: true });
+    expect(useTabStore.getState().tabOrder).toEqual([hostsId, tabA, tabB, tabC]);
+    expect(useTabStore.getState().activeTabId).toBe(tabA);
+
+    triggerKey("{", { shift: true });
+    expect(useTabStore.getState().tabOrder).toEqual([hostsId, tabA, tabB, tabC]);
+    expect(useTabStore.getState().activeTabId).toBe(tabA);
+  });
+
+  it("does not move when Hosts is the active tab", () => {
+    seedTabs([hostsId, tabA, tabB, tabC], hostsId);
+    render(<AppShell />);
+
+    triggerKey("]", { shift: true });
+    expect(useTabStore.getState().tabOrder).toEqual([hostsId, tabA, tabB, tabC]);
+    expect(useTabStore.getState().activeTabId).toBe(hostsId);
+
+    triggerKey("[", { shift: true });
+    expect(useTabStore.getState().tabOrder).toEqual([hostsId, tabA, tabB, tabC]);
+    expect(useTabStore.getState().activeTabId).toBe(hostsId);
+  });
+
+  it("plain Cmd+] (no shift) still switches the active tab and does NOT change tabOrder", () => {
+    seedTabs([hostsId, tabA, tabB, tabC], tabA);
+    render(<AppShell />);
+
+    triggerKey("]", { shift: false });
+    expect(useTabStore.getState().tabOrder).toEqual([hostsId, tabA, tabB, tabC]);
+    expect(useTabStore.getState().activeTabId).toBe(tabB);
+  });
+});
+

@@ -30,3 +30,18 @@ export async function waitForTabCount(n: number, timeoutMs = 15_000): Promise<vo
         timeoutMsg: `tab count never reached ${n}`,
     });
 }
+
+/*
+ * Reads all rendered tab labels in DOM order.
+ * Inspects [data-tab-type] elements in the unified tab bar and extracts their
+ * data-tab-label attributes.
+ */
+export async function domTabOrder(): Promise<string[]> {
+    const tabs = await $$("[data-tab-type]");
+    const labels: string[] = [];
+    for (const tab of tabs) {
+        labels.push((await tab.getAttribute("data-tab-label")) ?? "");
+    }
+    return labels;
+}
+

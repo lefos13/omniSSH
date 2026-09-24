@@ -183,4 +183,21 @@ describe("UnifiedTabBar", () => {
       delete (proto as unknown as Record<string, unknown>).clientWidth;
     }
   });
+
+  /*
+   * Confirm sortable tabs retain proper tablist accessibility semantics
+   * with role="tab" and aria-selected after being wrapped with dnd-kit.
+   */
+  it("preserves role='tab' and aria-selected attributes on rendered tabs", () => {
+    seedTabs([hostsTab, snippetsTab], snippetsTab.id);
+    render(<UnifiedTabBar />);
+
+    const activeTab = screen.getByTestId(`tab-${snippetsTab.id}`);
+    expect(activeTab).toHaveAttribute("role", "tab");
+    expect(activeTab).toHaveAttribute("aria-selected", "true");
+
+    const inactiveTab = screen.getByTestId(`tab-${hostsTab.id}`);
+    expect(inactiveTab).toHaveAttribute("role", "tab");
+    expect(inactiveTab).toHaveAttribute("aria-selected", "false");
+  });
 });

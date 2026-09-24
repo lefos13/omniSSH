@@ -1,4 +1,20 @@
-import { useRef, useState, useEffect, useCallback } from "react";
+import { useRef, useState, useEffect, useCallback, type CSSProperties } from "react";
+import {
+  DndContext,
+  closestCenter,
+  MouseSensor,
+  TouchSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type Modifier,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  horizontalListSortingStrategy,
+  useSortable,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import {
   X,
   Code,
@@ -22,6 +38,21 @@ import { useTabStore, type UnifiedTab, type PageId } from "../../stores/tab-stor
 import { useSessionStore, countPanes, getTopDirection } from "../../stores/session-store";
 import { useUiStore } from "../../stores/ui-store";
 import { closeExplorerSession, resolveExplorerTransport } from "../../lib/explorer-transport";
+
+// Axis-lock modifier keeping drag movement strictly horizontal on the tab strip.
+const restrictToHorizontal: Modifier = ({ transform }) => ({
+  ...transform,
+  y: 0,
+});
+
+const MODIFIERS = [restrictToHorizontal];
+
+const DND_ACCESSIBILITY = {
+  screenReaderInstructions: {
+    draggable:
+      "Drag to reorder tabs. To move the active tab with the keyboard, press Command or Control plus Shift plus left or right bracket.",
+  },
+};
 
 // ─── Icon mapping ───────────────────────────────────────────────────────────
 
@@ -63,6 +94,7 @@ export function UnifiedTabBar() {
   const activeTabId = useTabStore((s) => s.activeTabId);
   const setActiveTab = useTabStore((s) => s.setActiveTab);
   const removeTab = useTabStore((s) => s.removeTab);
+  const moveTab = useTabStore((s) => s.moveTab);
 
   const sessions = useSessionStore((s) => s.sessions);
   const terminalTabs = useSessionStore((s) => s.tabs);
@@ -70,6 +102,21 @@ export function UnifiedTabBar() {
 
   const toggleSnippetPanel = useUiStore((s) => s.toggleSnippetPanel);
   const snippetPanelOpen = useUiStore((s) => s.snippetPanelOpen);
+
+  const sensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 5 } }),
+  );
+
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      if (over && active.id !== over.id) {
+        moveTab(String(active.id), tabOrder.indexOf(String(over.id)));
+      }
+    },
+    [moveTab, tabOrder],
+  );
 
   // When the tabs overflow, show browser-style chevrons instead of a scrollbar.
   // Both slots render whenever there's overflow (each disabled when its side is
@@ -168,133 +215,72 @@ export function UnifiedTabBar() {
         role="tablist"
         aria-label="Open sessions"
       >
-        {tabOrder.map((tabId) => {
-          const tab = tabs.get(tabId);
-          if (!tab) return null;
+        {/*
+         * Tab reordering drag-and-drop context.
+         * KeyboardSensor is omitted so Space/Enter continues to activate tabs
+         * without triggering dnd-kit pick-up; keyboard reordering is handled via
+         * Cmd/Ctrl+Shift+[ / ]. MouseSensor (5px) and TouchSensor (250ms press)
+         * prevent accidental drags during plain clicks or taps.
+         * Transformations are locked to the horizontal axis via restrictToHorizontal.
+         */}
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          modifiers={MODIFIERS}
+          accessibility={DND_ACCESSIBILITY}
+          onDragEnd={handleDragEnd}
+        >
+          <SortableContext
+            items={tabOrder}
+            strategy={horizontalListSortingStrategy}
+          >
+            {tabOrder.map((tabId) => {
+              const tab = tabs.get(tabId);
+              if (!tab) return null;
 
-          const isActive = tabId === activeTabId;
-          const Icon = getTabIcon(tab);
+              const isActive = tabId === activeTabId;
 
-          // Terminal-specific metadata
-          let statusDot: string | null = null;
-          let paneCount = 1;
-          let topDir: "horizontal" | "vertical" | null = null;
-          let isZoomed = false;
+              // Terminal-specific metadata
+              let statusDot: string | null = null;
+              let paneCount = 1;
+              let topDir: "horizontal" | "vertical" | null = null;
+              let isZoomed = false;
 
-          if (tab.type === "terminal") {
-            const termTab = terminalTabs.get(tabId);
-            if (termTab) {
-              paneCount = countPanes(termTab.layout);
-              topDir = getTopDirection(termTab.layout);
-            }
-            // Status from first session in layout
-            const firstSessionId = getFirstSessionIdFromTab(tabId);
-            const firstSession = firstSessionId ? sessions.get(firstSessionId) : null;
-            const status = firstSession?.status ?? "Disconnected";
-            statusDot =
-              status === "Connected"    ? "bg-status-connected" :
-              status === "Connecting"   ? "bg-status-connecting motion-safe:animate-pulse" :
-              status === "Error"        ? "bg-status-error" :
-                                          "bg-status-disconnected";
-            isZoomed = isActive && zoomedPaneId !== null;
-          }
+              if (tab.type === "terminal") {
+                const termTab = terminalTabs.get(tabId);
+                if (termTab) {
+                  paneCount = countPanes(termTab.layout);
+                  topDir = getTopDirection(termTab.layout);
+                }
+                // Status from first session in layout
+                const firstSessionId = getFirstSessionIdFromTab(tabId);
+                const firstSession = firstSessionId ? sessions.get(firstSessionId) : null;
+                const status = firstSession?.status ?? "Disconnected";
+                statusDot =
+                  status === "Connected"    ? "bg-status-connected" :
+                  status === "Connecting"   ? "bg-status-connecting motion-safe:animate-pulse" :
+                  status === "Error"        ? "bg-status-error" :
+                                              "bg-status-disconnected";
+                isZoomed = isActive && zoomedPaneId !== null;
+              }
 
-          const closeable = !(tab.type === "page" && tab.page === "hosts");
-
-          return (
-            <div
-              key={tabId}
-              role="tab"
-              tabIndex={0}
-              aria-selected={isActive}
-              data-testid={`tab-${tabId}`}
-              data-tab-type={tab.type}
-              data-tab-label={tab.label}
-              onClick={() => setActiveTab(tabId)}
-              // Middle-click closes the tab, like a browser.
-              onAuxClick={(e) => { if (e.button === 1 && closeable) { e.preventDefault(); void handleClose(tabId, tab, e); } }}
-              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setActiveTab(tabId); } }}
-              title={tab.label + (paneCount > 1 ? ` (${paneCount} panes)` : "")}
-              className={[
-                "group relative flex items-center gap-2 px-3.5 h-[32px] shrink-0 max-w-[220px]",
-                "text-[length:var(--text-sm)] leading-none rounded-md cursor-pointer",
-                "transition-[color,background-color] duration-[var(--duration-fast)]",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                isActive
-                  ? "bg-accent/15 text-accent border border-accent/40"
-                  : "bg-bg-overlay/80 text-text-secondary border border-border/60 hover:text-text-primary hover:bg-bg-overlay hover:border-border",
-              ].join(" ")}
-            >
-              {/* Tab icon */}
-              <Icon
-                size={14}
-                strokeWidth={1.8}
-                className={[
-                  "shrink-0",
-                  tab.type === "terminal" && statusDot ? statusDot.replace("bg-", "text-") : "",
-                  tab.type === "sftp" || tab.type === "s3" ? "text-status-connected" : "",
-                  tab.type === "page" && isActive ? "text-accent" : "",
-                  tab.type === "page" && !isActive ? "text-text-muted" : "",
-                ].join(" ")}
-                aria-hidden="true"
-              />
-
-              {/* Label — the wrapper reserves the bold (active) width so
-                  toggling font-medium on activate/deactivate doesn't resize the
-                  tab and shift its neighbours (see .label-stable-bold). */}
-              <span data-label={tab.label} className="label-stable-bold">
-                <span className={`truncate ${isActive ? "font-medium" : ""}`}>
-                  {tab.label}
-                </span>
-              </span>
-
-              {/* Split indicator (terminal only) */}
-              {tab.type === "terminal" && paneCount === 2 && topDir && (
-                <span className="shrink-0 text-text-muted" aria-hidden="true">
-                  {topDir === "horizontal" ? (
-                    <Columns2 size={13} strokeWidth={1.8} />
-                  ) : (
-                    <Rows2 size={13} strokeWidth={1.8} />
-                  )}
-                </span>
-              )}
-              {tab.type === "terminal" && paneCount >= 3 && (
-                <span className="flex items-center justify-center min-w-[16px] h-[16px] px-1 rounded-lg bg-bg-muted text-[10px] font-bold text-text-secondary tabular-nums leading-none shrink-0">
-                  {paneCount}
-                </span>
-              )}
-
-              {/* Zoom indicator */}
-              {isZoomed && (
-                <span className="shrink-0 text-accent" aria-hidden="true" title="Zoomed pane">
-                  <Maximize2 size={11} strokeWidth={2} />
-                </span>
-              )}
-
-              {/* Close button */}
-              {closeable && (
-                <button
-                  data-testid={`tab-${tabId}-close`}
-                  onClick={(e) => void handleClose(tabId, tab, e)}
-                  className={[
-                    "ml-auto p-0.5 -mr-1 rounded-lg shrink-0",
-                    isActive
-                      ? "text-accent/60 hover:text-accent hover:bg-accent/10"
-                      : "text-text-muted hover:text-text-primary hover:bg-bg-muted",
-                    "opacity-0 group-hover:opacity-100",
-                    "transition-all duration-[var(--duration-fast)]",
-                    "focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                  ].join(" ")}
-                  aria-label={`Close ${tab.label}`}
-                  tabIndex={-1}
-                >
-                  <X size={12} strokeWidth={2} aria-hidden="true" />
-                </button>
-              )}
-            </div>
-          );
-        })}
-
+              return (
+                <SortableTab
+                  key={tabId}
+                  tabId={tabId}
+                  tab={tab}
+                  isActive={isActive}
+                  onSelect={() => setActiveTab(tabId)}
+                  onClose={(e) => void handleClose(tabId, tab, e)}
+                  statusDot={statusDot}
+                  paneCount={paneCount}
+                  topDir={topDir}
+                  isZoomed={isZoomed}
+                />
+              );
+            })}
+          </SortableContext>
+        </DndContext>
       </div>
 
       {overflow && (
@@ -333,6 +319,161 @@ export function UnifiedTabBar() {
             <span>Snippets</span>
           </button>
         </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Sortable tab ───────────────────────────────────────────────────────────
+
+/*
+ * File-local sortable tab item wrapping the unified tab surface.
+ * Spreads dnd-kit attributes first so our explicit role="tab", tabIndex,
+ * and aria-selected override dnd-kit's default button semantics.
+ * Uses CSS.Translate instead of CSS.Transform to prevent horizontalListSortingStrategy
+ * from calculating scaleX distortions on variable-width tabs. The Hosts tab is
+ * pinned (disabled: true) so it cannot be picked up or targeted as a drop destination.
+ */
+interface SortableTabProps {
+  tabId: string;
+  tab: UnifiedTab;
+  isActive: boolean;
+  onSelect: () => void;
+  onClose: (e: React.MouseEvent) => void;
+  statusDot: string | null;
+  paneCount: number;
+  topDir: "horizontal" | "vertical" | null;
+  isZoomed: boolean;
+}
+
+function SortableTab({
+  tabId,
+  tab,
+  isActive,
+  onSelect,
+  onClose,
+  statusDot,
+  paneCount,
+  topDir,
+  isZoomed,
+}: SortableTabProps) {
+  const isHostsTab = tab.type === "page" && tab.page === "hosts";
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: tabId, disabled: isHostsTab });
+
+  const style: CSSProperties = {
+    transform: CSS.Translate.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+    zIndex: isDragging ? 30 : undefined,
+  };
+
+  const Icon = getTabIcon(tab);
+  const closeable = !isHostsTab;
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      // dnd-kit attributes spread first so our role="tab", tabIndex, and aria-selected win.
+      {...attributes}
+      role="tab"
+      tabIndex={0}
+      aria-selected={isActive}
+      {...listeners}
+      data-testid={`tab-${tabId}`}
+      data-tab-type={tab.type}
+      data-tab-label={tab.label}
+      onClick={onSelect}
+      // Middle-click closes the tab, like a browser.
+      onAuxClick={(e) => {
+        if (e.button === 1 && closeable) {
+          e.preventDefault();
+          onClose(e);
+        }
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+      title={tab.label + (paneCount > 1 ? ` (${paneCount} panes)` : "")}
+      className={[
+        "group relative flex items-center gap-2 px-3.5 h-[32px] shrink-0 max-w-[220px]",
+        "text-[length:var(--text-sm)] leading-none rounded-md cursor-pointer",
+        "transition-[color,background-color] duration-[var(--duration-fast)]",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        isActive
+          ? "bg-accent/15 text-accent border border-accent/40"
+          : "bg-bg-overlay/80 text-text-secondary border border-border/60 hover:text-text-primary hover:bg-bg-overlay hover:border-border",
+      ].join(" ")}
+    >
+      {/* Tab icon */}
+      <Icon
+        size={14}
+        strokeWidth={1.8}
+        className={[
+          "shrink-0",
+          tab.type === "terminal" && statusDot ? statusDot.replace("bg-", "text-") : "",
+          tab.type === "sftp" || tab.type === "s3" ? "text-status-connected" : "",
+          tab.type === "page" && isActive ? "text-accent" : "",
+          tab.type === "page" && !isActive ? "text-text-muted" : "",
+        ].join(" ")}
+        aria-hidden="true"
+      />
+
+      {/* Label — the wrapper reserves the bold (active) width so
+          toggling font-medium on activate/deactivate doesn't resize the
+          tab and shift its neighbours (see .label-stable-bold). */}
+      <span data-label={tab.label} className="label-stable-bold">
+        <span className={`truncate ${isActive ? "font-medium" : ""}`}>
+          {tab.label}
+        </span>
+      </span>
+
+      {/* Split indicator (terminal only) */}
+      {tab.type === "terminal" && paneCount === 2 && topDir && (
+        <span className="shrink-0 text-text-muted" aria-hidden="true">
+          {topDir === "horizontal" ? (
+            <Columns2 size={13} strokeWidth={1.8} />
+          ) : (
+            <Rows2 size={13} strokeWidth={1.8} />
+          )}
+        </span>
+      )}
+      {tab.type === "terminal" && paneCount >= 3 && (
+        <span className="flex items-center justify-center min-w-[16px] h-[16px] px-1 rounded-lg bg-bg-muted text-[10px] font-bold text-text-secondary tabular-nums leading-none shrink-0">
+          {paneCount}
+        </span>
+      )}
+
+      {/* Zoom indicator */}
+      {isZoomed && (
+        <span className="shrink-0 text-accent" aria-hidden="true" title="Zoomed pane">
+          <Maximize2 size={11} strokeWidth={2} />
+        </span>
+      )}
+
+      {/* Close button */}
+      {closeable && (
+        <button
+          data-testid={`tab-${tabId}-close`}
+          onClick={onClose}
+          className={[
+            "ml-auto p-0.5 -mr-1 rounded-lg shrink-0",
+            isActive
+              ? "text-accent/60 hover:text-accent hover:bg-accent/10"
+              : "text-text-muted hover:text-text-primary hover:bg-bg-muted",
+            "opacity-0 group-hover:opacity-100",
+            "transition-all duration-[var(--duration-fast)]",
+            "focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          ].join(" ")}
+          aria-label={`Close ${tab.label}`}
+          tabIndex={-1}
+        >
+          <X size={12} strokeWidth={2} aria-hidden="true" />
+        </button>
       )}
     </div>
   );

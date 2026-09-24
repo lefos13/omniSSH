@@ -101,6 +101,20 @@ export function AppShell() {
   const openNewHost = () => setEditingHostId(NEW_HOST_ID);
   const preZoomFontSizeRef = useRef<number | null>(null);
 
+  const moveActiveTabLeft = () => {
+    const { tabOrder, activeTabId, moveTab } = useTabStore.getState();
+    if (!activeTabId) return;
+    const idx = tabOrder.indexOf(activeTabId);
+    if (idx > 0) moveTab(activeTabId, idx - 1);
+  };
+
+  const moveActiveTabRight = () => {
+    const { tabOrder, activeTabId, moveTab } = useTabStore.getState();
+    if (!activeTabId) return;
+    const idx = tabOrder.indexOf(activeTabId);
+    if (idx >= 0) moveTab(activeTabId, idx + 1);
+  };
+
   const shortcuts = useMemo<ShortcutDef[]>(
     () => [
       {
@@ -227,6 +241,36 @@ export function AppShell() {
           if (idx < tabOrder.length - 1) setActiveTab(tabOrder[idx + 1]);
           else if (tabOrder.length > 0) setActiveTab(tabOrder[0]);
         },
+      },
+      /*
+       * Tab reordering shortcuts: Cmd/Ctrl+Shift+[ and Cmd/Ctrl+Shift+].
+       * Dual registration for both "["/"]" and "{"/"}" handles physical keyboards
+       * (reporting shifted punctuation) and WebDriver/synthetic chords.
+       * Boundary clamping, right-edge clamping, and the pinned Hosts tab invariant live in moveTab.
+       */
+      {
+        key: "[",
+        meta: true,
+        shift: true,
+        action: moveActiveTabLeft,
+      },
+      {
+        key: "{",
+        meta: true,
+        shift: true,
+        action: moveActiveTabLeft,
+      },
+      {
+        key: "]",
+        meta: true,
+        shift: true,
+        action: moveActiveTabRight,
+      },
+      {
+        key: "}",
+        meta: true,
+        shift: true,
+        action: moveActiveTabRight,
       },
       // ─── Split pane shortcuts (terminal only) ────────────────────
       {

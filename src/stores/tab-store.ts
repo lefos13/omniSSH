@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { arrayMove } from "@dnd-kit/sortable";
 import { useSessionStore } from "./session-store";
 import { useSftpStore } from "./sftp-store";
 import { useS3Store } from "./s3-store";
@@ -41,6 +42,7 @@ interface TabState {
   openPageTab: (page: PageId, label: string) => void;
   /** Find the most recent tab of a given type and activate it. Returns false if none found. */
   activateRecentTabOfType: (type: "terminal" | "sftp" | "s3") => boolean;
+  moveTab: (id: string, toIndex: number) => void;
 }
 
 const PAGE_TAB_PREFIX = "page:";
@@ -147,6 +149,28 @@ export const useTabStore = create<TabState>((set, get) => ({
     }
     return false;
   },
+
+  moveTab: (id, toIndex) =>
+    set((state) => {
+      /*
+       * Move a tab to a new visual position in tabOrder.
+       * Hosts is pinned at index 0: it cannot be moved, and non-Hosts tabs
+       * cannot displace it. If moving Hosts, an unknown id, or a same-index
+       * destination, returns the identical state reference to skip re-renders.
+       */
+      if (id === pageTabId("hosts")) return state;
+      const currentIndex = state.tabOrder.indexOf(id);
+      if (currentIndex === -1) return state;
+
+      const minIndex = state.tabOrder[0] === pageTabId("hosts") ? 1 : 0;
+      const maxIndex = state.tabOrder.length - 1;
+      const clampedIndex = Math.min(Math.max(toIndex, minIndex), maxIndex);
+
+      if (clampedIndex === currentIndex) return state;
+
+      const tabOrder = arrayMove(state.tabOrder, currentIndex, clampedIndex);
+      return { tabOrder };
+    }),
 }));
 
 // ─── Domain store sync ──────────────────────────────────────────────────────
