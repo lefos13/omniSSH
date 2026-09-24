@@ -622,17 +622,26 @@ describe("ImportSshConfigModal — password step integration", () => {
     window.HTMLElement.prototype.scrollIntoView = vi.fn();
   });
 
+  /* The footer submit button renders before the scan resolves, so finding it
+   * is not enough: clicking while it is still disabled drops the import. Wait
+   * until the preview has selected rows and the button is enabled. */
+  const clickSubmitWhenReady = async (testId: string) => {
+    const submit = await screen.findByTestId(testId);
+    await waitFor(() => expect(submit).toBeEnabled());
+    fireEvent.click(submit);
+  };
+
   it("shows password step card for MobaXterm results only", async () => {
     render(<ImportSshConfigModal initialSource="mobaxterm" onClose={() => {}} onImported={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: "Browse for MobaXterm file" }));
-    fireEvent.click(await screen.findByTestId("import-mobaxterm-submit"));
+    await clickSubmitWhenReady("import-mobaxterm-submit");
 
     expect(await screen.findByTestId("password-file-import-card")).toBeInTheDocument();
   });
 
   it("shows no password step for the OpenSSH source", async () => {
     render(<ImportSshConfigModal onClose={() => {}} onImported={() => {}} />);
-    fireEvent.click(await screen.findByTestId("import-ssh-config-submit"));
+    await clickSubmitWhenReady("import-ssh-config-submit");
 
     await screen.findByTestId("import-result");
     expect(screen.queryByTestId("password-file-import-card")).not.toBeInTheDocument();
@@ -650,7 +659,7 @@ describe("ImportSshConfigModal — password step integration", () => {
   it("hides add-credentials reminder after a password file save", async () => {
     render(<ImportSshConfigModal initialSource="mobaxterm" onClose={() => {}} onImported={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: "Browse for MobaXterm file" }));
-    fireEvent.click(await screen.findByTestId("import-mobaxterm-submit"));
+    await clickSubmitWhenReady("import-mobaxterm-submit");
     await screen.findByTestId("password-file-import-card");
 
     expect(screen.getByTestId("import-add-credentials-reminder")).toBeInTheDocument();
