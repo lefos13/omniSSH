@@ -421,5 +421,35 @@ describe("MatrixBackground", () => {
     expect(window.localStorage.getItem("matrix_theme_palette")).toBe(JSON.stringify("omnissh"));
     expect(window.localStorage.getItem("matrix_theme_speed")).toBe(JSON.stringify(1));
   });
+
+  it("does not spawn orphaned animation loops on repeated visible events", () => {
+    let nextFrameId = 1;
+    const activeFrames = new Map<number, FrameRequestCallback>();
+    const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb: FrameRequestCallback) => {
+      const id = nextFrameId++;
+      activeFrames.set(id, cb);
+      return id;
+    });
+    const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id: number) => {
+      activeFrames.delete(id);
+    });
+
+    try {
+      const { unmount } = render(<MatrixBackground />);
+      expect(activeFrames.size).toBe(1);
+
+      Object.defineProperty(document, "hidden", { configurable: true, value: false });
+      document.dispatchEvent(new Event("visibilitychange"));
+      document.dispatchEvent(new Event("visibilitychange"));
+
+      unmount();
+
+      expect(activeFrames.size).toBe(0);
+    } finally {
+      rafSpy.mockRestore();
+      cancelSpy.mockRestore();
+    }
+  });
 });
+
 

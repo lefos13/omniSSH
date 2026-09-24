@@ -573,6 +573,11 @@ export function MatrixBackground() {
       if (document.hidden) {
         cancelAnimationFrame(animFrameIdRef.current);
       } else {
+        /*
+         * Cancel any prior frame to maintain the single-chain invariant
+         * before scheduling, preventing redundant events from spawning loops.
+         */
+        cancelAnimationFrame(animFrameIdRef.current);
         lastFrameTime = performance.now();
         animFrameIdRef.current = requestAnimationFrame(drawFrame);
       }

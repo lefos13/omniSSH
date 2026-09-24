@@ -147,6 +147,11 @@ export function useCanvasEffect<S>(
       if (document.hidden) {
         cancelAnimationFrame(animFrameId);
       } else {
+        /*
+         * Cancel any prior frame to maintain the single-chain invariant
+         * before scheduling, preventing redundant events from spawning loops.
+         */
+        cancelAnimationFrame(animFrameId);
         lastFrameTime = performance.now();
         animFrameId = requestAnimationFrame(drawFrame);
       }
