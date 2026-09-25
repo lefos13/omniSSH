@@ -11,6 +11,7 @@ import {
     findHostCardByLabel,
     getHostId,
     openHostEdit,
+    openHostModalTab,
     openNewHostModal,
     setTunnelEnabled,
     waitForModalClosed,
@@ -85,6 +86,7 @@ describe("ProxyJump tunnel UI", () => {
 
         // Persistence: reopen the editor and confirm the toggle stays enabled.
         await openHostEdit("target");
+        await openHostModalTab("connection");
         const checkbox = await $("[data-testid='host-modal-tunnel-enabled']");
         expect(await checkbox.isSelected(), "tunnel toggle should persist").to.equal(true);
     });
@@ -93,6 +95,7 @@ describe("ProxyJump tunnel UI", () => {
         await seedHost("solo");
 
         await openHostEdit("solo");
+        await openHostModalTab("connection");
         const checkbox = await $("[data-testid='host-modal-tunnel-enabled']");
         await checkbox.waitForExist({ timeout: 5_000 });
         expect(

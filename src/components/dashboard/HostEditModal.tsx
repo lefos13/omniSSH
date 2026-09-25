@@ -110,6 +110,127 @@ function savedHostToForm(host: SavedHost): FormState {
   };
 }
 
+// ─── Tabs ─────────────────────────────────────────────────────────────────────
+
+type HostTab = "general" | "connection" | "appearance" | "notes" | "plugins";
+
+const HOST_TABS: { id: HostTab; label: string }[] = [
+  { id: "general", label: "General" },
+  { id: "connection", label: "Connection" },
+  { id: "appearance", label: "Appearance" },
+  { id: "notes", label: "Notes" },
+  { id: "plugins", label: "Plugins" },
+];
+
+/*
+ * WAI-ARIA tab bar for the host editor. Uses a roving tabindex: only the
+ * active tab is in the Tab order and arrow/Home/End keys move selection
+ * (automatic activation), so keyboard users reach the panel with one Tab.
+ * `marked` tabs carry a dot telling the user that the hidden panel holds
+ * non-default settings.
+ */
+function HostTabBar({
+  active,
+  onChange,
+  marked,
+}: {
+  active: HostTab;
+  onChange: (tab: HostTab) => void;
+  marked: Partial<Record<HostTab, boolean>>;
+}) {
+  const tabRefs = useRef<Partial<Record<HostTab, HTMLButtonElement | null>>>({});
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const index = HOST_TABS.findIndex((t) => t.id === active);
+    let next: number | null = null;
+    if (e.key === "ArrowRight") next = (index + 1) % HOST_TABS.length;
+    else if (e.key === "ArrowLeft") next = (index - 1 + HOST_TABS.length) % HOST_TABS.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = HOST_TABS.length - 1;
+    if (next === null) return;
+    e.preventDefault();
+    const tab = HOST_TABS[next].id;
+    onChange(tab);
+    tabRefs.current[tab]?.focus();
+  };
+
+  return (
+    <div
+      role="tablist"
+      aria-label="Host settings"
+      data-testid="host-modal-tabs"
+      onKeyDown={onKeyDown}
+      className="flex items-center gap-1 -mb-px overflow-x-auto"
+    >
+      {HOST_TABS.map((t) => {
+        const selected = t.id === active;
+        return (
+          <button
+            key={t.id}
+            ref={(el) => { tabRefs.current[t.id] = el; }}
+            type="button"
+            role="tab"
+            id={`hem-tab-${t.id}`}
+            aria-selected={selected}
+            aria-controls={`hem-panel-${t.id}`}
+            tabIndex={selected ? 0 : -1}
+            data-testid={`host-modal-tab-${t.id}`}
+            onClick={() => onChange(t.id)}
+            className={[
+              "relative inline-flex items-center gap-1.5 px-3 py-2.5 whitespace-nowrap",
+              "text-[length:var(--text-sm)] font-medium border-b-2",
+              "transition-colors duration-[var(--duration-fast)]",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-t-md",
+              selected
+                ? "border-accent text-text-primary"
+                : "border-transparent text-text-muted hover:text-text-primary",
+            ].join(" ")}
+          >
+            {t.label}
+            {marked[t.id] && (
+              <>
+                <span className="w-1.5 h-1.5 rounded-full bg-accent" aria-hidden="true" />
+                <span className="sr-only">(configured)</span>
+              </>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/* Inactive panels stay mounted (display:none) so per-panel state such as the
+ * plugins list survives tab switches and every field keeps its id for labels. */
+function TabPanel({
+  id,
+  active,
+  children,
+}: {
+  id: HostTab;
+  active: HostTab;
+  children: React.ReactNode;
+}) {
+  const selected = id === active;
+  return (
+    <div
+      role="tabpanel"
+      id={`hem-panel-${id}`}
+      aria-labelledby={`hem-tab-${id}`}
+      data-testid={`host-modal-panel-${id}`}
+      hidden={!selected}
+      tabIndex={0}
+      className={
+        selected
+          ? "flex flex-col gap-3.5 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          : "hidden"
+      }
+    >
+      {children}
+    </div>
+  );
+}
+
 // ─── Section header ───────────────────────────────────────────────────────────
 
 function SectionHeader({ children }: { children: React.ReactNode }) {
@@ -254,6 +375,14 @@ export function HostEditModal() {
   const [detachConfirm, setDetachConfirm] = useState<string | null>(null);
   const [detaching, setDetaching] = useState(false);
   const firstInputRef = useRef<HTMLInputElement>(null);
+  const [activeTab, setActiveTab] = useState<HostTab>("general");
+
+  /* Panels share one scrolling body, so a new tab starts at its top instead of
+   * inheriting the previous panel's scroll offset. */
+  useEffect(() => {
+    const body = document.getElementById(`hem-panel-${activeTab}`)?.closest(".overflow-y-auto");
+    if (body) body.scrollTop = 0;
+  }, [activeTab]);
 
   const isOpen = editingHostId !== null;
 
@@ -304,6 +433,7 @@ export function HostEditModal() {
     setManagedBy([]);
     setDetachConfirm(null);
     setDetaching(false);
+    setActiveTab("general");
 
     // Load groups + hosts (for the tunnel dropdown) in parallel
     loadGroups().catch(() => {/* non-fatal */});
@@ -375,29 +505,53 @@ export function HostEditModal() {
   };
 
   // ── Validation ──────────────────────────────────────────────────────────────
-  const validate = (): string | null => {
-    if (!form.host.trim()) return "Host is required";
-    if (!form.username.trim()) return "Username is required";
+  /* Each failure names the tab and field it concerns so the modal can switch
+   * to that tab and focus the field — an error about a hidden field is
+   * otherwise unactionable, especially from the keyboard. */
+  const validate = (): { message: string; tab: HostTab; field: string } | null => {
+    if (!form.host.trim()) return { message: "Host is required", tab: "general", field: "hem-host" };
+    if (!form.username.trim()) {
+      return { message: "Username is required", tab: "general", field: "hem-username" };
+    }
     const portNum = parseInt(form.port, 10);
     if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
-      return "Port must be between 1 and 65535";
+      return { message: "Port must be between 1 and 65535", tab: "general", field: "hem-port" };
     }
     if (form.keepAliveInterval !== "") {
       const kai = parseInt(form.keepAliveInterval, 10);
-      if (isNaN(kai) || kai < 0) return "Keep Alive must be a positive number";
+      if (isNaN(kai) || kai < 0) {
+        return { message: "Keep Alive must be a positive number", tab: "connection", field: "hem-keepalive" };
+      }
     }
     if (tunnelEnabled) {
       const candidates = hosts.filter((h) => h.id !== originalHost?.id);
       if (candidates.length === 0) {
-        return "No other saved hosts are available to tunnel through";
+        return {
+          message: "No other saved hosts are available to tunnel through",
+          tab: "connection",
+          field: "hem-tunnel-host",
+        };
       }
       // Rejects both an empty selection and a stale one whose host no longer
       // exists in the dropdown (e.g. it was deleted while the modal was open).
       if (!candidates.some((h) => h.id === form.proxyJumpHostId)) {
-        return "Select a tunnel host or disable the SSH tunnel";
+        return {
+          message: "Select a tunnel host or disable the SSH tunnel",
+          tab: "connection",
+          field: "hem-tunnel-host",
+        };
       }
     }
     return null;
+  };
+
+  const runValidation = (): boolean => {
+    const failure = validate();
+    if (!failure) return true;
+    setError(failure.message);
+    setActiveTab(failure.tab);
+    requestAnimationFrame(() => document.getElementById(failure.field)?.focus());
+    return false;
   };
 
   // ── Build SavedHost from form (works for both new and edit) ─────────────────
@@ -512,10 +666,7 @@ export function HostEditModal() {
    * leaves missing. Detaching to type a password would drop the host out of
    * sync, which is a much bigger hammer than the job needs. */
   const handleSave = async () => {
-    if (!managed) {
-      const validationError = validate();
-      if (validationError) { setError(validationError); return; }
-    }
+    if (!managed && !runValidation()) return;
     if (!await prepareCredentialStorage(handleSave)) return;
 
     setSaving(true);
@@ -573,10 +724,7 @@ export function HostEditModal() {
 
   // ── Connect (save → vault → connect_saved_host) ─────────────────────────────
   const handleConnect = async () => {
-    if (!managed) {
-      const validationError = validate();
-      if (validationError) { setError(validationError); return; }
-    }
+    if (!managed && !runValidation()) return;
     if (!await prepareCredentialStorage(handleConnect)) return;
 
     setConnecting(true);
@@ -661,6 +809,24 @@ export function HostEditModal() {
   const lockReason = managed
     ? `Managed by ${managedBy.map((m) => m.name).join(", ")}`
     : undefined;
+  const tabMarks: Partial<Record<HostTab, boolean>> = {
+    connection: tunnelEnabled || [
+      form.keepAliveInterval,
+      form.defaultShell,
+      form.startupCommand,
+      form.startDirectory,
+    ].some((v) => v.trim() !== ""),
+    appearance: [form.color, form.terminalTheme, form.environment, form.osType]
+      .some((v) => v !== ""),
+    notes: form.notes.trim() !== "",
+  };
+  /* Live connection target under the title, e.g. "root@10.0.0.5:2222"; the
+   * default port is omitted to keep the common case short. */
+  const targetPreview = form.host.trim()
+    ? `${form.username.trim() ? `${form.username.trim()}@` : ""}${form.host.trim()}${
+      form.port.trim() && form.port.trim() !== "22" ? `:${form.port.trim()}` : ""
+    }`
+    : undefined;
   // ── Shared input class ───────────────────────────────────────────────────────
   /* The trailing disabled:* variants are what make a locked field read as
    * read-only (dimmed value, not-allowed cursor) instead of looking editable. */
@@ -678,12 +844,18 @@ export function HostEditModal() {
       open={isOpen}
       onClose={handleClose}
       title={isNewHost ? "New Host" : "Edit Host"}
+      subtitle={targetPreview}
       icon={Monitor}
       maxWidth="lg"
       scrollable
       busy={isBusy}
       testId="host-modal"
       dataAttributes={{ "data-host-modal-mode": isNewHost ? "new" : "edit" }}
+      subheader={
+        loadingHost ? undefined : (
+          <HostTabBar active={activeTab} onChange={setActiveTab} marked={tabMarks} />
+        )
+      }
       footerStart={
         !isNewHost ? (
           deleteConfirm ? (
@@ -725,7 +897,7 @@ export function HostEditModal() {
           {loadingHost ? (
             <LoadingSkeleton />
           ) : (
-            <div className="flex flex-col gap-3.5">
+            <div className="flex flex-col gap-3.5 min-h-[22rem]">
               {managedBy.length > 0 && (
                 <div
                   data-testid="host-modal-managed-banner"
@@ -780,82 +952,97 @@ export function HostEditModal() {
                 </div>
               )}
 
-              {/* ════════════════ CONNECTION ════════════════ */}
-              <SectionHeader>Connection</SectionHeader>
-              {/* Label */}
-              <div title={lockReason}>
-                <label htmlFor="hem-label" className={labelClass}>
-                  Label
-                  <span className="ml-1 text-text-muted font-normal">(optional)</span>
-                </label>
-                <input
-                  ref={firstInputRef}
-                  id="hem-label"
-                  data-testid="host-modal-label"
-                  type="text"
-                  value={form.label}
-                  onChange={(e) => setField("label", e.target.value)}
-                  placeholder="e.g., Production Server"
-                  disabled={fieldsLocked}
-                  className={inputClass}
-                />
-              </div>
+              <TabPanel id="general" active={activeTab}>
+                {/* Label + Group row */}
+                <div className="flex gap-3">
+                  <div className="flex-1 min-w-0" title={lockReason}>
+                    <label htmlFor="hem-label" className={labelClass}>
+                      Label
+                      <span className="ml-1 text-text-muted font-normal">(optional)</span>
+                    </label>
+                    <input
+                      ref={firstInputRef}
+                      id="hem-label"
+                      data-testid="host-modal-label"
+                      type="text"
+                      value={form.label}
+                      onChange={(e) => setField("label", e.target.value)}
+                      placeholder="e.g., Production Server"
+                      disabled={fieldsLocked}
+                      className={inputClass}
+                    />
+                  </div>
+                  <div className="w-44 shrink-0" title={lockReason}>
+                    <label htmlFor="hem-group" className={labelClass}>
+                      Group
+                    </label>
+                    <GroupSelect
+                      id="hem-group"
+                      value={form.groupId}
+                      onChange={(val) => setField("groupId", val)}
+                      groups={groups}
+                      disabled={fieldsLocked}
+                      inputClass={inputClass}
+                    />
+                  </div>
+                </div>
 
-              {/* Host + Port row */}
-              <div className="flex gap-3" title={lockReason}>
-                <div className="flex-1">
-                  <label htmlFor="hem-host" className={labelClass}>
-                    Host <RequiredMark />
+                {/* Host + Port row */}
+                <div className="flex gap-3" title={lockReason}>
+                  <div className="flex-1">
+                    <label htmlFor="hem-host" className={labelClass}>
+                      Host <RequiredMark />
+                    </label>
+                    <input
+                      id="hem-host"
+                      data-testid="host-modal-host"
+                      type="text"
+                      value={form.host}
+                      onChange={(e) => setField("host", e.target.value)}
+                      placeholder="192.168.1.1 or hostname"
+                      disabled={fieldsLocked}
+                      className={`${inputClass} font-mono`}
+                    />
+                  </div>
+                  <div className="w-20">
+                    <label htmlFor="hem-port" className={labelClass}>
+                      Port <RequiredMark />
+                    </label>
+                    <input
+                      id="hem-port"
+                      data-testid="host-modal-port"
+                      type="number"
+                      min={1}
+                      max={65535}
+                      value={form.port}
+                      onChange={(e) => setField("port", e.target.value)}
+                      disabled={fieldsLocked}
+                      className={`${inputClass} font-mono`}
+                    />
+                  </div>
+                </div>
+
+                {/* Username */}
+                <div title={lockReason}>
+                  <label htmlFor="hem-username" className={labelClass}>
+                    Username <RequiredMark />
                   </label>
                   <input
-                    id="hem-host"
-                    data-testid="host-modal-host"
+                    id="hem-username"
+                    data-testid="host-modal-username"
                     type="text"
-                    value={form.host}
-                    onChange={(e) => setField("host", e.target.value)}
-                    placeholder="192.168.1.1 or hostname"
+                    value={form.username}
+                    onChange={(e) => setField("username", e.target.value)}
+                    placeholder="root"
                     disabled={fieldsLocked}
                     className={`${inputClass} font-mono`}
                   />
                 </div>
-                <div className="w-20">
-                  <label htmlFor="hem-port" className={labelClass}>
-                    Port <RequiredMark />
-                  </label>
-                  <input
-                    id="hem-port"
-                    data-testid="host-modal-port"
-                    type="number"
-                    min={1}
-                    max={65535}
-                    value={form.port}
-                    onChange={(e) => setField("port", e.target.value)}
-                    disabled={fieldsLocked}
-                    className={`${inputClass} font-mono`}
-                  />
-                </div>
-              </div>
 
-              {/* Username */}
-              <div title={lockReason}>
-                <label htmlFor="hem-username" className={labelClass}>
-                  Username <RequiredMark />
-                </label>
-                <input
-                  id="hem-username"
-                  data-testid="host-modal-username"
-                  type="text"
-                  value={form.username}
-                  onChange={(e) => setField("username", e.target.value)}
-                  placeholder="root"
-                  disabled={fieldsLocked}
-                  className={`${inputClass} font-mono`}
-                />
-              </div>
+                <SectionHeader>Authentication</SectionHeader>
 
-              {/* Auth Type + Group row */}
-              <div className="flex gap-3" title={lockReason}>
-                <div className="flex-1">
+                {/* Auth type */}
+                <div title={lockReason}>
                   <label htmlFor="hem-auth" className={labelClass}>
                     Auth Type
                   </label>
@@ -872,425 +1059,416 @@ export function HostEditModal() {
                   />
                 </div>
 
-                <div className="flex-1">
-                  <label htmlFor="hem-group" className={labelClass}>
-                    Group
-                  </label>
-                  <GroupSelect
-                    id="hem-group"
-                    value={form.groupId}
-                    onChange={(val) => setField("groupId", val)}
-                    groups={groups}
-                    disabled={fieldsLocked}
-                    inputClass={inputClass}
-                  />
-                </div>
-              </div>
-
-              {/* Auth credentials — conditional on auth type */}
-              {form.authType === "password" ? (
-                <div>
-                  <label htmlFor="hem-password" className={labelClass}>
-                    Password
-                  </label>
-                  <div className="relative">
-                    <input
-                      id="hem-password"
-                      data-testid="host-modal-password"
-                      type={showNewPassword ? "text" : "password"}
-                      value={form.password}
-                      onChange={(e) => setField("password", e.target.value)}
-                      placeholder={
-                        hasSavedCred && !credCleared && !form.password
-                          ? "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
-                          : "Enter password to connect"
-                      }
-                      disabled={isBusy}
-                      className={`${inputClass} pr-10`}
-                    />
-                    {form.password && (
-                      <button
-                        type="button"
-                        onClick={() => setShowNewPassword((prev) => !prev)}
+                {/* Auth credentials — conditional on auth type */}
+                {form.authType === "password" ? (
+                  <div>
+                    <label htmlFor="hem-password" className={labelClass}>
+                      Password
+                    </label>
+                    <div className="relative">
+                      <input
+                        id="hem-password"
+                        data-testid="host-modal-password"
+                        type={showNewPassword ? "text" : "password"}
+                        value={form.password}
+                        onChange={(e) => setField("password", e.target.value)}
+                        placeholder={
+                          hasSavedCred && !credCleared && !form.password
+                            ? "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
+                            : "Enter password to connect"
+                        }
                         disabled={isBusy}
-                        aria-label={showNewPassword ? "Hide password" : "Show password"}
-                        className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-text-muted hover:text-text-primary rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      >
-                        {showNewPassword ? <EyeOff size={15} /> : <Eye size={15} />}
-                      </button>
-                    )}
-                  </div>
-                  <CredentialStatus
-                    visible={hasSavedCred && !credCleared && !form.password}
-                    busy={isBusy}
-                    storage={credentialStorage}
-                    onClear={() => setCredCleared(true)}
-                    onReveal={() => setRevealDialogOpen(true)}
-                  />
-                  <MissingCredentialNotice
-                    visible={!loadingHost && !isNewHost && (!hasSavedCred || credCleared) && !form.password}
-                  />
-                  <div className="mt-3">
-                    <label htmlFor="hem-password-storage" className={labelClass}>
-                      Password Storage
-                    </label>
-                    <CustomSelect
-                      id="hem-password-storage"
-                      data-testid="host-modal-password-storage"
-                      value={credentialStorage}
-                      onChange={(value) => setCredentialStorage(value as CredentialStorage)}
-                      disabled={isBusy}
-                      options={[
-                        { value: "keychain", label: "System Keychain" },
-                        { value: "localVault", label: "Encrypted App Vault" },
-                      ]}
-                    />
-                    <p className="mt-1 text-[length:var(--text-2xs)] text-text-muted">
-                      {credentialStorage === "localVault"
-                        ? "Unlocked once per OmniSSH session with your master password."
-                        : "Uses your operating system’s protected Keychain."}
-                    </p>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <div title={lockReason}>
-                    <label htmlFor="hem-keypath" className={labelClass}>
-                      SSH Key
-                    </label>
-                    <div className="flex gap-2">
-                      <div className="flex-1 min-w-0">
-                        {sshKeys.length > 0 ? (
-                          <CustomSelect
-                            id="hem-keypath"
-                            data-testid="host-modal-keypath-select"
-                            value={form.keyPath}
-                            onChange={(v) => setField("keyPath", v)}
-                            disabled={fieldsLocked}
-                            placeholder="Select a key..."
-                            options={sshKeys.map((key) => ({
-                              value: key.path,
-                              label: `${key.name} (${key.algorithm})`,
-                            }))}
-                          />
-                        ) : (
-                          <input
-                            id="hem-keypath"
-                            data-testid="host-modal-keypath"
-                            type="text"
-                            value={form.keyPath}
-                            onChange={(e) => setField("keyPath", e.target.value)}
-                            placeholder="~/.ssh/id_ed25519"
-                            disabled={fieldsLocked}
-                            className={`${inputClass} font-mono`}
-                          />
-                        )}
-                      </div>
-                      <button
-                        type="button"
-                        disabled={fieldsLocked}
-                        onClick={() => {
-                          void (async () => {
-                            try {
-                              const { open } = await import("@tauri-apps/plugin-dialog");
-                              const { invoke } = await import("@tauri-apps/api/core");
-                              const path = await open({
-                                title: "Select SSH Private Key (Cmd+Shift+. to show hidden files)",
-                                multiple: false,
-                              });
-                              if (path && typeof path === "string") {
-                                // Validate and inspect the key
-                                try {
-                                  const keyInfo = await invoke<import("../../types").SshKeyInfo>("inspect_ssh_key", { path });
-                                  setField("keyPath", keyInfo.path);
-                                  if (!sshKeys.some((k) => k.path === keyInfo.path)) {
-                                    setSshKeys((prev) => [...prev, keyInfo]);
-                                  }
-                                } catch (err) {
-                                  const msg = err && typeof err === "object" && "message" in err
-                                    ? String((err as { message: string }).message)
-                                    : "Invalid key file";
-                                  setError(msg);
-                                }
-                              }
-                            } catch {
-                              // Dialog cancelled or unavailable
-                            }
-                          })();
-                        }}
-                        className={[
-                          "px-3 py-2 rounded-lg text-[length:var(--text-sm)] font-medium shrink-0",
-                          "bg-bg-base border border-border text-text-secondary",
-                          "hover:border-border-focus hover:text-text-primary hover:bg-bg-overlay",
-                          "transition-all duration-[var(--duration-fast)]",
-                          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                          "disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-border disabled:hover:text-text-secondary disabled:hover:bg-bg-base",
-                        ].join(" ")}
-                      >
-                        Browse
-                      </button>
+                        className={`${inputClass} pr-10`}
+                      />
+                      {form.password && (
+                        <button
+                          type="button"
+                          onClick={() => setShowNewPassword((prev) => !prev)}
+                          disabled={isBusy}
+                          aria-label={showNewPassword ? "Hide password" : "Show password"}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-text-muted hover:text-text-primary rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          {showNewPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                        </button>
+                      )}
                     </div>
-                    {form.keyPath && !sshKeys.some((k) => k.path === form.keyPath) && (
-                      <p className="text-[length:var(--text-2xs)] font-mono text-text-muted mt-1 truncate" title={form.keyPath}>
-                        {form.keyPath}
-                      </p>
-                    )}
-                  </div>
-                  <div title={lockReason}>
-                    <label htmlFor="hem-passphrase" className={labelClass}>
-                      Passphrase
-                      <span className="ml-1 text-text-muted font-normal">(optional)</span>
-                    </label>
-                    <input
-                      id="hem-passphrase"
-                      type="password"
-                      value={form.passphrase}
-                      onChange={(e) => setField("passphrase", e.target.value)}
-                      placeholder={
-                        hasSavedCred && !credCleared && !form.passphrase
-                          ? "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
-                          : "Leave empty if none"
-                      }
-                      disabled={fieldsLocked}
-                      className={inputClass}
-                    />
                     <CredentialStatus
-                      visible={hasSavedCred && !credCleared && !form.passphrase}
+                      visible={hasSavedCred && !credCleared && !form.password}
                       busy={isBusy}
+                      storage={credentialStorage}
                       onClear={() => setCredCleared(true)}
+                      onReveal={() => setRevealDialogOpen(true)}
                     />
+                    <MissingCredentialNotice
+                      visible={!loadingHost && !isNewHost && (!hasSavedCred || credCleared) && !form.password}
+                    />
+                    <div className="mt-3">
+                      <label htmlFor="hem-password-storage" className={labelClass}>
+                        Password Storage
+                      </label>
+                      <CustomSelect
+                        id="hem-password-storage"
+                        data-testid="host-modal-password-storage"
+                        value={credentialStorage}
+                        onChange={(value) => setCredentialStorage(value as CredentialStorage)}
+                        disabled={isBusy}
+                        options={[
+                          { value: "keychain", label: "System Keychain" },
+                          { value: "localVault", label: "Encrypted App Vault" },
+                        ]}
+                      />
+                      <p className="mt-1 text-[length:var(--text-2xs)] text-text-muted">
+                        {credentialStorage === "localVault"
+                          ? "Unlocked once per OmniSSH session with your master password."
+                          : "Uses your operating system’s protected Keychain."}
+                      </p>
+                    </div>
                   </div>
-                </>
-              )}
+                ) : (
+                  <>
+                    <div title={lockReason}>
+                      <label htmlFor="hem-keypath" className={labelClass}>
+                        SSH Key
+                      </label>
+                      <div className="flex gap-2">
+                        <div className="flex-1 min-w-0">
+                          {sshKeys.length > 0 ? (
+                            <CustomSelect
+                              id="hem-keypath"
+                              data-testid="host-modal-keypath-select"
+                              value={form.keyPath}
+                              onChange={(v) => setField("keyPath", v)}
+                              disabled={fieldsLocked}
+                              placeholder="Select a key..."
+                              options={sshKeys.map((key) => ({
+                                value: key.path,
+                                label: `${key.name} (${key.algorithm})`,
+                              }))}
+                            />
+                          ) : (
+                            <input
+                              id="hem-keypath"
+                              data-testid="host-modal-keypath"
+                              type="text"
+                              value={form.keyPath}
+                              onChange={(e) => setField("keyPath", e.target.value)}
+                              placeholder="~/.ssh/id_ed25519"
+                              disabled={fieldsLocked}
+                              className={`${inputClass} font-mono`}
+                            />
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          disabled={fieldsLocked}
+                          onClick={() => {
+                            void (async () => {
+                              try {
+                                const { open } = await import("@tauri-apps/plugin-dialog");
+                                const { invoke } = await import("@tauri-apps/api/core");
+                                const path = await open({
+                                  title: "Select SSH Private Key (Cmd+Shift+. to show hidden files)",
+                                  multiple: false,
+                                });
+                                if (path && typeof path === "string") {
+                                  // Validate and inspect the key
+                                  try {
+                                    const keyInfo = await invoke<import("../../types").SshKeyInfo>("inspect_ssh_key", { path });
+                                    setField("keyPath", keyInfo.path);
+                                    if (!sshKeys.some((k) => k.path === keyInfo.path)) {
+                                      setSshKeys((prev) => [...prev, keyInfo]);
+                                    }
+                                  } catch (err) {
+                                    const msg = err && typeof err === "object" && "message" in err
+                                      ? String((err as { message: string }).message)
+                                      : "Invalid key file";
+                                    setError(msg);
+                                  }
+                                }
+                              } catch {
+                                // Dialog cancelled or unavailable
+                              }
+                            })();
+                          }}
+                          className={[
+                            "px-3 py-2 rounded-lg text-[length:var(--text-sm)] font-medium shrink-0",
+                            "bg-bg-base border border-border text-text-secondary",
+                            "hover:border-border-focus hover:text-text-primary hover:bg-bg-overlay",
+                            "transition-all duration-[var(--duration-fast)]",
+                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                            "disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-border disabled:hover:text-text-secondary disabled:hover:bg-bg-base",
+                          ].join(" ")}
+                        >
+                          Browse
+                        </button>
+                      </div>
+                      {form.keyPath && !sshKeys.some((k) => k.path === form.keyPath) && (
+                        <p className="text-[length:var(--text-2xs)] font-mono text-text-muted mt-1 truncate" title={form.keyPath}>
+                          {form.keyPath}
+                        </p>
+                      )}
+                    </div>
+                    <div title={lockReason}>
+                      <label htmlFor="hem-passphrase" className={labelClass}>
+                        Passphrase
+                        <span className="ml-1 text-text-muted font-normal">(optional)</span>
+                      </label>
+                      <input
+                        id="hem-passphrase"
+                        type="password"
+                        value={form.passphrase}
+                        onChange={(e) => setField("passphrase", e.target.value)}
+                        placeholder={
+                          hasSavedCred && !credCleared && !form.passphrase
+                            ? "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
+                            : "Leave empty if none"
+                        }
+                        disabled={fieldsLocked}
+                        className={inputClass}
+                      />
+                      <CredentialStatus
+                        visible={hasSavedCred && !credCleared && !form.passphrase}
+                        busy={isBusy}
+                        onClear={() => setCredCleared(true)}
+                      />
+                    </div>
+                  </>
+                )}
 
-              {/* ════════════════ TUNNEL ════════════════ */}
-              <SectionHeader>Tunnel</SectionHeader>
+              </TabPanel>
 
-              <TunnelSection
-                enabled={tunnelEnabled}
-                onToggle={(on) => {
-                  setError(null);
-                  setTunnelEnabled(on);
-                  if (!on) setField("proxyJumpHostId", "");
-                }}
-                value={form.proxyJumpHostId}
-                onChange={(v) => setField("proxyJumpHostId", v)}
-                hosts={hosts}
-                currentHostId={originalHost?.id ?? null}
-                disabled={fieldsLocked}
-                labelClass={labelClass}
-                lockReason={lockReason}
-              />
+              <TabPanel id="connection" active={activeTab}>
+                <SectionHeader>SSH Tunnel</SectionHeader>
 
-              {/* Keep Alive + Default Shell row */}
-              <div className="flex gap-3" title={lockReason}>
-                <div className="flex-1">
-                  <label htmlFor="hem-keepalive" className={labelClass}>
-                    Keep Alive
-                    <span className="ml-1 text-text-muted font-normal">(seconds)</span>
-                  </label>
-                  <input
-                    id="hem-keepalive"
-                    type="number"
-                    min={0}
-                    value={form.keepAliveInterval}
-                    onChange={(e) => setField("keepAliveInterval", e.target.value)}
-                    placeholder="60"
-                    disabled={fieldsLocked}
-                    className={`${inputClass} font-mono`}
-                  />
-                </div>
-                <div className="flex-1">
-                  <label htmlFor="hem-shell" className={labelClass}>
-                    Default Shell
-                  </label>
-                  <input
-                    id="hem-shell"
-                    type="text"
-                    value={form.defaultShell}
-                    onChange={(e) => setField("defaultShell", e.target.value)}
-                    placeholder="/bin/zsh"
-                    disabled={fieldsLocked}
-                    className={`${inputClass} font-mono`}
-                  />
-                </div>
-              </div>
-
-              {/* Startup Command */}
-              <div title={lockReason}>
-                <label htmlFor="hem-startup" className={labelClass}>
-                  Startup Command
-                  <span className="ml-1 text-text-muted font-normal">(optional)</span>
-                </label>
-                <input
-                  id="hem-startup"
-                  data-testid="host-modal-startup-command"
-                  type="text"
-                  value={form.startupCommand}
-                  onChange={(e) => setField("startupCommand", e.target.value)}
-                  placeholder="cd /app && tail -f logs"
+                <TunnelSection
+                  enabled={tunnelEnabled}
+                  onToggle={(on) => {
+                    setError(null);
+                    setTunnelEnabled(on);
+                    if (!on) setField("proxyJumpHostId", "");
+                  }}
+                  value={form.proxyJumpHostId}
+                  onChange={(v) => setField("proxyJumpHostId", v)}
+                  hosts={hosts}
+                  currentHostId={originalHost?.id ?? null}
                   disabled={fieldsLocked}
-                  className={`${inputClass} font-mono`}
-                />
-                {/* TODO: startup_command execution should be handled in the Rust backend
-                    after the shell prompt is detected — not sent as raw input from the frontend. */}
-              </div>
-
-              {/* Start Directory */}
-              <div title={lockReason}>
-                <label htmlFor="hem-start-dir" className={labelClass}>
-                  Start Directory
-                  <span className="ml-1 text-text-muted font-normal">(optional)</span>
-                </label>
-                <input
-                  id="hem-start-dir"
-                  data-testid="host-modal-start-directory"
-                  type="text"
-                  value={form.startDirectory}
-                  onChange={(e) => setField("startDirectory", e.target.value)}
-                  placeholder="~/projects or /var/www"
-                  disabled={fieldsLocked}
-                  className={`${inputClass} font-mono`}
-                />
-                <p className="mt-1 text-[length:var(--text-xs)] text-text-muted">
-                  Directory the file browser opens in. Defaults to the home folder.
-                </p>
-              </div>
-
-              {/* ════════════════ APPEARANCE ════════════════ */}
-              <SectionHeader>Appearance</SectionHeader>
-
-              {/* Color swatches */}
-              <div title={lockReason}>
-                <span className={labelClass}>Color</span>
-                <div className="flex items-center gap-2 flex-wrap">
-                  {/* Auto option — clears custom color */}
-                  <button
-                    type="button"
-                    onClick={() => setField("color", "")}
-                    disabled={fieldsLocked}
-                    title={fieldsLocked && lockReason ? lockReason : "Auto (hash-based)"}
-                    aria-label="Auto color"
-                    className={[
-                      "w-6 h-6 rounded-full border-2 text-[11px] font-bold",
-                      "flex items-center justify-center",
-                      "transition-[border-color,box-shadow] duration-[var(--duration-fast)]",
-                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                      "disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100",
-                      form.color === ""
-                        ? "border-border-focus ring-2 ring-ring"
-                        : "border-border hover:border-border-focus",
-                    ].join(" ")}
-                    style={{ background: "conic-gradient(#ef4444, #f97316, #eab308, #22c55e, #06b6d4, #8b5cf6, #ef4444)" }}
-                  >
-                    <span className="sr-only">Auto</span>
-                  </button>
-
-                  {HOST_COLORS.map((c) => (
-                    <button
-                      key={c}
-                      type="button"
-                      onClick={() => setField("color", c)}
-                      disabled={fieldsLocked}
-                      title={fieldsLocked && lockReason ? lockReason : c}
-                      aria-label={`Color ${c}`}
-                      aria-pressed={form.color === c}
-                      className={[
-                        "w-6 h-6 rounded-full border-2",
-                        "transition-[border-color,box-shadow] duration-[var(--duration-fast)]",
-                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-bg-overlay",
-                        "disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100",
-                        form.color === c
-                          ? "border-white ring-2 ring-ring scale-110"
-                          : "border-transparent hover:border-white/60 hover:scale-105",
-                      ].join(" ")}
-                      style={{ backgroundColor: c }}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              {/* Terminal color scheme */}
-              <div title={lockReason}>
-                <span className={labelClass}>Terminal theme</span>
-                <TerminalThemePicker
-                  value={form.terminalTheme}
-                  onChange={(v) => setField("terminalTheme", v)}
-                  disabled={fieldsLocked}
+                  labelClass={labelClass}
                   lockReason={lockReason}
                 />
-                <p className="mt-1 text-[length:var(--text-xs)] text-text-muted">
-                  Colors this host&apos;s terminal uses. Hosts without a theme follow the
-                  app theme.
-                </p>
-              </div>
 
-              {/* Environment + OS Type row */}
-              <div className="flex gap-3" title={lockReason}>
-                <div className="flex-1">
-                  <label htmlFor="hem-env" className={labelClass}>
-                    Environment
+                <SectionHeader>Session</SectionHeader>
+
+                {/* Keep Alive + Default Shell row */}
+                <div className="flex gap-3" title={lockReason}>
+                  <div className="flex-1">
+                    <label htmlFor="hem-keepalive" className={labelClass}>
+                      Keep Alive
+                      <span className="ml-1 text-text-muted font-normal">(seconds)</span>
+                    </label>
+                    <input
+                      id="hem-keepalive"
+                      type="number"
+                      min={0}
+                      value={form.keepAliveInterval}
+                      onChange={(e) => setField("keepAliveInterval", e.target.value)}
+                      placeholder="60"
+                      disabled={fieldsLocked}
+                      className={`${inputClass} font-mono`}
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <label htmlFor="hem-shell" className={labelClass}>
+                      Default Shell
+                    </label>
+                    <input
+                      id="hem-shell"
+                      type="text"
+                      value={form.defaultShell}
+                      onChange={(e) => setField("defaultShell", e.target.value)}
+                      placeholder="/bin/zsh"
+                      disabled={fieldsLocked}
+                      className={`${inputClass} font-mono`}
+                    />
+                  </div>
+                </div>
+
+                {/* Startup Command */}
+                <div title={lockReason}>
+                  <label htmlFor="hem-startup" className={labelClass}>
+                    Startup Command
+                    <span className="ml-1 text-text-muted font-normal">(optional)</span>
                   </label>
-                  <CustomSelect
-                    id="hem-env"
-                    value={form.environment}
-                    onChange={(v) => setField("environment", v)}
+                  <input
+                    id="hem-startup"
+                    data-testid="host-modal-startup-command"
+                    type="text"
+                    value={form.startupCommand}
+                    onChange={(e) => setField("startupCommand", e.target.value)}
+                    placeholder="cd /app && tail -f logs"
                     disabled={fieldsLocked}
-                    placeholder="None"
-                    options={[
-                      { value: "", label: "None" },
-                      { value: "production", label: "Production" },
-                      { value: "staging", label: "Staging" },
-                      { value: "dev", label: "Dev" },
-                      { value: "testing", label: "Testing" },
-                    ]}
+                    className={`${inputClass} font-mono`}
+                  />
+                  {/* TODO: startup_command execution should be handled in the Rust backend
+                      after the shell prompt is detected — not sent as raw input from the frontend. */}
+                </div>
+
+                {/* Start Directory */}
+                <div title={lockReason}>
+                  <label htmlFor="hem-start-dir" className={labelClass}>
+                    Start Directory
+                    <span className="ml-1 text-text-muted font-normal">(optional)</span>
+                  </label>
+                  <input
+                    id="hem-start-dir"
+                    data-testid="host-modal-start-directory"
+                    type="text"
+                    value={form.startDirectory}
+                    onChange={(e) => setField("startDirectory", e.target.value)}
+                    placeholder="~/projects or /var/www"
+                    disabled={fieldsLocked}
+                    className={`${inputClass} font-mono`}
+                  />
+                  <p className="mt-1 text-[length:var(--text-xs)] text-text-muted">
+                    Directory the file browser opens in. Defaults to the home folder.
+                  </p>
+                </div>
+
+              </TabPanel>
+
+              <TabPanel id="appearance" active={activeTab}>
+                {/* Color swatches */}
+                <div title={lockReason}>
+                  <span className={labelClass}>Color</span>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {/* Auto option — clears custom color */}
+                    <button
+                      type="button"
+                      onClick={() => setField("color", "")}
+                      disabled={fieldsLocked}
+                      title={fieldsLocked && lockReason ? lockReason : "Auto (hash-based)"}
+                      aria-label="Auto color"
+                      className={[
+                        "w-6 h-6 rounded-full border-2 text-[11px] font-bold",
+                        "flex items-center justify-center",
+                        "transition-[border-color,box-shadow] duration-[var(--duration-fast)]",
+                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                        "disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100",
+                        form.color === ""
+                          ? "border-border-focus ring-2 ring-ring"
+                          : "border-border hover:border-border-focus",
+                      ].join(" ")}
+                      style={{ background: "conic-gradient(#ef4444, #f97316, #eab308, #22c55e, #06b6d4, #8b5cf6, #ef4444)" }}
+                    >
+                      <span className="sr-only">Auto</span>
+                    </button>
+
+                    {HOST_COLORS.map((c) => (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => setField("color", c)}
+                        disabled={fieldsLocked}
+                        title={fieldsLocked && lockReason ? lockReason : c}
+                        aria-label={`Color ${c}`}
+                        aria-pressed={form.color === c}
+                        className={[
+                          "w-6 h-6 rounded-full border-2",
+                          "transition-[border-color,box-shadow] duration-[var(--duration-fast)]",
+                          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-bg-overlay",
+                          "disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100",
+                          form.color === c
+                            ? "border-white ring-2 ring-ring scale-110"
+                            : "border-transparent hover:border-white/60 hover:scale-105",
+                        ].join(" ")}
+                        style={{ backgroundColor: c }}
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                {/* Environment + OS Type row */}
+                <div className="flex gap-3" title={lockReason}>
+                  <div className="flex-1">
+                    <label htmlFor="hem-env" className={labelClass}>
+                      Environment
+                    </label>
+                    <CustomSelect
+                      id="hem-env"
+                      value={form.environment}
+                      onChange={(v) => setField("environment", v)}
+                      disabled={fieldsLocked}
+                      placeholder="None"
+                      options={[
+                        { value: "", label: "None" },
+                        { value: "production", label: "Production" },
+                        { value: "staging", label: "Staging" },
+                        { value: "dev", label: "Dev" },
+                        { value: "testing", label: "Testing" },
+                      ]}
+                    />
+                  </div>
+
+                  <div className="flex-1">
+                    <label htmlFor="hem-os" className={labelClass}>
+                      OS Type
+                    </label>
+                    <CustomSelect
+                      id="hem-os"
+                      value={form.osType}
+                      onChange={(v) => setField("osType", v)}
+                      disabled={fieldsLocked}
+                      placeholder="Auto"
+                      options={[
+                        { value: "", label: "Auto" },
+                        { value: "linux", label: "Linux" },
+                        { value: "macos", label: "macOS" },
+                        { value: "windows", label: "Windows" },
+                        { value: "freebsd", label: "FreeBSD" },
+                      ]}
+                    />
+                  </div>
+                </div>
+
+                {/* Terminal color scheme */}
+                <div title={lockReason}>
+                  <span className={labelClass}>Terminal theme</span>
+                  <TerminalThemePicker
+                    value={form.terminalTheme}
+                    onChange={(v) => setField("terminalTheme", v)}
+                    disabled={fieldsLocked}
+                    lockReason={lockReason}
+                  />
+                  <p className="mt-1 text-[length:var(--text-xs)] text-text-muted">
+                    Colors this host&apos;s terminal uses. Hosts without a theme follow the
+                    app theme.
+                  </p>
+                </div>
+
+              </TabPanel>
+
+              <TabPanel id="notes" active={activeTab}>
+                <div title={lockReason}>
+                  <label htmlFor="hem-notes" className={labelClass}>
+                    Notes
+                    <span className="ml-1 text-text-muted font-normal">(optional)</span>
+                  </label>
+                  <textarea
+                    id="hem-notes"
+                    rows={8}
+                    value={form.notes}
+                    onChange={(e) => setField("notes", e.target.value)}
+                    placeholder="Notes about this server..."
+                    disabled={fieldsLocked}
+                    className={`${inputClass} resize-none`}
                   />
                 </div>
 
-                <div className="flex-1">
-                  <label htmlFor="hem-os" className={labelClass}>
-                    OS Type
-                  </label>
-                  <CustomSelect
-                    id="hem-os"
-                    value={form.osType}
-                    onChange={(v) => setField("osType", v)}
-                    disabled={fieldsLocked}
-                    placeholder="Auto"
-                    options={[
-                      { value: "", label: "Auto" },
-                      { value: "linux", label: "Linux" },
-                      { value: "macos", label: "macOS" },
-                      { value: "windows", label: "Windows" },
-                      { value: "freebsd", label: "FreeBSD" },
-                    ]}
-                  />
-                </div>
-              </div>
+              </TabPanel>
 
-              {/* ════════════════ NOTES ════════════════ */}
-              <SectionHeader>Notes</SectionHeader>
+              <TabPanel id="plugins" active={activeTab}>
+                <HostPluginsPanel hostId={originalHost?.id ?? null} />
 
-              <div title={lockReason}>
-                <label htmlFor="hem-notes" className={labelClass}>
-                  Notes
-                  <span className="ml-1 text-text-muted font-normal">(optional)</span>
-                </label>
-                <textarea
-                  id="hem-notes"
-                  rows={3}
-                  value={form.notes}
-                  onChange={(e) => setField("notes", e.target.value)}
-                  placeholder="Notes about this server..."
-                  disabled={fieldsLocked}
-                  className={`${inputClass} resize-none`}
-                />
-              </div>
-
-              {/* ════════════════ PLUGINS ════════════════ */}
-              <SectionHeader>Plugins</SectionHeader>
-
-              <HostPluginsPanel hostId={originalHost?.id ?? null} />
+              </TabPanel>
 
               {/* Error banner */}
               {error && (
@@ -1468,13 +1646,6 @@ function TunnelSection({
         </div>
       )}
 
-      {/* Divider separating tunnel config from the fields below */}
-      <div className="flex items-center gap-3 my-1">
-        <span className="text-[length:var(--text-xs)] font-semibold uppercase tracking-widest text-text-muted whitespace-nowrap">
-          Advanced
-        </span>
-        <div className="flex-1 h-px bg-border" aria-hidden="true" />
-      </div>
     </div>
   );
 }

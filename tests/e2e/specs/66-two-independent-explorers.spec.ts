@@ -13,6 +13,7 @@ import {
     fillPasswordHostForm,
     findHostCardByLabel,
     getHostId,
+    openHostModalTab,
     openNewHostModal,
     waitForModalClosed,
 } from "../helpers/host.js";
@@ -39,6 +40,7 @@ async function saveHostWithStartDir(label: string, startDir: string): Promise<st
         password: SSH_PASS,
     });
 
+    await openHostModalTab("connection");
     const startDirInput = await $("[data-testid='host-modal-start-directory']");
     await startDirInput.click();
     await startDirInput.setValue(startDir);

@@ -63,6 +63,11 @@ export interface ModalShellProps {
    * When provided the footer becomes justify-between.
    */
   footerStart?: React.ReactNode;
+  /**
+   * Non-scrolling strip between the header and the body (e.g. a tab bar).
+   * Stays pinned while a scrollable body scrolls beneath it.
+   */
+  subheader?: React.ReactNode;
   children: React.ReactNode;
   /** data-testid applied to the panel div. */
   testId?: string;
@@ -87,6 +92,7 @@ export function ModalShell({
   busy = false,
   footer,
   footerStart,
+  subheader,
   children,
   testId,
   dataAttributes,
@@ -178,6 +184,10 @@ export function ModalShell({
             <X size={14} strokeWidth={1.8} aria-hidden="true" />
           </button>
         </div>
+
+        {subheader && (
+          <div className="px-6 border-b border-border shrink-0">{subheader}</div>
+        )}
 
         {/* ── Body ── */}
         <div className={[

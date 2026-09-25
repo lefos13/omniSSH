@@ -11,6 +11,7 @@ import {
     fillPasswordHostForm,
     findHostCardByLabel,
     getHostId,
+    openHostModalTab,
     openNewHostModal,
     waitForModalClosed,
 } from "../helpers/host.js";
@@ -38,6 +39,7 @@ describe("SFTP start directory", () => {
         });
 
         // Set the start directory via its dedicated testid.
+        await openHostModalTab("connection");
         const startDir = await $("[data-testid='host-modal-start-directory']");
         await startDir.click();
         await startDir.setValue("/etc");

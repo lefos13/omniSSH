@@ -7,6 +7,7 @@ import { waitForDashboard } from "../helpers/dashboard.js";
 import {
     clickConnect,
     fillPasswordHostForm,
+    openHostModalTab,
     openNewHostModal,
     waitForModalClosed,
 } from "../helpers/host.js";
@@ -36,6 +37,7 @@ describe("host startup command", () => {
         });
 
         // Set the startup command via its dedicated testid.
+        await openHostModalTab("connection");
         const startup = await $("[data-testid='host-modal-startup-command']");
         await startup.click();
         await startup.setValue(`echo ${sentinel}`);

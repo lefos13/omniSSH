@@ -50,6 +50,19 @@ export async function waitForModalClosed(): Promise<void> {
     }
 }
 
+export type HostModalTab = "general" | "connection" | "appearance" | "notes" | "plugins";
+
+/** Switch the host modal to one of its tabs. Fields on inactive tabs are
+ *  display:none, so any helper touching them must select their tab first. */
+export async function openHostModalTab(tab: HostModalTab): Promise<void> {
+    const btn = await $(`[data-testid='host-modal-tab-${tab}']`);
+    await btn.waitForClickable({ timeout: 5_000 });
+    if ((await btn.getAttribute("aria-selected")) !== "true") {
+        await btn.click();
+    }
+    await (await $(`[data-testid='host-modal-panel-${tab}']`)).waitForDisplayed({ timeout: 5_000 });
+}
+
 async function setInput(testid: string, value: string): Promise<void> {
     const el = await $(`[data-testid='${testid}']`);
     await el.waitForExist({ timeout: 5_000 });
@@ -86,6 +99,7 @@ export async function selectHostGroup(groupId: string): Promise<void> {
 
 /** Fill the password-auth form fields. Modal must already be open. */
 export async function fillPasswordHostForm(h: PasswordHost): Promise<void> {
+    await openHostModalTab("general");
     await selectAuthType("password");
     await setInput("host-modal-label", h.label);
     await setInput("host-modal-host", h.host);
@@ -96,6 +110,7 @@ export async function fillPasswordHostForm(h: PasswordHost): Promise<void> {
 
 /** Fill the key-auth form fields. Modal must already be open. */
 export async function fillKeyHostForm(h: KeyHost): Promise<void> {
+    await openHostModalTab("general");
     await selectAuthType("privateKey");
     await setInput("host-modal-label", h.label);
     await setInput("host-modal-host", h.host);
@@ -124,6 +139,7 @@ export async function clickSave(): Promise<void> {
 
 /** Toggle the "Connect through SSH tunnel" checkbox to the desired state. */
 export async function setTunnelEnabled(on: boolean): Promise<void> {
+    await openHostModalTab("connection");
     const cb = await $("[data-testid='host-modal-tunnel-enabled']");
     await cb.waitForExist({ timeout: 5_000 });
     if ((await cb.isSelected()) !== on) {
