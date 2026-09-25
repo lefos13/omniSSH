@@ -112,6 +112,13 @@ New E2E specs belong in `tests/e2e/specs/NN-name.spec.ts`, use helpers from `tes
   `git config user.name && git config user.email` (and the same inside
   `omnissh-web/`) before committing. Vercel deployments reject commits authored
   by any other identity.
+- Commit messages written by agents start with the release version the change
+  is destined for, in brackets, ahead of the Conventional Commit header:
+  `[v1.6.6] feat(hosts): organize the host editor into tabs`. Derive it from
+  the version in `package.json`: if that version is already tagged
+  (`git tag -l v<version>`), target the next patch release; otherwise target
+  that version. Ask the user when a change may warrant a minor or major bump
+  or the target release is otherwise unclear.
 - Check for more-specific `AGENTS.md` files before editing a subdirectory; nearer instructions override this file.
 - Inspect nearby implementation and tests before introducing a new pattern.
 - Preserve unrelated working-tree changes and keep edits scoped to the request.
