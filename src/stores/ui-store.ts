@@ -12,6 +12,10 @@ interface UiState {
     targetSessionId: string | null;
     direction: "horizontal" | "vertical";
   };
+  /* One-shot cross-page deeplink request: pages unmount when their tab is not
+   * active, so a Settings link that should open a Hosts-tab modal stores the
+   * intent here. The Hosts dashboard consumes it on mount and clears it. */
+  pendingHostsImport: "connections" | null;
 
   toggleSidebar: () => void;
   setSidebarWidth: (width: number) => void;
@@ -21,6 +25,8 @@ interface UiState {
   toggleSnippetPanelPinned: () => void;
   openSplitModal: (targetSessionId: string, direction?: "horizontal" | "vertical") => void;
   closeSplitModal: () => void;
+  requestHostsImport: () => void;
+  consumeHostsImport: () => void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
@@ -35,6 +41,7 @@ export const useUiStore = create<UiState>((set) => ({
     targetSessionId: null,
     direction: "horizontal",
   },
+  pendingHostsImport: null,
 
   toggleSidebar: () =>
     set((s) => ({ sidebarExpanded: !s.sidebarExpanded })),
@@ -70,6 +77,10 @@ export const useUiStore = create<UiState>((set) => ({
         open: false,
       },
     })),
+
+  requestHostsImport: () => set({ pendingHostsImport: "connections" }),
+
+  consumeHostsImport: () => set({ pendingHostsImport: null }),
 }));
 
 // E2E test hook — lets WebDriver tests open the HostEditModal for a given

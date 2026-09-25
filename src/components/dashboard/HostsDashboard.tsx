@@ -159,6 +159,17 @@ export function HostsDashboard() {
   const [importSource, setImportSource] = useState<ImportSource>("ssh");
   const [s3DialogOpen, setS3DialogOpen] = useState(false);
 
+  /* Settings → Data deeplink: another page requested the Import Connections
+   * modal while this dashboard was unmounted. Consume the request once so
+   * switching away and back never reopens the modal on its own. */
+  const pendingHostsImport = useUiStore((s) => s.pendingHostsImport);
+  useEffect(() => {
+    if (pendingHostsImport !== "connections") return;
+    useUiStore.getState().consumeHostsImport();
+    setImportSource("ssh");
+    setImportModalOpen(true);
+  }, [pendingHostsImport]);
+
   // Group delete dialog state
   const [deletingGroup, setDeletingGroup] = useState<{
     group: HostGroup;

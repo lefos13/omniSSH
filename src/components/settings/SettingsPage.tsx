@@ -5,13 +5,14 @@ import { useSettingsStore, isSpecialTheme } from "../../stores/settings-store";
 import { CustomSelect, type SelectOption } from "../shared/CustomSelect";
 import { useUpdaterStore } from "../../stores/updater-store";
 import { toast } from "../../stores/toast-store";
-import { RefreshCw, CheckCircle2, AlertCircle, Palette, SquareTerminal, ArrowUpDown, Info, ExternalLink, Check, FileCode, Plus, Trash2, FolderOpen, Star, Search, Database, Download, Upload, ShieldCheck, KeyRound, Puzzle, Pencil, Globe, Server, AlertTriangle, History } from "lucide-react";
+import { RefreshCw, CheckCircle2, AlertCircle, Palette, SquareTerminal, ArrowUpDown, Info, ExternalLink, Check, FileCode, Plus, Trash2, FolderOpen, Star, Search, Database, Download, Upload, ShieldCheck, KeyRound, Puzzle, Pencil, Globe, Server, AlertTriangle, History, ArrowRight } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { CursorStyle, ThemeMode, EditorConfig, PasteButton, DoubleClickAction } from "../../stores/settings-store";
 import type { BackupPreflightSummary, BulkMigrationResult, CredentialStorage, MigrationPreflightSummary, TerminalHighlightRule, SyncAppliedCounts, SyncConflictEntry, SyncDatasetSummary, SyncErrorKind, SyncHistoryCounts, SyncHistoryEntry, SyncPhase, SyncPushOutcome, SyncStatusSnapshot } from "../../types";
 import { useLocalVaultStore } from "../../stores/local-vault-store";
 import { useHostsStore } from "../../stores/hosts-store";
 import { useTabStore } from "../../stores/tab-store";
+import { useUiStore } from "../../stores/ui-store";
 import { useGroupsStore } from "../../stores/groups-store";
 import { useSyncStore } from "../../stores/sync-store";
 import type { SyncScheduleInput } from "../../stores/sync-store";
@@ -2094,6 +2095,14 @@ function DataSettings() {
     } catch { /* dialog cancelled / unavailable */ }
   }, []);
 
+  /* Deeplink to the Hosts tab's import flow. Pages unmount when their tab is
+   * inactive, so the request is stored in the UI store first and consumed by
+   * the Hosts dashboard once it mounts on the freshly opened tab. */
+  const openHostsImport = useCallback(() => {
+    useUiStore.getState().requestHostsImport();
+    useTabStore.getState().openPageTab("hosts", "Hosts");
+  }, []);
+
   return (
     <>
       <SettingsGroup label="Backup">
@@ -2120,6 +2129,36 @@ function DataSettings() {
             <Upload size={13} strokeWidth={2} /> Import…
           </button>
         </SettingRow>
+      </SettingsGroup>
+
+      <SettingsGroup label="Import from another app">
+        {/* Clarifies the split between full-backup restore (above) and the
+            per-source host import that only exists on the Hosts tab, and gives
+            a direct link so users don't have to hunt for the Import button. */}
+        <div className="flex items-start justify-between gap-4 px-4 py-3 rounded-xl bg-bg-surface border border-border/50">
+          <div className="flex items-start gap-3 min-w-0">
+            <span className="mt-0.5 shrink-0 flex items-center justify-center w-7 h-7 rounded-lg bg-accent/10 text-accent">
+              <Info size={15} strokeWidth={2} aria-hidden="true" />
+            </span>
+            <div className="min-w-0">
+              <p className={LABEL_CLASS}>Import hosts from another app</p>
+              <p className={DESC_CLASS}>
+                The backup import above restores a complete OmniSSH backup and replaces
+                all current data. To bring in hosts from OpenSSH ~/.ssh/config,
+                MobaXterm, Termius, or a passwords file, use the import flow on the
+                Hosts tab.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            data-testid="s-open-hosts-import"
+            onClick={openHostsImport}
+            className={BTN_SECONDARY}
+          >
+            Open Hosts import <ArrowRight size={13} strokeWidth={2} aria-hidden="true" />
+          </button>
+        </div>
       </SettingsGroup>
 
       <SettingsGroup label="Danger zone">

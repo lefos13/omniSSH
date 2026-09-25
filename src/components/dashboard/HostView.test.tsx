@@ -9,6 +9,7 @@ import { useHostsStore } from "../../stores/hosts-store";
 import { useGroupsStore } from "../../stores/groups-store";
 import { useSettingsStore } from "../../stores/settings-store";
 import { useS3Store } from "../../stores/s3-store";
+import { useUiStore } from "../../stores/ui-store";
 
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -88,6 +89,7 @@ describe("Host UI enhancements", () => {
     });
     useGroupsStore.setState({ groups: [] });
     useS3Store.setState({ connections: [] });
+    useUiStore.setState({ pendingHostsImport: null });
   });
 
   describe("HostCard IP preview", () => {
@@ -190,6 +192,26 @@ describe("Host UI enhancements", () => {
 
       fireEvent.click(screen.getByTestId("import-passwords-button"));
       expect(screen.getByRole("heading", { name: "Import Passwords" })).toBeInTheDocument();
+    });
+
+    /* Settings → Data parks a one-shot request before switching tabs; this
+     * dashboard must consume it on mount and never reopen the modal later. */
+    it("opens Import Connections from a pending Settings deeplink exactly once", () => {
+      useUiStore.getState().requestHostsImport();
+
+      const { unmount } = render(<HostsDashboard />);
+      expect(screen.getByRole("heading", { name: "Import Connections" })).toBeInTheDocument();
+      expect(useUiStore.getState().pendingHostsImport).toBeNull();
+
+      unmount();
+      render(<HostsDashboard />);
+      expect(screen.queryByRole("heading", { name: "Import Connections" })).not.toBeInTheDocument();
+    });
+
+    it("stays closed on a normal mount without a pending deeplink", () => {
+      render(<HostsDashboard />);
+
+      expect(screen.queryByRole("heading", { name: "Import Connections" })).not.toBeInTheDocument();
     });
 
     it("toggles between cards view and list view", () => {
