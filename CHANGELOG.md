@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.6.6] - 2026-09-26
+
+### 🚀 Highlights & New Features
+
+#### 1. Tabbed Host Editor
+* **Organized Into Tabs**: The New/Edit Host form is split into General, Connection, Appearance, Notes, and Plugins tabs pinned under the dialog header, replacing the single long scrolling form.
+* **Everything To Connect On General**: The General tab holds every field needed to connect, so a new host can be saved without visiting the other tabs.
+* **Non-Default Indicators**: Tabs whose settings differ from the defaults carry a dot, and the dialog title previews the resulting `user@host:port`.
+* **Validation Jumps To The Field**: A failed validation switches to the tab that owns the invalid field and focuses it.
+
+#### 2. Hosts Import Link In Settings
+* **Backup vs. Host Import Clarified**: Settings → Data now explains that the backup import restores a complete OmniSSH backup and replaces all current data, while importing hosts from OpenSSH `~/.ssh/config`, MobaXterm, Termius, or a passwords file happens on the Hosts tab.
+* **Open Hosts Import**: A new button opens the Hosts tab with the Import Connections dialog already open. The request is consumed once, so switching away and back never reopens the dialog on its own.
+
 ## [1.6.5] - 2026-09-24
 
 ### 🚀 Highlights & New Features
