@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.6.7] - 2026-09-28
+
+### 🚀 Highlights & New Features
+
+#### 1. Import Host Aliases As Snippets
+* **Scan The Remote Shell**: A new Import Host Aliases dialog reads the shell aliases defined on the connected host and lists them for import into the snippet library. Detection asks the login shell (Bash, Zsh, or Fish) for its aliases, falls back to other installed shells, and finally reads `alias` lines from `~/.bash_aliases`, `~/.bashrc`, `~/.zshrc`, `~/.profile`, `~/.aliases`, and `~/.alias`.
+* **Three Entry Points**: Open the dialog from the terminal pane header, the snippet palette, or the Snippets page toolbar while an SSH session is active.
+* **Pick What To Import**: Every detected alias starts selected; filter the list by name or command, toggle individual rows, or select/deselect all. Aliases whose name matches an existing snippet are marked **Existing**.
+* **Folder Placement**: Imported snippets land in the library root, an existing folder, or a new folder created on the spot (pre-filled as `<host> Aliases`). Each snippet is tagged `alias` and the host label.
+* **Single Transactional Save**: The selected aliases are written in one database transaction, so an import stores either every snippet or none.
+
 ## [1.6.6] - 2026-09-26
 
 ### 🚀 Highlights & New Features
