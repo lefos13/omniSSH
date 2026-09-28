@@ -20,6 +20,19 @@ pub async fn save_snippet(snippet: Snippet, state: State<'_, Arc<HostDb>>) -> Re
         .map_err(|e| DbError::InitError(format!("task panicked: {e}")))?
 }
 
+/// Persist (insert or update) a batch of snippets within a single transaction.
+#[tauri::command]
+#[instrument(skip(state, snippets), fields(count = snippets.len()))]
+pub async fn save_snippets(
+    snippets: Vec<Snippet>,
+    state: State<'_, Arc<HostDb>>,
+) -> Result<(), DbError> {
+    let db = Arc::clone(&state);
+    task::spawn_blocking(move || db.save_snippets_batch(&snippets))
+        .await
+        .map_err(|e| DbError::InitError(format!("task panicked: {e}")))?
+}
+
 /// Look up a single snippet by its UUID string.  Returns `None` when not found.
 #[tauri::command]
 #[instrument(skip(state), fields(id = %id))]

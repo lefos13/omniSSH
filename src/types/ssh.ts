@@ -328,3 +328,8 @@ export interface TermiusImportError {
 export type StoredCredential =
   | { type: "Password"; password: string }
   | { type: "KeyPassphrase"; passphrase: string };
+
+export interface HostAlias {
+  name: string;
+  command: string;
+}

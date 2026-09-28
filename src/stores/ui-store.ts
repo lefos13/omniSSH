@@ -12,6 +12,10 @@ interface UiState {
     targetSessionId: string | null;
     direction: "horizontal" | "vertical";
   };
+  importAliasesModal: {
+    open: boolean;
+    sessionId: string | null;
+  };
   /* One-shot cross-page deeplink request: pages unmount when their tab is not
    * active, so a Settings link that should open a Hosts-tab modal stores the
    * intent here. The Hosts dashboard consumes it on mount and clears it. */
@@ -25,6 +29,8 @@ interface UiState {
   toggleSnippetPanelPinned: () => void;
   openSplitModal: (targetSessionId: string, direction?: "horizontal" | "vertical") => void;
   closeSplitModal: () => void;
+  openImportAliasesModal: (sessionId: string) => void;
+  closeImportAliasesModal: () => void;
   requestHostsImport: () => void;
   consumeHostsImport: () => void;
 }
@@ -40,6 +46,10 @@ export const useUiStore = create<UiState>((set) => ({
     open: false,
     targetSessionId: null,
     direction: "horizontal",
+  },
+  importAliasesModal: {
+    open: false,
+    sessionId: null,
   },
   pendingHostsImport: null,
 
@@ -74,6 +84,22 @@ export const useUiStore = create<UiState>((set) => ({
     set((s) => ({
       splitModal: {
         ...s.splitModal,
+        open: false,
+      },
+    })),
+
+  openImportAliasesModal: (sessionId) =>
+    set({
+      importAliasesModal: {
+        open: true,
+        sessionId,
+      },
+    }),
+
+  closeImportAliasesModal: () =>
+    set((s) => ({
+      importAliasesModal: {
+        ...s.importAliasesModal,
         open: false,
       },
     })),

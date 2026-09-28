@@ -5,10 +5,11 @@ import {
   useCallback,
   useMemo,
 } from "react";
-import { Search, Plus, FolderPlus, ArrowLeft, Code } from "lucide-react";
+import { Search, Plus, FolderPlus, ArrowLeft, Code, BookmarkPlus } from "lucide-react";
 import { useSnippetsStore } from "../../stores/snippets-store";
 import { useSessionStore } from "../../stores/session-store";
 import { useTabStore } from "../../stores/tab-store";
+import { useUiStore } from "../../stores/ui-store";
 import type { Snippet } from "../../types";
 import { extractVariables } from "../../utils/snippet-resolve";
 import { SnippetCard } from "./SnippetCard";
@@ -38,6 +39,7 @@ export function SnippetsPage() {
 
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const activateTerminal = useTabStore((s) => s.activateRecentTabOfType);
+  const openImportAliasesModal = useUiStore((s) => s.openImportAliasesModal);
 
   const [query, setQuery] = useState("");
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
@@ -302,6 +304,24 @@ export function SnippetsPage() {
               <FolderPlus size={14} strokeWidth={2} aria-hidden="true" />
               New Folder
             </button>
+
+            {activeSessionId && (
+              <button
+                data-testid="import-host-aliases-button"
+                onClick={() => openImportAliasesModal(activeSessionId)}
+                className={[
+                  "flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium uppercase tracking-wide",
+                  "bg-bg-surface border border-border text-text-secondary",
+                  "hover:border-border-focus hover:text-text-primary hover:bg-bg-overlay",
+                  "transition-all duration-[var(--duration-fast)]",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                ].join(" ")}
+                title="Import Aliases from Active Host"
+              >
+                <BookmarkPlus size={14} strokeWidth={2.2} aria-hidden="true" />
+                Import Host Aliases
+              </button>
+            )}
           </div>
 
           {/* Folders section */}

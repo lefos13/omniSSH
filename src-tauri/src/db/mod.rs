@@ -2288,6 +2288,58 @@ impl HostDb {
         Ok(())
     }
 
+    /*
+     * Upsert a batch of snippets within a single transaction.
+     * Preserves caller-supplied IDs, timestamps, and clears sync tombstones.
+     */
+    #[instrument(skip(self, snippets), fields(count = snippets.len()))]
+    pub fn save_snippets_batch(&self, snippets: &[Snippet]) -> Result<(), DbError> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|e| DbError::InitError(format!("db lock poisoned: {e}")))?;
+        let tx = conn.transaction()?;
+        for snippet in snippets {
+            tx.execute(
+                "INSERT INTO snippets (
+                     id, name, command, description, folder_id, tags, variables,
+                     is_dangerous, use_count, last_used_at, sort_order, created_at, updated_at
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                 ON CONFLICT(id) DO UPDATE SET
+                     name         = excluded.name,
+                     command      = excluded.command,
+                     description  = excluded.description,
+                     folder_id    = excluded.folder_id,
+                     tags         = excluded.tags,
+                     variables    = excluded.variables,
+                     is_dangerous = excluded.is_dangerous,
+                     use_count    = excluded.use_count,
+                     last_used_at = excluded.last_used_at,
+                     sort_order   = excluded.sort_order,
+                     updated_at   = excluded.updated_at",
+                params![
+                    snippet.id,
+                    snippet.name,
+                    snippet.command,
+                    snippet.description,
+                    snippet.folder_id,
+                    snippet.tags,
+                    snippet.variables,
+                    snippet.is_dangerous as i32,
+                    snippet.use_count,
+                    snippet.last_used_at,
+                    snippet.sort_order,
+                    snippet.created_at,
+                    snippet.updated_at,
+                ],
+            )?;
+            Self::clear_tombstone(&tx, SyncEntityType::Snippet, &snippet.id)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Look up a single snippet by id.  Returns `None` when not found.
     #[instrument(skip(self), fields(id = %id))]
     pub fn get_snippet(&self, id: &str) -> Result<Option<Snippet>, DbError> {
@@ -4802,6 +4854,18 @@ mod tests {
         assert_eq!(all[0].command, "echo snip-1");
         assert!(!all[0].is_dangerous);
         assert_eq!(all[0].use_count, 0);
+    }
+
+    #[test]
+    fn save_snippets_batch_inserts_multiple() {
+        let (db, _dir) = test_db();
+        let s1 = sample_snippet("batch-1");
+        let s2 = sample_snippet("batch-2");
+        db.save_snippets_batch(&[s1, s2])
+            .expect("save_snippets_batch");
+
+        let all = db.list_snippets(None).expect("list_snippets");
+        assert_eq!(all.len(), 2);
     }
 
     #[test]

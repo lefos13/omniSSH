@@ -11,6 +11,7 @@ interface SnippetsState {
   loadSnippets: (folderId?: string | null) => Promise<void>;
   loadFolders: () => Promise<void>;
   saveSnippet: (snippet: Snippet) => Promise<void>;
+  saveSnippets: (snippets: Snippet[]) => Promise<void>;
   deleteSnippet: (id: string) => Promise<void>;
   saveFolder: (folder: SnippetFolder) => Promise<void>;
   deleteFolder: (id: string) => Promise<void>;
@@ -54,6 +55,14 @@ export const useSnippetsStore = create<SnippetsState>((set, get) => ({
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("save_snippet", { snippet });
     // Reload snippets in the current folder context
+    const snippets = await invoke<Snippet[]>("list_snippets", { folderId: null });
+    set({ snippets });
+  },
+
+  saveSnippets: async (snippetsToSave) => {
+    if (snippetsToSave.length === 0) return;
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("save_snippets", { snippets: snippetsToSave });
     const snippets = await invoke<Snippet[]>("list_snippets", { folderId: null });
     set({ snippets });
   },

@@ -211,6 +211,166 @@ fn fold_exec_msg(
     false
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostAlias {
+    pub name: String,
+    pub command: String,
+}
+
+/*
+ * Parse shell alias definitions output by Bash, Zsh, Fish, or sourced rc files.
+ * Handles `alias name='val'`, `alias name="val"`, `name='val'`, `alias name 'val'`,
+ * quote unescaping, and deduplicates aliases by name in order of appearance.
+ */
+pub fn parse_host_aliases(raw: &str) -> Vec<HostAlias> {
+    let mut aliases = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        let clean = if let Some(rest) = trimmed.strip_prefix("alias ") {
+            rest.trim()
+        } else if let Some(rest) = trimmed.strip_prefix("alias\t") {
+            rest.trim()
+        } else {
+            trimmed
+        };
+
+        if let Some((name_part, val_part)) = clean.split_once('=') {
+            let name = name_part.trim().trim_matches(|c| c == '\'' || c == '"');
+            if name.is_empty() || name.contains(' ') {
+                continue;
+            }
+            let mut val = val_part.trim();
+            if (val.starts_with('\'') && val.ends_with('\'') && val.len() >= 2)
+                || (val.starts_with('"') && val.ends_with('"') && val.len() >= 2)
+            {
+                val = &val[1..val.len() - 1];
+            }
+            let unescaped = val.replace("'\\''", "'");
+            if !name.is_empty() && !unescaped.is_empty() && seen.insert(name.to_string()) {
+                aliases.push(HostAlias {
+                    name: name.to_string(),
+                    command: unescaped,
+                });
+            }
+        } else if let Some((name_part, val_part)) = clean.split_once(char::is_whitespace) {
+            let name = name_part.trim().trim_matches(|c| c == '\'' || c == '"');
+            if name.is_empty() || name.contains(' ') {
+                continue;
+            }
+            let mut val = val_part.trim();
+            if (val.starts_with('\'') && val.ends_with('\'') && val.len() >= 2)
+                || (val.starts_with('"') && val.ends_with('"') && val.len() >= 2)
+            {
+                val = &val[1..val.len() - 1];
+            }
+            let unescaped = val.replace("'\\''", "'");
+            if !name.is_empty() && !unescaped.is_empty() && seen.insert(name.to_string()) {
+                aliases.push(HostAlias {
+                    name: name.to_string(),
+                    command: unescaped,
+                });
+            }
+        }
+    }
+
+    aliases
+}
+
+/*
+ * Detect shell aliases on the remote host by querying the interactive shell
+ * environment and common rc files over an SSH exec channel.
+ */
+#[tauri::command]
+#[tracing::instrument(skip(state), fields(session_id = %session_id))]
+pub async fn ssh_detect_aliases(
+    session_id: String,
+    state: State<'_, SshManager>,
+) -> Result<Vec<HostAlias>, SshError> {
+    const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+    let handle = state.get_handle(&session_id)?;
+    let mut channel = {
+        let h = handle.lock().await;
+        h.channel_open_session()
+            .await
+            .map_err(|e| SshError::ChannelError(e.to_string()))?
+    };
+
+    let script = r#"
+detect_aliases() {
+  user_sh="${SHELL:-}"
+  run_alias() {
+    case "$1" in
+      *bash*)
+        "$1" -i -c 'alias' 2>/dev/null && return 0
+        ;;
+      *zsh*)
+        "$1" -i -c 'alias -L 2>/dev/null || alias' 2>/dev/null && return 0
+        ;;
+      *fish*)
+        "$1" -c 'alias' 2>/dev/null && return 0
+        ;;
+    esac
+    return 1
+  }
+
+  if [ -n "$user_sh" ] && [ -x "$user_sh" ]; then
+    out="$(run_alias "$user_sh")"
+    if [ -n "$out" ]; then
+      printf '%s\n' "$out"
+      return 0
+    fi
+  fi
+
+  for sh_candidate in /bin/bash /usr/bin/bash /bin/zsh /usr/bin/zsh /usr/local/bin/bash /usr/local/bin/zsh /bin/fish /usr/bin/fish; do
+    if [ -x "$sh_candidate" ]; then
+      out="$(run_alias "$sh_candidate")"
+      if [ -n "$out" ]; then
+        printf '%s\n' "$out"
+        return 0
+      fi
+    fi
+  done
+
+  for f in ~/.bash_aliases ~/.bashrc ~/.zshrc ~/.profile ~/.aliases ~/.alias; do
+    if [ -f "$f" ]; then
+      grep -h -E '^\s*alias\s+[a-zA-Z0-9_\.-]+=' "$f" 2>/dev/null
+    fi
+  done
+}
+detect_aliases
+"#;
+
+    channel
+        .exec(true, script.as_bytes())
+        .await
+        .map_err(|e| SshError::ChannelError(format!("exec failed: {e}")))?;
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut exit_code = None;
+
+    while let Some(msg) = channel.wait().await {
+        if fold_exec_msg(msg, &mut stdout, &mut stderr, &mut exit_code) {
+            break;
+        }
+        if stdout.len() + stderr.len() > MAX_OUTPUT_BYTES {
+            return Err(SshError::ChannelError(
+                "remote output exceeded 1 MiB".to_string(),
+            ));
+        }
+    }
+
+    let output_str = String::from_utf8_lossy(&stdout);
+    Ok(parse_host_aliases(&output_str))
+}
+
 /// Scan `~/.ssh/` for private key files and return metadata for each one.
 #[tauri::command]
 pub async fn list_ssh_keys() -> Result<Vec<SshKeyInfo>, SshError> {
@@ -1038,5 +1198,47 @@ mod auth_tests {
          * flattened into a generic connection failure. */
         let json = serde_json::to_value(&err).expect("serialize");
         assert_eq!(json["kind"], "vault_locked");
+    }
+
+    #[test]
+    fn parse_host_aliases_bash_format() {
+        let input = "alias ll='ls -la'\nalias gs='git status'\nalias k=\"kubectl get pods\"";
+        let aliases = parse_host_aliases(input);
+        assert_eq!(aliases.len(), 3);
+        assert_eq!(aliases[0].name, "ll");
+        assert_eq!(aliases[0].command, "ls -la");
+        assert_eq!(aliases[1].name, "gs");
+        assert_eq!(aliases[1].command, "git status");
+        assert_eq!(aliases[2].name, "k");
+        assert_eq!(aliases[2].command, "kubectl get pods");
+    }
+
+    #[test]
+    fn parse_host_aliases_zsh_and_fish_format() {
+        let input = "run-help=man\nwhich-command=whence\nalias gco 'git checkout'";
+        let aliases = parse_host_aliases(input);
+        assert_eq!(aliases.len(), 3);
+        assert_eq!(aliases[0].name, "run-help");
+        assert_eq!(aliases[0].command, "man");
+        assert_eq!(aliases[1].name, "which-command");
+        assert_eq!(aliases[1].command, "whence");
+        assert_eq!(aliases[2].name, "gco");
+        assert_eq!(aliases[2].command, "git checkout");
+    }
+
+    #[test]
+    fn parse_host_aliases_handles_escapes_comments_and_deduplication() {
+        let input = r#"
+# Default aliases
+alias ll='ls -l'
+alias alert='echo '\''done'\'''
+alias ll='ls -la --color=auto'
+"#;
+        let aliases = parse_host_aliases(input);
+        assert_eq!(aliases.len(), 2);
+        assert_eq!(aliases[0].name, "ll");
+        assert_eq!(aliases[0].command, "ls -l");
+        assert_eq!(aliases[1].name, "alert");
+        assert_eq!(aliases[1].command, "echo 'done'");
     }
 }

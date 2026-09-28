@@ -1,4 +1,4 @@
-import { Columns2, Rows2, Maximize2, Minimize2, X, FolderOpen, Plus, Link2, Puzzle } from "lucide-react";
+import { Columns2, Rows2, Maximize2, Minimize2, X, FolderOpen, Plus, Link2, Puzzle, BookmarkPlus } from "lucide-react";
 import { useSessionStore } from "../../stores/session-store";
 import { useTabStore } from "../../stores/tab-store";
 import { useLinkedExplorerStore } from "../../stores/linked-explorer-store";
@@ -27,6 +27,7 @@ export function PaneHeader({ sessionId, tabId }: PaneHeaderProps) {
   const toggleLinkedExplorer = useLinkedExplorerStore((s) => s.toggleLinkedExplorer);
   const isPluginsOpen = useLinkedPluginsStore((s) => s.openTabIds.has(tabId));
   const toggleLinkedPlugins = useLinkedPluginsStore((s) => s.toggleLinkedPlugins);
+  const openImportAliasesModal = useUiStore((s) => s.openImportAliasesModal);
 
   if (!session) return null;
 
@@ -146,6 +147,18 @@ export function PaneHeader({ sessionId, tabId }: PaneHeaderProps) {
           label="Recent paths"
           testId="pane-recent-paths"
         />
+
+        {/* Import host aliases as snippets */}
+        <button
+          type="button"
+          onClick={() => openImportAliasesModal(sessionId)}
+          className={btnClass}
+          data-testid="pane-import-aliases"
+          aria-label="Import aliases as snippets"
+          title="Import host aliases as snippets"
+        >
+          <BookmarkPlus size={13} strokeWidth={1.8} aria-hidden="true" />
+        </button>
 
         {/* Linked Explorer toggle — only on single-pane terminals; moved to SplitGlobalHeader in split mode */}
         {!hasSplits && (

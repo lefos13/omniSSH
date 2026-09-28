@@ -100,6 +100,18 @@ describe("PaneHeader linked explorer and split controls", () => {
     expect(modalState.direction).toBe("horizontal");
   });
 
+  it("opens import aliases modal when clicking pane-import-aliases button", () => {
+    render(<PaneHeader sessionId="ssh-1" tabId="tab-1" />);
+
+    const importBtn = screen.getByTestId("pane-import-aliases");
+    expect(importBtn).toBeInTheDocument();
+
+    fireEvent.click(importBtn);
+    const modalState = useUiStore.getState().importAliasesModal;
+    expect(modalState.open).toBe(true);
+    expect(modalState.sessionId).toBe("ssh-1");
+  });
+
   it("opens split host modal when alt-clicking horizontal or vertical split buttons", () => {
     render(<PaneHeader sessionId="ssh-1" tabId="tab-1" />);
 

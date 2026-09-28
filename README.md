@@ -119,6 +119,7 @@
 * **Reusable Script Library**: Save frequently used commands, shell scripts, and administration snippets.
 * **Template Placeholders**: Define dynamic variables using `{{variable_name}}` syntax that prompts for inputs before executing.
 * **Quick Insert**: Palette-accessible drawer inside any active terminal session.
+* **Import Host Aliases**: Scan a connected host's Bash, Zsh, or Fish aliases and import the ones you pick as snippets.
 
 ### 🔐 8. Self-Hosted Encrypted Dataset Sync
 * **Your Server, Your Data**: Publish a named dataset to a directory on any SSH server you own — no OmniSSH account, no hosted service, no telemetry. A second machine joins with the endpoint plus the dataset passphrase and pulls the identical host set.

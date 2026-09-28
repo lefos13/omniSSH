@@ -334,6 +334,7 @@ pub fn run() {
             ssh::commands::ssh_send_input,
             ssh::commands::ssh_resize_pty,
             ssh::commands::ssh_exec_command,
+            ssh::commands::ssh_detect_aliases,
             ssh::commands::list_ssh_keys,
             ssh::commands::inspect_ssh_key,
             ssh::commands::ssh_health_check_saved_host,
@@ -466,6 +467,7 @@ pub fn run() {
             portforward::commands::pf_list_active_tunnels,
             // Snippets
             snippets::commands::save_snippet,
+            snippets::commands::save_snippets,
             snippets::commands::get_snippet,
             snippets::commands::list_snippets,
             snippets::commands::delete_snippet,

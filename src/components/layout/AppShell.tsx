@@ -18,7 +18,7 @@ import { UnifiedTabBar } from "./UnifiedTabBar";
 
 import { HostsDashboard, HostEditModal } from "../dashboard";
 import { NEW_HOST_ID } from "../dashboard/HostEditModal";
-import { SnippetsPage } from "../snippets";
+import { SnippetsPage, ImportHostAliasesModal } from "../snippets";
 import { SnippetPalette } from "../snippets/SnippetPalette";
 import { ExplorerPage } from "../sftp";
 import { SettingsPage } from "../settings";
@@ -76,6 +76,8 @@ export function AppShell() {
 
   const toggleSidebar = useUiStore((s) => s.toggleSidebar);
   const setEditingHostId = useUiStore((s) => s.setEditingHostId);
+  const importAliasesModal = useUiStore((s) => s.importAliasesModal);
+  const closeImportAliasesModal = useUiStore((s) => s.closeImportAliasesModal);
   const loadVaultStatus = useLocalVaultStore((s) => s.loadStatus);
   /* A configured vault begins locked after every launch. Deferring this dialog
    * still leaves Keychain-only and SSH-key hosts immediately available. */
@@ -711,6 +713,15 @@ export function AppShell() {
 
       {/* Snippet command palette */}
       <SnippetPalette />
+
+      {/* Host aliases import modal */}
+      {importAliasesModal.open && importAliasesModal.sessionId && (
+        <ImportHostAliasesModal
+          open={importAliasesModal.open}
+          sessionId={importAliasesModal.sessionId}
+          onClose={closeImportAliasesModal}
+        />
+      )}
 
       {/* Transient notifications (errors, etc.) */}
       <Toaster />

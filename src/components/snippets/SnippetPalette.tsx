@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { Search, Play, ArrowLeft, AlertTriangle } from "lucide-react";
+import { Search, Play, ArrowLeft, AlertTriangle, BookmarkPlus } from "lucide-react";
 import type { Snippet } from "../../types";
 import { useSnippetsStore } from "../../stores/snippets-store";
 import {
@@ -20,6 +20,7 @@ import {
 export function SnippetPalette() {
   const open = useUiStore((s) => s.snippetPanelOpen);
   const toggle = useUiStore((s) => s.toggleSnippetPanel);
+  const openImportAliasesModal = useUiStore((s) => s.openImportAliasesModal);
   const { snippets, loadSnippets } = useSnippetsStore();
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const sessions = useSessionStore((s) => s.sessions);
@@ -214,15 +215,45 @@ export function SnippetPalette() {
                 placeholder="Search snippets..."
                 className="flex-1 bg-transparent text-[length:var(--text-sm)] text-text-primary placeholder:text-text-muted outline-none"
               />
+              {activeSessionId && (
+                <button
+                  type="button"
+                  data-testid="snippet-palette-import-aliases"
+                  onClick={() => {
+                    toggle();
+                    openImportAliasesModal(activeSessionId);
+                  }}
+                  title="Import host aliases as snippets"
+                  className="flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium text-text-secondary hover:text-text-primary bg-bg-muted hover:bg-bg-subtle border border-border/60 rounded transition-colors shrink-0"
+                >
+                  <BookmarkPlus size={11} aria-hidden="true" />
+                  <span>Import from host</span>
+                </button>
+              )}
               <kbd className="text-[11px] text-text-muted bg-bg-muted px-1.5 py-0.5 rounded font-mono">esc</kbd>
             </div>
 
             {/* List */}
             <div ref={listRef} className="max-h-[320px] overflow-y-auto py-1">
               {filtered.length === 0 ? (
-                <p className="text-[length:var(--text-xs)] text-text-muted px-4 py-8 text-center">
-                  {query ? `No snippets match "${query}"` : "No snippets saved yet"}
-                </p>
+                <div className="flex flex-col items-center justify-center px-4 py-8 gap-2 text-center">
+                  <p className="text-[length:var(--text-xs)] text-text-muted">
+                    {query ? `No snippets match "${query}"` : "No snippets saved yet"}
+                  </p>
+                  {activeSessionId && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        toggle();
+                        openImportAliasesModal(activeSessionId);
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[length:var(--text-xs)] font-medium bg-bg-surface border border-border text-text-secondary hover:text-text-primary hover:bg-bg-muted transition-colors mt-1"
+                    >
+                      <BookmarkPlus size={13} aria-hidden="true" />
+                      <span>Import aliases from connected host</span>
+                    </button>
+                  )}
+                </div>
               ) : (
                 filtered.map((snippet, i) => (
                   <button

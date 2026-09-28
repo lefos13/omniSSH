@@ -33,6 +33,7 @@ export type {
   SshExecResult,
   HostPluginConfig,
   StoredCredential,
+  HostAlias,
 } from "./ssh";
 
 export type {
