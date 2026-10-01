@@ -910,9 +910,62 @@ function TerminalSettings() {
 function ExplorerSettings() {
   const doubleClickAction = useSettingsStore((s) => s.explorerDoubleClickAction);
   const setDoubleClickAction = useSettingsStore((s) => s.setExplorerDoubleClickAction);
+  const defaultLocalDir = useSettingsStore((s) => s.explorerDefaultLocalDir);
+  const setDefaultLocalDir = useSettingsStore((s) => s.setExplorerDefaultLocalDir);
+
+  const handleBrowse = useCallback(async () => {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({ directory: true, multiple: false });
+      if (typeof selected === "string" && selected.trim()) {
+        setDefaultLocalDir(selected.trim());
+      }
+    } catch {
+      /* user cancelled or dialog unavailable */
+    }
+  }, [setDefaultLocalDir]);
+
+  const handleClear = useCallback(() => {
+    setDefaultLocalDir("");
+  }, [setDefaultLocalDir]);
 
   return (
     <SettingsGroup>
+      <SettingRow>
+        <div className="min-w-0">
+          <p className={LABEL_CLASS}>Default local folder</p>
+          <p className={DESC_CLASS}>Initial folder for the local file explorer pane</p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <input
+            type="text"
+            readOnly
+            data-testid="settings-default-local-dir"
+            aria-label="Default local folder"
+            value={defaultLocalDir}
+            placeholder="Home folder"
+            className="w-48 sm:w-64 px-2.5 py-1.5 rounded-lg text-[length:var(--text-xs)] font-mono bg-bg-base border border-border text-text-primary placeholder:text-text-muted outline-none truncate cursor-default"
+          />
+          <button
+            type="button"
+            data-testid="settings-default-local-dir-browse"
+            onClick={() => void handleBrowse()}
+            className={BTN_SECONDARY}
+          >
+            Browse…
+          </button>
+          <button
+            type="button"
+            data-testid="settings-default-local-dir-clear"
+            onClick={handleClear}
+            disabled={!defaultLocalDir}
+            className={BTN_SECONDARY}
+          >
+            Clear
+          </button>
+        </div>
+      </SettingRow>
+
       <SettingRow>
         <div>
           <p className={LABEL_CLASS}>Double-click a File</p>

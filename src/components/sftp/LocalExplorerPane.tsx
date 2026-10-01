@@ -11,6 +11,9 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { AlertCircle } from "lucide-react";
 import { ExplorerToolbar, ExplorerFileTable } from "../explorer";
 import { createLocalProvider, toLocalExplorerEntry } from "../../providers/local-provider";
+import { toast } from "../../stores/toast-store";
+import { useSettingsStore } from "../../stores/settings-store";
+import { resolveLocalStartCandidates } from "../../lib/local-start-dir";
 import type { LocalDirectoryListing } from "../../types/local-fs";
 import type { ExplorerEntry } from "../../types/explorer";
 
@@ -21,6 +24,8 @@ interface LocalExplorerPaneProps {
   className?: string;
   /** Optional initial path to start at instead of user home. */
   initialPath?: string;
+  /** Saved host ID to resolve machine-local start folder overrides. */
+  savedHostId?: string | null;
   /** Owning host session ID. Namespaces the local provider per tab. */
   hostSessionId?: string;
   /** Owning host session ID alias matching sftpSessionId. */
@@ -69,6 +74,7 @@ export function LocalExplorerPane({
   isActive = true,
   className = "",
   initialPath,
+  savedHostId,
   hostSessionId,
   sftpSessionId,
   onSelectionChange,
@@ -160,7 +166,9 @@ export function LocalExplorerPane({
 
 
   /*
-   * Initialize local pane at user home directory on mount.
+   * Initialize local pane directory on mount.
+   * Resolves configured start folder candidates (host-specific, then global default),
+   * falling back to user home directory if candidates are missing or unreadable.
    */
   useEffect(() => {
     let cancelled = false;
@@ -171,17 +179,67 @@ export function LocalExplorerPane({
       try {
         const invoke = await getInvoke();
         if (!invoke) throw new Error("Tauri invoke unavailable");
-        const home = await invoke<string>("local_home_dir");
-        if (cancelled) return;
-        setHomePath(home);
-        const target = currentPath || home;
-        setCurrentPath(target);
-        const list = await invoke<LocalDirectoryListing>("local_list_dir", { path: target });
-        if (cancelled) return;
-        setListing(list);
-        setCurrentPath(list.path);
-        onListingChange?.(list);
-        onCurrentPathChange?.(list.path);
+        let home: string | null = null;
+        let homeErr: unknown = null;
+        try {
+          home = await invoke<string>("local_home_dir");
+          if (cancelled) return;
+          setHomePath(home);
+        } catch (err) {
+          homeErr = err;
+        }
+
+        const initial = currentPath || initialPath;
+        if (initial) {
+          setCurrentPath(initial);
+          const list = await invoke<LocalDirectoryListing>("local_list_dir", { path: initial });
+          if (cancelled) return;
+          setListing(list);
+          setCurrentPath(list.path);
+          onListingChange?.(list);
+          onCurrentPathChange?.(list.path);
+          return;
+        }
+
+        const { explorerDefaultLocalDir, explorerHostLocalDirs } = useSettingsStore.getState();
+        const candidates = resolveLocalStartCandidates(savedHostId, {
+          explorerDefaultLocalDir,
+          explorerHostLocalDirs,
+        });
+
+        let resolvedListing: LocalDirectoryListing | null = null;
+        let failedCandidate: string | null = null;
+
+        for (const candidate of candidates) {
+          try {
+            const list = await invoke<LocalDirectoryListing>("local_list_dir", { path: candidate });
+            if (cancelled) return;
+            resolvedListing = list;
+            break;
+          } catch {
+            if (!failedCandidate) {
+              failedCandidate = candidate;
+            }
+          }
+        }
+
+        if (!resolvedListing) {
+          if (!home) {
+            throw homeErr || new Error("Failed to determine local home directory");
+          }
+          const list = await invoke<LocalDirectoryListing>("local_list_dir", { path: home });
+          if (cancelled) return;
+          resolvedListing = list;
+        }
+
+        setListing(resolvedListing);
+        setCurrentPath(resolvedListing.path);
+        onListingChange?.(resolvedListing);
+        onCurrentPathChange?.(resolvedListing.path);
+
+        if (failedCandidate) {
+          toast.error(`Local start folder not found: ${failedCandidate}. Opened ${resolvedListing.path} instead.`);
+        }
       } catch (err) {
         if (!cancelled) {
           setError(errorMessage(err));
@@ -197,6 +255,7 @@ export function LocalExplorerPane({
     return () => {
       cancelled = true;
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Reset search when current path changes

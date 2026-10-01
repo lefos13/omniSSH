@@ -43,6 +43,7 @@ import { ExplorerPage } from "./ExplorerPage";
 import { useSftpStore } from "../../stores/sftp-store";
 import { useS3Store } from "../../stores/s3-store";
 import { useToastStore } from "../../stores/toast-store";
+import { useSettingsStore } from "../../stores/settings-store";
 import type { LocalDirectoryListing } from "../../types/local-fs";
 import type { SftpEntry } from "../../types";
 const MOCK_HOME = "/home/testuser";
@@ -194,6 +195,10 @@ describe("ExplorerPage — dual-pane host explorer", () => {
     useSftpStore.setState({ sessions: new Map(), activeSftpSessionId: null, clipboard: null });
     useS3Store.setState({ sessions: new Map(), activeS3SessionId: null, clipboard: null });
     useToastStore.setState({ toasts: [] });
+    useSettingsStore.setState({
+      explorerDefaultLocalDir: "",
+      explorerHostLocalDirs: {},
+    });
     eventListeners.clear();
     listen.mockClear();
   });
@@ -1078,6 +1083,86 @@ describe("ExplorerPage — dual-pane host explorer", () => {
         expect(copyToRemoteBtn).toHaveAttribute("aria-label", "Copy selected left → right (1 item)");
         expect(copyToRemoteBtn).toBeEnabled();
       });
+    });
+
+    it("session with savedHostId calls local_list_dir with host folder first when configured", async () => {
+      const hostFolder = "/Users/testuser/configured-host-dir";
+      useSettingsStore.setState({
+        explorerHostLocalDirs: { "host-abc": hostFolder },
+        explorerDefaultLocalDir: "/Users/testuser/global-default-dir",
+      });
+
+      const listDirCalls: string[] = [];
+      const origImpl = invoke.getMockImplementation();
+      invoke.mockImplementation(async (cmd: string, args?: unknown) => {
+        if (cmd === "local_list_dir") {
+          const { path } = (args as { path: string }) || {};
+          listDirCalls.push(path);
+          if (path === hostFolder) {
+            return {
+              path: hostFolder,
+              parent: "/Users/testuser",
+              segments: [
+                { label: "/", path: "/" },
+                { label: "configured-host-dir", path: hostFolder },
+              ],
+              entries: [],
+            };
+          }
+        }
+        return origImpl ? origImpl(cmd, args) : undefined;
+      });
+
+      const store = useSftpStore.getState();
+      store.openSession("sftp-test-host", "ssh-1", "Remote Server", "user", false, undefined, "sftp", "host-abc");
+      store.setEntries("sftp-test-host", "/remote/home", [MOCK_REMOTE_FILE]);
+
+      render(<ExplorerPage sftpSessionId="sftp-test-host" transport="sftp" isActive />);
+
+      await waitFor(() => {
+        expect(listDirCalls).toContain(hostFolder);
+      });
+      expect(listDirCalls[0]).toBe(hostFolder);
+    });
+
+    it("session with host without entry falls back to global default folder", async () => {
+      const globalDefault = "/Users/testuser/global-default-dir";
+      useSettingsStore.setState({
+        explorerHostLocalDirs: {},
+        explorerDefaultLocalDir: globalDefault,
+      });
+
+      const listDirCalls: string[] = [];
+      const origImpl = invoke.getMockImplementation();
+      invoke.mockImplementation(async (cmd: string, args?: unknown) => {
+        if (cmd === "local_list_dir") {
+          const { path } = (args as { path: string }) || {};
+          listDirCalls.push(path);
+          if (path === globalDefault) {
+            return {
+              path: globalDefault,
+              parent: "/Users/testuser",
+              segments: [
+                { label: "/", path: "/" },
+                { label: "global-default-dir", path: globalDefault },
+              ],
+              entries: [],
+            };
+          }
+        }
+        return origImpl ? origImpl(cmd, args) : undefined;
+      });
+
+      const store = useSftpStore.getState();
+      store.openSession("sftp-no-entry", "ssh-1", "Remote Server", "user", false, undefined, "sftp", "host-no-entry");
+      store.setEntries("sftp-no-entry", "/remote/home", [MOCK_REMOTE_FILE]);
+
+      render(<ExplorerPage sftpSessionId="sftp-no-entry" transport="sftp" isActive />);
+
+      await waitFor(() => {
+        expect(listDirCalls).toContain(globalDefault);
+      });
+      expect(listDirCalls[0]).toBe(globalDefault);
     });
   });
 });

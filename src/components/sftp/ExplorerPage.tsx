@@ -590,6 +590,7 @@ export function ExplorerPage({
                 <LocalExplorerPane
                   isActive={isActive}
                   hostSessionId={sftpSessionId}
+                  savedHostId={sftpSession?.savedHostId ?? null}
                   onSelectionChange={setLeftSelection}
                   onCurrentPathChange={setLocalCurrentPath}
                   onListingChange={setLocalListing}

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { SavedHost, RecentConnection } from "../types";
+import { useSettingsStore } from "./settings-store";
 
 interface HostsState {
   hosts: SavedHost[];
@@ -62,6 +63,15 @@ export const useHostsStore = create<HostsState>((set, get) => ({
       connection_count: null,
     };
     await invoke("save_host", { host: duplicate });
+    /*
+     * Maintain the machine-local start directory map: replicate the source
+     * host's start directory override to the new duplicate so both open in
+     * the same local folder while maintaining independent settings.
+     */
+    const sourceDir = useSettingsStore.getState().explorerHostLocalDirs[id];
+    if (sourceDir) {
+      useSettingsStore.getState().setHostLocalDir(duplicate.id, sourceDir);
+    }
     const updated = await invoke<SavedHost[]>("list_hosts");
     set({ hosts: updated });
   },
@@ -69,6 +79,14 @@ export const useHostsStore = create<HostsState>((set, get) => ({
   deleteHost: async (id) => {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("delete_host", { id });
+    /*
+     * Maintain the machine-local start directory map: purge any override
+     * associated with the deleted host to avoid orphaned settings entries,
+     * skipping the call if no entry exists to prevent an unnecessary persist.
+     */
+    if (useSettingsStore.getState().explorerHostLocalDirs[id]) {
+      useSettingsStore.getState().setHostLocalDir(id, null);
+    }
     const hosts = await invoke<SavedHost[]>("list_hosts");
     set({ hosts });
   },

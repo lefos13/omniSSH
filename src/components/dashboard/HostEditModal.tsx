@@ -39,6 +39,7 @@ interface FormState {
   defaultShell: string;
   startupCommand: string;
   startDirectory: string;
+  localStartFolder: string;
   // Auth credentials (only used at connect-time, never persisted)
   password: string;
   passphrase: string;
@@ -65,6 +66,7 @@ const EMPTY_FORM: FormState = {
   defaultShell: "",
   startupCommand: "",
   startDirectory: "",
+  localStartFolder: "",
   password: "",
   passphrase: "",
   color: "",
@@ -100,6 +102,7 @@ function savedHostToForm(host: SavedHost): FormState {
     defaultShell: host.default_shell ?? "",
     startupCommand: host.startup_command ?? "",
     startDirectory: host.start_directory ?? "",
+    localStartFolder: useSettingsStore.getState().explorerHostLocalDirs[host.id] ?? "",
     password: "",
     passphrase: "",
     color: host.color ?? "",
@@ -685,6 +688,7 @@ export function HostEditModal() {
       }
       await syncVaultCredential(hostId, typedInvoke);
       await applyCredentialStorage(hostId, typedInvoke);
+      useSettingsStore.getState().setHostLocalDir(hostId, form.localStartFolder || null);
 
       close();
     } catch (err) {
@@ -744,6 +748,7 @@ export function HostEditModal() {
       // reads credentials exclusively from the keychain, never from the frontend.
       await syncVaultCredential(host.id, typedInvoke);
       await applyCredentialStorage(host.id, typedInvoke);
+      useSettingsStore.getState().setHostLocalDir(host.id, form.localStartFolder || null);
 
       // The backend resolves host config + credentials from its own DB and keychain.
       const sessionId = await invoke<string>("connect_saved_host", { hostId: host.id });
@@ -815,6 +820,7 @@ export function HostEditModal() {
       form.defaultShell,
       form.startupCommand,
       form.startDirectory,
+      form.localStartFolder,
     ].some((v) => v.trim() !== ""),
     appearance: [form.color, form.terminalTheme, form.environment, form.osType]
       .some((v) => v !== ""),
@@ -1312,10 +1318,10 @@ export function HostEditModal() {
                       after the shell prompt is detected — not sent as raw input from the frontend. */}
                 </div>
 
-                {/* Start Directory */}
+                {/* Remote start folder */}
                 <div title={lockReason}>
                   <label htmlFor="hem-start-dir" className={labelClass}>
-                    Start Directory
+                    Remote start folder
                     <span className="ml-1 text-text-muted font-normal">(optional)</span>
                   </label>
                   <input
@@ -1330,6 +1336,62 @@ export function HostEditModal() {
                   />
                   <p className="mt-1 text-[length:var(--text-xs)] text-text-muted">
                     Directory the file browser opens in. Defaults to the home folder.
+                  </p>
+                </div>
+
+                {/*
+                 * Machine-local start folder for the dual-pane file explorer.
+                 * Kept outside dataset sync locks so managed hosts can still configure
+                 * a native folder on this machine without altering shared host records.
+                 */}
+                <div>
+                  <label htmlFor="hem-local-start-folder" className={labelClass}>
+                    Local start folder
+                    <span className="ml-1 text-text-muted font-normal">(optional)</span>
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      id="hem-local-start-folder"
+                      data-testid="host-modal-local-start-folder"
+                      type="text"
+                      readOnly
+                      value={form.localStartFolder}
+                      placeholder="Uses the default local folder"
+                      className={`${inputClass} font-mono flex-1 min-w-0 truncate cursor-default`}
+                    />
+                    <button
+                      type="button"
+                      data-testid="host-modal-local-start-folder-browse"
+                      onClick={() => {
+                        void (async () => {
+                          try {
+                            const { open } = await import("@tauri-apps/plugin-dialog");
+                            const selected = await open({ directory: true, multiple: false });
+                            if (typeof selected === "string" && selected.trim()) {
+                              setField("localStartFolder", selected.trim());
+                            }
+                          } catch {
+                            /* user cancelled or dialog unavailable */
+                          }
+                        })();
+                      }}
+                      disabled={isBusy}
+                      className={BTN_SECONDARY}
+                    >
+                      Browse…
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="host-modal-local-start-folder-clear"
+                      onClick={() => setField("localStartFolder", "")}
+                      disabled={isBusy || !form.localStartFolder}
+                      className={BTN_SECONDARY}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                  <p className="mt-1 text-[length:var(--text-xs)] text-text-muted">
+                    Initial folder for the local file explorer pane (machine-local, not synced).
                   </p>
                 </div>
 

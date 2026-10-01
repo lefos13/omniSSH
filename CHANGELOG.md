@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### 🚀 Highlights & New Features
+
+#### 1. Local Start Folder For The Explorer
+* **Default Local Folder**: Choose a default starting folder for the dual-pane Explorer's local (left) pane in Settings → Explorer via the native folder picker (Browse…), or remove it with Clear to open in your home folder.
+* **Per-Host Override**: Configure a "Local start folder" in the host editor under Connection settings to override the global default for that specific host, alongside the renamed "Remote start folder".
+* **Automatic Fallback Order**: The local pane resolves folders in order (host local folder → default local folder → home). If a folder is missing or unreadable, OmniSSH falls back to the next step and displays a toast notification.
+* **Machine-Local Settings**: Folder choices are saved in this machine's app settings and never synced through host dataset sync, remaining editable even on sync-managed hosts. Deleting a host cleans up its entry, while duplicating a host copies it.
+* **Switching And Quick Connect**: The resolved folder also applies when switching the left pane back from a remote host to "Local", and quick-connect sessions automatically use the default local folder.
+
 ## [1.6.7] - 2026-09-28
 
 ### 🚀 Highlights & New Features

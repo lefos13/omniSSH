@@ -96,6 +96,8 @@ interface SettingsState {
 
   // Explorer
   explorerDoubleClickAction: DoubleClickAction;
+  explorerDefaultLocalDir: string;
+  explorerHostLocalDirs: Record<string, string>;
 
   // Transfers
   transferConcurrency: number;
@@ -141,6 +143,8 @@ interface SettingsState {
   removeTerminalHighlightRule: (id: string) => void;
   toggleTerminalHighlightRule: (id: string) => void;
   setExplorerDoubleClickAction: (action: DoubleClickAction) => void;
+  setExplorerDefaultLocalDir: (path: string) => void;
+  setHostLocalDir: (hostId: string, path: string | null) => void;
   setTransferConcurrency: (n: number) => void;
   setDefaultCredentialStorage: (storage: CredentialStorage) => void;
   setPluginsEnabled: (enabled: boolean) => void;
@@ -172,6 +176,8 @@ const DEFAULTS = {
   terminalCopyOnSelect: false,
   terminalPasteButton: "none" as PasteButton,
   explorerDoubleClickAction: "download" as DoubleClickAction,
+  explorerDefaultLocalDir: "",
+  explorerHostLocalDirs: {} as Record<string, string>,
   transferConcurrency: 3,
   defaultCredentialStorage: "keychain" as CredentialStorage,
   pluginsEnabled: true,
@@ -268,6 +274,13 @@ function persistEditors(editors: EditorConfig[], defaultEditorId: string | null)
  */
 function persistHighlightRules(rules: TerminalHighlightRule[]) {
   persist("terminal_highlight_rules", JSON.stringify(rules));
+}
+
+/*
+ * Persist machine-local start directory overrides per host as a single JSON blob.
+ */
+function persistHostLocalDirs(dirs: Record<string, string>) {
+  persist("explorer_host_local_dirs", JSON.stringify(dirs));
 }
 
 
@@ -411,6 +424,30 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     persist("explorer_double_click_action", action);
   },
 
+  /*
+   * Configure default local directory for the dual-pane file explorer.
+   * Persists the native path string; empty string restores default home folder.
+   */
+  setExplorerDefaultLocalDir: (path) => {
+    set({ explorerDefaultLocalDir: path });
+    persist("explorer_default_local_dir", path);
+  },
+
+  /*
+   * Configure host-specific local directory overrides stored machine-locally.
+   * Passing null or an empty path removes the host override entry.
+   */
+  setHostLocalDir: (hostId, path) => set((s) => {
+    const next = { ...s.explorerHostLocalDirs };
+    if (!path || path.trim() === "") {
+      delete next[hostId];
+    } else {
+      next[hostId] = path;
+    }
+    persistHostLocalDirs(next);
+    return { explorerHostLocalDirs: next };
+  }),
+
   setTerminalPasteButton: (button) => {
     set({ terminalPasteButton: button });
     persist("terminal_paste_button", button);
@@ -530,6 +567,26 @@ export const useSettingsStore = create<SettingsState>((set) => ({
           case "terminal_copy_on_select": updates.terminalCopyOnSelect = value === "true"; break;
           case "terminal_paste_button": updates.terminalPasteButton = value === "right" || value === "middle" ? value : DEFAULTS.terminalPasteButton; break;
           case "explorer_double_click_action": updates.explorerDoubleClickAction = value === "open" ? "open" : "download"; break;
+          case "explorer_default_local_dir": updates.explorerDefaultLocalDir = value || ""; break;
+          case "explorer_host_local_dirs": {
+            try {
+              const parsed = JSON.parse(value);
+              if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                const validated: Record<string, string> = {};
+                for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+                  if (typeof v === "string") {
+                    validated[k] = v;
+                  }
+                }
+                updates.explorerHostLocalDirs = validated;
+              } else {
+                updates.explorerHostLocalDirs = {};
+              }
+            } catch {
+              updates.explorerHostLocalDirs = {};
+            }
+            break;
+          }
           case "transfer_concurrency": updates.transferConcurrency = Number(value) || DEFAULTS.transferConcurrency; break;
           case "app_interface_font": updates.interfaceFont = value || DEFAULTS.interfaceFont; break;
           case "app_interface_mono_font": updates.interfaceMonoFont = value || DEFAULTS.interfaceMonoFont; break;
@@ -612,3 +669,14 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     }
   },
 }));
+
+// E2E test hooks for setting local directory configurations.
+if (typeof window !== "undefined") {
+  const w = window as unknown as {
+    __e2eSetExplorerDefaultLocalDir?: (dir: string) => void;
+    __e2eSetHostLocalDir?: (hostId: string, dir: string | null) => void;
+  };
+  w.__e2eSetExplorerDefaultLocalDir = (dir) => useSettingsStore.getState().setExplorerDefaultLocalDir(dir);
+  w.__e2eSetHostLocalDir = (hostId, dir) => useSettingsStore.getState().setHostLocalDir(hostId, dir);
+}
+

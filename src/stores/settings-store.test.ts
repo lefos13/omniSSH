@@ -406,3 +406,175 @@ describe("settings-store — terminal keyword highlight rules", () => {
   });
 });
 
+describe("settings-store — explorer local directory settings", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockResolvedValue(undefined);
+    useSettingsStore.setState({
+      explorerDefaultLocalDir: "",
+      explorerHostLocalDirs: {},
+    });
+  });
+
+  it("defaults to empty string for default dir and empty map for host dirs", () => {
+    const s = useSettingsStore.getState();
+    expect(s.explorerDefaultLocalDir).toBe("");
+    expect(s.explorerHostLocalDirs).toEqual({});
+  });
+
+  it("sets and persists the default local dir", async () => {
+    useSettingsStore.getState().setExplorerDefaultLocalDir("/User/test/projects");
+    expect(useSettingsStore.getState().explorerDefaultLocalDir).toBe("/User/test/projects");
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("save_setting", {
+        key: "explorer_default_local_dir",
+        value: "/User/test/projects",
+      }),
+    );
+  });
+
+  it("loads explorer_default_local_dir from persisted settings", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "load_all_settings") {
+        return [
+          ["explorer_default_local_dir", "/persisted/dir"],
+          ["editors_seeded", "true"],
+        ];
+      }
+      return undefined;
+    });
+
+    await useSettingsStore.getState().loadSettings();
+    expect(useSettingsStore.getState().explorerDefaultLocalDir).toBe("/persisted/dir");
+  });
+
+  it("adds, updates and removes host local dirs, persisting JSON", async () => {
+    useSettingsStore.getState().setHostLocalDir("host-1", "/data/host1");
+    expect(useSettingsStore.getState().explorerHostLocalDirs).toEqual({
+      "host-1": "/data/host1",
+    });
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("save_setting", {
+        key: "explorer_host_local_dirs",
+        value: JSON.stringify({ "host-1": "/data/host1" }),
+      }),
+    );
+
+    useSettingsStore.getState().setHostLocalDir("host-2", "/data/host2");
+    expect(useSettingsStore.getState().explorerHostLocalDirs).toEqual({
+      "host-1": "/data/host1",
+      "host-2": "/data/host2",
+    });
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("save_setting", {
+        key: "explorer_host_local_dirs",
+        value: JSON.stringify({ "host-1": "/data/host1", "host-2": "/data/host2" }),
+      }),
+    );
+
+    useSettingsStore.getState().setHostLocalDir("host-1", null);
+    expect(useSettingsStore.getState().explorerHostLocalDirs).toEqual({
+      "host-2": "/data/host2",
+    });
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("save_setting", {
+        key: "explorer_host_local_dirs",
+        value: JSON.stringify({ "host-2": "/data/host2" }),
+      }),
+    );
+
+    useSettingsStore.getState().setHostLocalDir("host-2", "");
+    expect(useSettingsStore.getState().explorerHostLocalDirs).toEqual({});
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("save_setting", {
+        key: "explorer_host_local_dirs",
+        value: JSON.stringify({}),
+      }),
+    );
+  });
+
+  it("hydrates explorer_host_local_dirs from valid JSON", async () => {
+    const saved = { "host-a": "/path/a", "host-b": "/path/b" };
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "load_all_settings") {
+        return [
+          ["explorer_host_local_dirs", JSON.stringify(saved)],
+          ["editors_seeded", "true"],
+        ];
+      }
+      return undefined;
+    });
+
+    await useSettingsStore.getState().loadSettings();
+    expect(useSettingsStore.getState().explorerHostLocalDirs).toEqual(saved);
+  });
+
+  it("defensively hydrates invalid or non-object JSON for explorer_host_local_dirs as {}", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "load_all_settings") {
+        return [
+          ["explorer_host_local_dirs", "{broken-json"],
+          ["editors_seeded", "true"],
+        ];
+      }
+      return undefined;
+    });
+
+    await useSettingsStore.getState().loadSettings();
+    expect(useSettingsStore.getState().explorerHostLocalDirs).toEqual({});
+
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "load_all_settings") {
+        return [
+          ["explorer_host_local_dirs", "[\"not\", \"a\", \"map\"]"],
+          ["editors_seeded", "true"],
+        ];
+      }
+      return undefined;
+    });
+
+    await useSettingsStore.getState().loadSettings();
+    expect(useSettingsStore.getState().explorerHostLocalDirs).toEqual({});
+
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "load_all_settings") {
+        return [
+          ["explorer_host_local_dirs", "\"just-a-string\""],
+          ["editors_seeded", "true"],
+        ];
+      }
+      return undefined;
+    });
+
+    await useSettingsStore.getState().loadSettings();
+    expect(useSettingsStore.getState().explorerHostLocalDirs).toEqual({});
+  });
+
+  it("drops non-string values during explorer_host_local_dirs hydration", async () => {
+    const mixed = {
+      "valid-host": "/valid/path",
+      "invalid-num": 12345,
+      "invalid-bool": true,
+      "invalid-obj": { nested: "object" },
+      "another-valid": "/another/path",
+    };
+
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "load_all_settings") {
+        return [
+          ["explorer_host_local_dirs", JSON.stringify(mixed)],
+          ["editors_seeded", "true"],
+        ];
+      }
+      return undefined;
+    });
+
+    await useSettingsStore.getState().loadSettings();
+    expect(useSettingsStore.getState().explorerHostLocalDirs).toEqual({
+      "valid-host": "/valid/path",
+      "another-valid": "/another/path",
+    });
+  });
+});
+
+
