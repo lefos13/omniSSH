@@ -1,110 +1,73 @@
-# Implementation Plan: Local Start Folder (per host + global default)
+# Implementation Plan: Subtle Support / Sponsor Section in the Desktop App
 
 Status: **awaiting human review** — no code has been written.
-Task list: `tasks/todo.md` (checklist target; this repo has no external tracker).
-Commit prefix: `[v1.6.8]` (`v1.6.7` is already tagged).
+Task list: `tasks/todo.md`.
+Commit prefix: `[v1.6.9]` (`v1.6.8` is already released; confirm tag with `git tag -l v1.6.8` before committing).
 
 ## Overview
 
-When the dual-pane Explorer opens for a server, the **local** (left) pane opens
-in a folder the user chose instead of always `$HOME`. Resolution order:
+`omnissh-web` already promotes support: `SponsorSection.tsx` (GitHub Sponsors) and
+`Footer.tsx` (Buy me a coffee `https://buymeacoffee.com/lefterisev2`, GitHub Sponsors
+`https://github.com/sponsors/lefos13`). The desktop app has no equivalent. Add a quiet
+"Support OmniSSH" card to **Settings → About & Updates** with two link buttons.
 
-1. The host's own local start folder (if set for this saved host on this machine).
-2. The global "Default local folder" (Settings → Explorer).
-3. The OS home directory (`local_home_dir`), which is today's behaviour.
+## Decisions
 
-A configured folder that no longer exists or cannot be listed is skipped. The
-pane falls through to the next step and shows a non-blocking toast.
+- **D1 Placement:** a new `SettingsGroup label="Support"` inside `AboutSettings`, directly
+  after the About card and before Updates. No popups, banners, badges, nag toasts or
+  sidebar items — "subtle" means the user finds it only by visiting About.
+- **D2 Reuse:** mirror the existing `AboutCard` row pattern (label + `DESC_CLASS` text +
+  secondary button with `ExternalLink`/lucide icon) and open links with the existing
+  dynamic `import("@tauri-apps/plugin-opener")` `openUrl` pattern. No new dependency.
+  `opener:default` already permits https URLs, so no capability change is expected
+  (verify in Task 1).
+- **D3 URLs:** module-level constants beside `REPO_URL` in `SettingsPage.tsx`
+  (`SPONSOR_URL`, `COFFEE_URL`), copied from the web footer.
+- **D4 Copy:** one line, e.g. "OmniSSH is free and open source. If it saves you time,
+  you can support its development." Tone matches the web ("zero telemetry" stays true:
+  links only open the system browser, nothing is sent).
+- **D5 Icons:** lucide `Heart` and `Coffee` (both already used on the web, lucide is
+  already a desktop dependency). Muted styling; no pink/amber accent so runtime accent
+  overrides and both themes are respected via tokens in `src/theme.css`.
+- **D6 Scope:** frontend only. No Rust, store, or IPC changes.
+- **D7 Testids:** `about-sponsor`, `about-coffee`.
 
-## Current State (evidence)
-
-- The local pane always opens at home: `LocalExplorerPane.tsx:165-200` calls
-  `local_home_dir`, then `local_list_dir`. The `initialPath` prop exists
-  (line 23/80), but `ExplorerPage.tsx:590` never passes it.
-- The remote pane already has an equivalent chain: `ExplorerView.tsx:533-551`
-  (start dir → home → `/`), backed by `saved_hosts.start_directory`.
-- Settings persist as key/value through `persist()` → `save_setting` and are
-  hydrated in `settings-store.loadSettings` (`load_all_settings`, line 506+). JSON
-  values follow the `editors_config` / `terminal_highlight_rules` pattern.
-- Settings → Explorer section already exists (`SettingsPage.tsx:910`,
-  `ExplorerSettings`).
-- Hosts get their id in `HostEditModal.buildHost` (`crypto.randomUUID()`, line
-  561), so the id exists at Save time, new hosts included.
-- `hosts-store` owns `deleteHost` (line 69) and `duplicateHost` (line 49).
-- Sessions carry `savedHostId` (`sftp-store.openSession`).
-- `@tauri-apps/plugin-dialog` `open({ directory: true })` is already used in
-  `ExplorerView.tsx:561`.
-
-## Architecture Decisions
-
-| # | Decision | Rationale |
-|---|----------|-----------|
-| D1 | Store per-host local folders **machine-local** in `settings` key `explorer_host_local_dirs` as a JSON map `{ [hostId]: path }`. Do **not** add a `saved_hosts` column. | A local path belongs to one machine. Host-dataset Sync must not spread one user's `/Users/x/...` to teammates or other OSes. No migration and no Rust schema change. |
-| D2 | Global fallback in `settings` key `explorer_default_local_dir` (string; empty = home). | Reuses the existing settings persistence path. |
-| D3 | Both values are set **only through a folder picker** (Browse…) plus Clear. The displayed field is read-only, and the value is the absolute OS-native path returned by the dialog. | Paths are always well-formed. There is no `~` or env-var parsing on the local side. |
-| D4 | A single pure resolver `resolveLocalStartCandidates(hostId, settings)` returns the ordered candidate list. `LocalExplorerPane` tries each candidate with `local_list_dir` and falls through on failure. | Testable without Tauri. It mirrors the remote fallback-chain shape. |
-| D5 | When a configured folder fails, show a toast ("Local start folder not found, opened … instead"). Remote behaviour stays silent and unchanged. | Stale local paths are user-actionable. |
-| D6 | The same rule applies on **every mount** of the local pane, including switching the left pane from a remote host back to "Local" (`handleSelectLocalSource`). | One rule and no special cases. The local pane is conditionally rendered, so a switch back already remounts it. |
-| D7 | Sessions without `savedHostId` (quick connect / ad-hoc) use the global default. | Same chain with an empty step 1. |
-| D8 | The host editor writes the per-host folder on **Save** (Cancel discards). | Consistent with every other host-form field. |
-| D9 | Host delete removes the map entry. Host duplicate copies it to the new id. | No orphaned entries. A duplicate lives on the same machine. |
-| D10 | Rename the remote field label "Start Directory" → "Remote start folder" and add "Local start folder" next to it. Keep `data-testid="host-modal-start-directory"`. | The two fields need to be told apart. Specs 59 and 66 select by test id, so they stay valid. |
-| D11 | The local folder field is **not** locked by `fieldsLocked` (managed/synced hosts). | It is machine-local data, not part of the shared host record. |
-| D12 | Backup/restore carries both settings keys (backup restores all settings). The fall-through in D5 covers restores onto another machine. | Accepted per review. |
-
-Non-goals: remembering the last-visited local folder per host, env-var or `~`
-expansion, typed paths, any change to the remote start directory behaviour,
-importer changes (MobaXterm/Termius/ssh_config have no local-folder field).
-
-## Dependency Graph
+## Dependency graph
 
 ```
-settings-store keys + setters + __e2e hooks
-        │
-        ├── resolveLocalStartCandidates (src/lib/local-start-dir.ts)
-        │          │
-        │          └── LocalExplorerPane fallback chain + toast
-        │                     │
-        │                     └── ExplorerPage passes savedHostId
-        │
-        ├── Settings → Explorer "Default local folder" UI      (Task 1)
-        ├── HostEditModal "Local start folder" UI + Save        (Task 2)
-        └── hosts-store delete/duplicate map maintenance        (Task 3)
-                                                                │
-                                         E2E spec 98 (Task 4) ──┘
+SettingsPage.tsx constants + SupportCard  ──► unit test ──► E2E smoke (optional)
 ```
+Single component, single file; no cross-layer dependencies.
 
-## Task List
+## Phase 1: Support card (one vertical slice)
 
-### Phase 1: Core behaviour
-- [ ] Task 1: Global default local folder works end to end
-- [ ] Task 2: Per-host local start folder overrides the global default
-- [ ] Task 3: Host delete/duplicate keep the folder map consistent
+### Task 1: Support group with both links
+Add constants, a `SupportCard` (or inline rows in `AboutSettings`), and the two buttons.
+Acceptance:
+- About & Updates shows a "Support" group between About and Updates.
+- Each button calls `openUrl` with the exact URL; failures are swallowed like `openRepo`.
+- Keyboard focusable, visible focus ring, labelled buttons; legible in dark and light.
+Verify: manual `pnpm tauri dev`, both themes, Tab navigation; confirm links open the browser.
 
-### Checkpoint: Core behaviour
-- [ ] `pnpm test` and `pnpm build` pass
-- [ ] Manual: host folder → global → home chain works in `pnpm tauri dev`, both themes
+### Task 2: Unit test
+Add `SettingsPage.about.test.tsx` beside other SettingsPage tests, mocking
+`@tauri-apps/plugin-opener`; assert both buttons render and call `openUrl` with the right URLs.
+Verify: `pnpm exec vitest run src/components/settings/SettingsPage.about.test.tsx`.
 
-### Phase 2: Integration coverage and docs
-- [ ] Task 4: E2E spec `98-local-start-folder.spec.ts`
-- [ ] Task 5: CHANGELOG / README
+### Checkpoint
+`pnpm test` and `pnpm build` green; review diff touches only `SettingsPage.tsx` + the test.
 
-### Checkpoint: Complete
-- [ ] All acceptance criteria met, `make e2e` (spec 98 + 59 + 66 + 94) green
-- [ ] Ready for review
+## Phase 2: Wrap-up (optional)
+- Task 3: add a short mention in README/docs only if the web README already lists it.
+  Skip `make screenshots` (marketing captures unchanged) and E2E (no workflow change)
+  unless the user requests it.
 
-Details, acceptance criteria and verification per task: `tasks/todo.md`.
+## Risks
+- `opener:default` scope might not cover the https hosts → check at Task 1 and, only if
+  needed, add an explicit `opener:allow-open-url` scope entry.
+- `SettingsPage.tsx` is ~3,300 lines; keep the change a small contiguous block to avoid
+  merge noise.
 
-## Risks and Mitigations
-
-| Risk | Impact | Mitigation |
-|------|--------|------------|
-| Save is disabled entirely for locked/managed hosts, so D11 has nowhere to save. | Med | Check during Task 2. If Save is blocked, persist the local folder independently of the host record on that path and cover it with a test. |
-| The local pane flashes `$HOME` before the resolved folder loads. | Low | Resolve candidates before the first `local_list_dir`. Never list home first. |
-| Windows paths (`C:\…`) or UNC/network shares are slow or unreachable. | Med | Each candidate is a single `local_list_dir`. Failure falls through with a toast. A share that hangs is bounded by the existing command behaviour. Note it in the manual check. |
-| The settings JSON map is corrupted or hand-edited. | Low | Parse defensively and treat invalid JSON as an empty map, as with `terminal_highlight_rules`. |
-| WebdriverIO cannot drive the native folder dialog. | Low | E2E sets values through `__e2e` settings hooks. Dialog behaviour is covered by Vitest with a mocked `plugin-dialog`. |
-
-## Open Questions
-
-None. All design questions were resolved in the review round (Q1–Q14).
+## Open questions
+- Confirm the target version (patch `v1.6.9` assumed).
+- Any wish for a one-time dismissible hint elsewhere? Default: no (stay subtle).

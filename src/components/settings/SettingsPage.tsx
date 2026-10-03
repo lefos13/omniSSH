@@ -5,7 +5,7 @@ import { useSettingsStore, isSpecialTheme } from "../../stores/settings-store";
 import { CustomSelect, type SelectOption } from "../shared/CustomSelect";
 import { useUpdaterStore } from "../../stores/updater-store";
 import { toast } from "../../stores/toast-store";
-import { RefreshCw, CheckCircle2, AlertCircle, Palette, SquareTerminal, ArrowUpDown, Info, ExternalLink, Check, FileCode, Plus, Trash2, FolderOpen, Star, Search, Database, Download, Upload, ShieldCheck, KeyRound, Puzzle, Pencil, Globe, Server, AlertTriangle, History, ArrowRight } from "lucide-react";
+import { RefreshCw, CheckCircle2, AlertCircle, Palette, SquareTerminal, ArrowUpDown, Info, ExternalLink, Check, FileCode, Plus, Trash2, FolderOpen, Star, Search, Database, Download, Upload, ShieldCheck, KeyRound, Puzzle, Pencil, Globe, Server, AlertTriangle, History, ArrowRight, Heart, Coffee } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { CursorStyle, ThemeMode, EditorConfig, PasteButton, DoubleClickAction } from "../../stores/settings-store";
 import type { BackupPreflightSummary, BulkMigrationResult, CredentialStorage, MigrationPreflightSummary, TerminalHighlightRule, SyncAppliedCounts, SyncConflictEntry, SyncDatasetSummary, SyncErrorKind, SyncHistoryCounts, SyncHistoryEntry, SyncPhase, SyncPushOutcome, SyncStatusSnapshot } from "../../types";
@@ -58,6 +58,8 @@ const TEXT_INPUT_CLASS = [
 const FIELD_LABEL_CLASS = "block text-[length:var(--text-xs)] font-medium text-text-secondary mb-1";
 
 const REPO_URL = "https://github.com/lefos13/omniSSH";
+const SPONSOR_URL = "https://github.com/sponsors/lefos13";
+const COFFEE_URL = "https://buymeacoffee.com/lefterisev2";
 
 // ─── Sections ─────────────────────────────────────────────────────────────────
 // Each settings category is a section here. To add a new category, add an entry
@@ -3253,6 +3255,9 @@ function AboutSettings() {
       <SettingsGroup label="About">
         <AboutCard />
       </SettingsGroup>
+      <SettingsGroup label="Support">
+        <SupportCard />
+      </SettingsGroup>
       <SettingsGroup label="Updates">
         <SettingRow>
           <div>
@@ -3339,6 +3344,47 @@ function AboutCard() {
         >
           <History size={13} strokeWidth={2} />
           Changelog
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/*
+ * Quiet support links shown only on the About page. Each button hands an https URL
+ * to the system browser through the opener plugin; nothing is sent from the app.
+ */
+function SupportCard() {
+  const openLink = useCallback(async (url: string) => {
+    try {
+      const { openUrl } = await import("@tauri-apps/plugin-opener");
+      await openUrl(url);
+    } catch { /* best-effort */ }
+  }, []);
+
+  const buttonClass = [
+    "flex items-center gap-1.5 px-3 py-1.5 rounded-lg shrink-0",
+    "text-[length:var(--text-sm)] font-medium",
+    "bg-bg-base border border-border text-text-secondary",
+    "hover:text-text-primary hover:border-border-focus",
+    "transition-all duration-[var(--duration-fast)]",
+    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+  ].join(" ");
+
+  return (
+    <div className="px-4 py-3 rounded-xl bg-bg-surface border border-border/50 flex items-center justify-between gap-4">
+      <div>
+        <p className={LABEL_CLASS}>Support OmniSSH</p>
+        <p className={DESC_CLASS}>Free and open source. If it saves you time, you can help fund its development</p>
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        <button onClick={() => void openLink(COFFEE_URL)} data-testid="about-coffee" className={buttonClass}>
+          <Coffee size={13} strokeWidth={2} />
+          Buy me a coffee
+        </button>
+        <button onClick={() => void openLink(SPONSOR_URL)} data-testid="about-sponsor" className={buttonClass}>
+          <Heart size={13} strokeWidth={2} />
+          Sponsor
         </button>
       </div>
     </div>
