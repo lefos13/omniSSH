@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.6.9] - 2026-10-03
+
+### 🚀 Highlights & New Features
+
+#### 1. Support Links In About
+* **Support OmniSSH**: Settings → About & Updates now has a quiet "Support OmniSSH" row with Buy me a coffee and GitHub Sponsors buttons that open in your browser. Nothing is sent from the app.
+
 ## [1.6.8] - 2026-10-01
 
 ### 🚀 Highlights & New Features
