@@ -124,3 +124,17 @@ New E2E specs belong in `tests/e2e/specs/NN-name.spec.ts`, use helpers from `tes
 - Preserve unrelated working-tree changes and keep edits scoped to the request.
 - Do not commit, push, publish a release, run destructive cleanup, or regenerate large assets unless explicitly requested.
 - Summarize changed files, explain why each change was necessary, and report the exact verification performed. If a check was skipped, state the reason.
+
+## Agent skills
+
+### Issue tracker
+
+Issues are local markdown files under `.scratch/<feature-slug>/` (git-excluded). See `.scratch/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `.scratch/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context, kept privately in `.scratch/agents/` (`GLOSSARY.md` + `adr/`). See `.scratch/agents/domain.md`.
