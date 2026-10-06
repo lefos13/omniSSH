@@ -28,6 +28,7 @@ import { useHostsStore } from "../../stores/hosts-store";
 import { useLocalVaultStore } from "../../stores/local-vault-store";
 import { toast } from "../../stores/toast-store";
 import type {
+  SyncConnectionTest,
   SyncContentFlags,
   SyncContentKind,
   SyncDatasetInput,
@@ -134,6 +135,26 @@ function ScopePicker({
       )}
     </fieldset>
   );
+}
+
+/*
+ * An absolute remote path that the account cannot write and that lies outside
+ * its home directory is almost always a home-relative path typed with a leading
+ * "/": over SFTP `/test/x` starts at the server's filesystem root, while the
+ * same account's shell happily creates `test/x` under its home. This returns
+ * the home-relative spelling to suggest, or null when the hint does not apply.
+ */
+export function homeRelativeSuggestion(
+  remotePath: string,
+  test: SyncConnectionTest,
+): string | null {
+  const trimmed = remotePath.trim();
+  if (test.writable || !test.homeDir || !trimmed.startsWith("/")) return null;
+  const home = test.homeDir.replace(/\/+$/, "");
+  const target = test.resolvedPath ?? trimmed;
+  if (target === home || target.startsWith(`${home}/`)) return null;
+  const relative = trimmed.replace(/^\/+/, "").replace(/\/+$/, "");
+  return relative || null;
 }
 
 export function SyncSaveReport({ outcome }: { outcome: SyncSaveOutcome }) {
@@ -432,6 +453,9 @@ export function SyncDatasetModal({
 
   const passphraseTooShort = passphrase.length > 0 && passphrase.length < MIN_DATASET_PASSPHRASE;
   const ownerUnwritable = role === "owner" && testResult !== null && !testResult.writable;
+  const homeSuggestion = testResult
+    ? homeRelativeSuggestion(endpoint.remotePath, testResult)
+    : null;
 
   const modalFooter = (
     <>
@@ -726,18 +750,58 @@ export function SyncDatasetModal({
                 <CheckCircle2 size={13} strokeWidth={2} /> Connected over SFTP.
               </p>
               <ul className="mt-1.5 space-y-1">
-                <li>
-                  {testResult.pathExists
-                    ? "Remote path exists."
-                    : "Remote path does not exist yet — it will be created on the first sync."}
+                {/* Every verdict names the absolute directory it is about: the
+                 * typed path alone does not show whether it starts at the
+                 * server's root or in the account's home, nor which existing
+                 * folder a not-yet-created path was tested in. */}
+                <li data-testid="settings-sync-test-path">
+                  {testResult.pathExists ? "Remote path exists" : "Remote path does not exist yet"}
+                  {testResult.resolvedPath ? (
+                    <>
+                      {testResult.pathExists ? ": " : " — it will be created at "}
+                      <code className="font-mono text-text-primary break-all">
+                        {testResult.resolvedPath}
+                      </code>
+                      {testResult.pathExists ? "." : " on the first sync."}
+                    </>
+                  ) : testResult.pathExists ? (
+                    "."
+                  ) : (
+                    " — it will be created on the first sync."
+                  )}
                 </li>
-                <li>
-                  {testResult.writable
-                    ? testResult.pathExists
+                <li data-testid="settings-sync-test-writable">
+                  {testResult.writable ? (
+                    testResult.pathExists
                       ? "This account can write to it."
                       : "This account can create it and write to it."
-                    : "This account cannot write to it — you can pull from this dataset but not publish to it."}
+                  ) : !testResult.pathExists && testResult.checkedDir ? (
+                    <>
+                      This account cannot create it: it has no write permission in{" "}
+                      <code className="font-mono text-text-primary break-all">
+                        {testResult.checkedDir}
+                      </code>
+                      , the nearest folder that already exists. You can pull from a dataset
+                      here but not publish to it.
+                    </>
+                  ) : (
+                    "This account cannot write to it — you can pull from this dataset but not publish to it."
+                  )}
                 </li>
+                {homeSuggestion && (
+                  <li data-testid="settings-sync-test-home-hint" className="text-status-connecting">
+                    Paths starting with “/” begin at the server’s root, not in your home folder
+                    {testResult.homeDir ? (
+                      <>
+                        {" "}(
+                        <code className="font-mono break-all">{testResult.homeDir}</code>)
+                      </>
+                    ) : null}
+                    . To use a folder in your home, enter{" "}
+                    <code className="font-mono break-all">{homeSuggestion}</code> without the
+                    leading “/”.
+                  </li>
+                )}
                 {testResult.existingDataset ? (
                   <li data-testid="settings-sync-existing-dataset">
                     A dataset is already published here: generation{" "}
@@ -872,9 +936,16 @@ export function SyncDatasetModal({
               >
                 <AlertTriangle size={13} strokeWidth={2} className="mt-0.5 shrink-0" />
                 <span>
-                  This account cannot write to the remote path, so it cannot own a dataset
-                  here. Pick a path it can create, fix the server permissions, or choose
-                  Member — then save.
+                  This account cannot write to{" "}
+                  {testResult?.resolvedPath ? (
+                    <code className="font-mono break-all">{testResult.resolvedPath}</code>
+                  ) : (
+                    "the remote path"
+                  )}
+                  , so it cannot own a dataset there.{" "}
+                  {homeSuggestion
+                    ? `Did you mean the folder in your home? Change the remote path to “${homeSuggestion}”, or fix the server permissions, or choose Member — then save.`
+                    : "Pick a path it can create, fix the server permissions, or choose Member — then save."}
                 </span>
               </p>
             )}

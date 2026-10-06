@@ -37,6 +37,13 @@ export interface SyncConnectionTest {
   existingDataset: ExistingDataset | null;
   /** Set when a dataset is present but its metadata could not be read. */
   metadataError: string | null;
+  /** Absolute directory the write test ran in: the path itself, or its nearest
+   * existing ancestor when the path does not exist yet. */
+  checkedDir: string | null;
+  /** Absolute path the dataset lives at (or will be created at) on the server. */
+  resolvedPath: string | null;
+  /** The account's home directory; paths without a leading "/" start here. */
+  homeDir: string | null;
 }
 
 /** Discriminants of the Rust `SyncError`, serialized as `{ kind, message }`. */

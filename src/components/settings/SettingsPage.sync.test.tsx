@@ -167,6 +167,9 @@ const probe: SyncConnectionTest = {
   datasetPresent: false,
   existingDataset: null,
   metadataError: null,
+  checkedDir: "/srv/omnissh/nova",
+  resolvedPath: "/srv/omnissh/nova",
+  homeDir: "/home/omnissh",
 };
 
 const savedDataset: SyncDatasetSummary = {
@@ -449,9 +452,62 @@ describe("SettingsPage dataset sync", () => {
     fireEvent.click(screen.getByTestId("settings-sync-test"));
 
     const result = await screen.findByTestId("settings-sync-test-result");
-    expect(result).toHaveTextContent("will be created on the first sync");
-    expect(result).toHaveTextContent("cannot write to it");
+    expect(result).toHaveTextContent("does not exist yet — it will be created at");
+    expect(result).toHaveTextContent("This account cannot create it");
     expect(result).toHaveTextContent("No dataset here yet.");
+  });
+
+  it("names the folder a missing path was tested in and where it will be created", async () => {
+    mockCommands({
+      sync_list_datasets: () => [],
+      sync_test_connection: () => ({
+        ...probe,
+        pathExists: false,
+        writable: false,
+        checkedDir: "/",
+        resolvedPath: "/config/omnissh-sync",
+        homeDir: "/home/testuser",
+      }),
+    });
+    await openSyncSection();
+
+    fillEndpoint();
+    fireEvent.click(screen.getByTestId("settings-sync-test"));
+
+    expect(await screen.findByTestId("settings-sync-test-path")).toHaveTextContent(
+      "it will be created at /config/omnissh-sync on the first sync",
+    );
+    expect(screen.getByTestId("settings-sync-test-writable")).toHaveTextContent(
+      "no write permission in /, the nearest folder that already exists",
+    );
+    /* The typed path starts at the server root and lies outside the account's
+     * home, so the likely intended home-relative spelling is offered. */
+    const hint = screen.getByTestId("settings-sync-test-home-hint");
+    expect(hint).toHaveTextContent("/home/testuser");
+    expect(hint).toHaveTextContent("config/omnissh-sync without the leading “/”");
+    expect(screen.getByTestId("settings-sync-owner-unwritable")).toHaveTextContent(
+      "Change the remote path to “config/omnissh-sync”",
+    );
+  });
+
+  it("offers no home-folder hint for a writable path or one already inside home", async () => {
+    mockCommands({
+      sync_list_datasets: () => [],
+      sync_test_connection: () => ({
+        ...probe,
+        pathExists: false,
+        writable: false,
+        checkedDir: "/home/testuser",
+        resolvedPath: "/home/testuser/config/omnissh-sync",
+        homeDir: "/home/testuser",
+      }),
+    });
+    await openSyncSection();
+
+    fillEndpoint();
+    fireEvent.click(screen.getByTestId("settings-sync-test"));
+    await screen.findByTestId("settings-sync-test-result");
+    expect(screen.queryByTestId("settings-sync-test-home-hint")).not.toBeInTheDocument();
   });
 
   it("surfaces an existing dataset so a path is never silently taken over", async () => {
@@ -618,6 +674,53 @@ describe("SettingsPage dataset sync", () => {
     expect(report).toHaveTextContent("Press Push now to publish it");
     expect(report).not.toHaveTextContent("Joined the dataset published at this path");
     expect(report).not.toHaveTextContent("generation");
+  });
+
+  it("retires the save report once its dataset has been pushed", async () => {
+    mockCommands({
+      sync_list_datasets: () => [savedDataset],
+      sync_save_dataset: () => ({
+        dataset: { ...savedDataset, lastGeneration: 0, lastSyncedAt: null },
+        joined: false,
+        remoteGeneration: 0,
+      }),
+      sync_push_preflight: () => preflight,
+      sync_push: () => outcome,
+    });
+    await openSyncSection();
+
+    fillDatasetForm();
+    fireEvent.click(screen.getByTestId("settings-sync-save"));
+    await screen.findByTestId("settings-sync-save-outcome");
+    fireEvent.click(screen.getByTestId("settings-sync-modal-close"));
+    expect(screen.getByTestId("settings-sync-save-outcome")).toHaveTextContent(
+      "No dataset is published at this path yet",
+    );
+
+    const row = await screen.findByTestId("settings-sync-dataset-ds-1");
+    fireEvent.click(within(row).getByTestId("settings-sync-push"));
+    await within(row).findByTestId("settings-sync-push-result");
+    expect(screen.queryByTestId("settings-sync-save-outcome")).not.toBeInTheDocument();
+  });
+
+  it("retires the save report once its dataset has been pulled", async () => {
+    mockCommands({
+      sync_list_datasets: () => [savedDataset],
+      sync_save_dataset: () => saveOutcome,
+      sync_pull: () => pullOutcome,
+    });
+    await openSyncSection();
+
+    fillDatasetForm();
+    fireEvent.click(screen.getByTestId("settings-sync-save"));
+    await screen.findByTestId("settings-sync-save-outcome");
+    fireEvent.click(screen.getByTestId("settings-sync-modal-close"));
+
+    const row = await screen.findByTestId("settings-sync-dataset-ds-1");
+    fireEvent.click(within(row).getByTestId("settings-sync-pull"));
+    await waitFor(() =>
+      expect(screen.queryByTestId("settings-sync-save-outcome")).not.toBeInTheDocument(),
+    );
   });
 
   it("drops the save report once the form that produced it is edited", async () => {
@@ -932,7 +1035,7 @@ describe("SettingsPage dataset sync", () => {
     fireEvent.click(screen.getByTestId("settings-sync-test"));
 
     const result = await screen.findByTestId("settings-sync-test-result");
-    expect(result).toHaveTextContent("will be created on the first sync");
+    expect(result).toHaveTextContent("will be created at /srv/omnissh/nova on the first sync");
     expect(result).toHaveTextContent("can create it and write to it");
     expect(result).not.toHaveTextContent("cannot write to it");
   });

@@ -105,6 +105,14 @@ pub struct RemoteProbe {
     pub writable: bool,
     /// A dataset bundle and metadata file are already present.
     pub dataset_present: bool,
+    /// Absolute path of the directory the write test ran in — the root itself,
+    /// or its nearest existing ancestor. `None` when no ancestor could be read.
+    pub checked_dir: Option<String>,
+    /// Absolute path the dataset root resolves to on the server, so a relative
+    /// or mistyped root shows where the dataset will actually live.
+    pub resolved_path: Option<String>,
+    /// The account's SFTP start directory, which relative roots resolve against.
+    pub home_dir: Option<String>,
     /// Raw metadata bytes when present, for the caller to parse and report.
     #[serde(skip)]
     pub meta: Option<Vec<u8>>,
@@ -234,9 +242,9 @@ impl RemoteStore {
         } else {
             nearest_existing_dir(&sftp, &self.root).await
         };
-        let writable = match probe_dir {
+        let writable = match &probe_dir {
             Some(dir) => {
-                let probe_path = join(&dir, &format!(".omnissh-probe-{}", self.client_id));
+                let probe_path = join(dir, &format!(".omnissh-probe-{}", self.client_id));
                 match sftp
                     .open_with_flags(
                         &probe_path,
@@ -256,6 +264,24 @@ impl RemoteStore {
             None => false,
         };
 
+        /* Absolute paths are reported alongside the verdict because the root
+         * the user typed is ambiguous on its own: `/test/x` starts at the
+         * server's filesystem root while `test/x` starts in the account's home,
+         * and a "cannot write" answer only makes sense once the user can see
+         * which directory was actually tested. Canonicalising is best-effort —
+         * a server without realpath support simply omits the detail. */
+        let home_dir = sftp.canonicalize(".").await.ok();
+        let (checked_dir, resolved_path) = match &probe_dir {
+            Some(dir) => match sftp.canonicalize(dir).await {
+                Ok(canonical) => {
+                    let resolved = resolve_below(&canonical, dir, &self.root);
+                    (Some(canonical), Some(resolved))
+                }
+                Err(_) => (None, None),
+            },
+            None => (None, None),
+        };
+
         let meta = read_optional(&sftp, &self.path(META_FILE)).await?;
         let bundle_present = read_metadata(&sftp, &self.path(DATASET_FILE))
             .await?
@@ -265,6 +291,9 @@ impl RemoteStore {
             path_exists,
             writable,
             dataset_present: meta.is_some() && bundle_present,
+            checked_dir,
+            resolved_path,
+            home_dir,
             meta,
         })
     }
@@ -524,6 +553,26 @@ fn ancestor_dirs(path: &str) -> Vec<String> {
         };
     }
     candidates
+}
+
+/// Re-anchor `root` below the canonical form of one of its ancestors: `ancestor`
+/// is an entry of [`ancestor_dirs`] for `root`, and `canonical` is the absolute
+/// path the server resolved it to, so the result is where `root` will live.
+fn resolve_below(canonical: &str, ancestor: &str, root: &str) -> String {
+    let remainder = if ancestor == "." {
+        match root.trim_start_matches("./") {
+            "." => "",
+            rest => rest,
+        }
+    } else {
+        root.strip_prefix(ancestor).unwrap_or("")
+    };
+    let remainder = remainder.trim_matches('/');
+    if remainder.is_empty() {
+        canonical.to_string()
+    } else {
+        join(canonical, remainder)
+    }
 }
 
 /// The nearest directory that already exists on `path`, so a create+remove probe
@@ -874,11 +923,44 @@ mod tests {
     }
 
     #[test]
+    fn resolve_below_reanchors_the_root_under_its_checked_ancestor() {
+        // Absolute root whose top component is missing: tested in `/`.
+        assert_eq!(resolve_below("/", "/", "/test/nova"), "/test/nova");
+        // Relative root resolved against the account's home directory.
+        assert_eq!(
+            resolve_below("/home/wcsuser", ".", "test/nova"),
+            "/home/wcsuser/test/nova"
+        );
+        assert_eq!(
+            resolve_below("/home/wcsuser", ".", "./test/nova"),
+            "/home/wcsuser/test/nova"
+        );
+        // Existing relative parent.
+        assert_eq!(
+            resolve_below("/home/wcsuser/test", "test", "test/nova"),
+            "/home/wcsuser/test/nova"
+        );
+        // The root itself exists.
+        assert_eq!(
+            resolve_below("/home/wcsuser/test/nova", "test/nova", "test/nova"),
+            "/home/wcsuser/test/nova"
+        );
+        assert_eq!(resolve_below("/home/wcsuser", ".", "."), "/home/wcsuser");
+        assert_eq!(
+            resolve_below("/home/wcsuser", ".", ".omnissh/nova"),
+            "/home/wcsuser/.omnissh/nova"
+        );
+    }
+
+    #[test]
     fn probe_serializes_for_the_frontend_without_raw_metadata() {
         let probe = RemoteProbe {
             path_exists: true,
             writable: false,
             dataset_present: true,
+            checked_dir: Some("/".into()),
+            resolved_path: Some("/test/nova".into()),
+            home_dir: Some("/home/wcsuser".into()),
             meta: Some(b"{\"generation\":4}".to_vec()),
         };
         let json = serde_json::to_string(&probe).unwrap();

@@ -110,6 +110,13 @@ pub struct SyncConnectionTest {
     pub existing_dataset: Option<ExistingDataset>,
     /// Why the existing metadata could not be read, when it could not be.
     pub metadata_error: Option<String>,
+    /// Absolute directory the write test ran in (the path or its nearest
+    /// existing ancestor), when the server could resolve it.
+    pub checked_dir: Option<String>,
+    /// Absolute path the dataset will live at on the server.
+    pub resolved_path: Option<String>,
+    /// The account's home (SFTP start) directory; relative paths start here.
+    pub home_dir: Option<String>,
 }
 
 /// Connect to a sync endpoint, probe the dataset path, and report what is
@@ -145,6 +152,9 @@ pub async fn sync_test_connection(
         dataset_present: probe.dataset_present,
         existing_dataset,
         metadata_error,
+        checked_dir: probe.checked_dir,
+        resolved_path: probe.resolved_path,
+        home_dir: probe.home_dir,
     })
 }
 
@@ -583,6 +593,9 @@ mod tests {
                 owner_fingerprint: Some("SHA256:abc".into()),
             }),
             metadata_error: None,
+            checked_dir: Some("/".into()),
+            resolved_path: Some("/test/nova".into()),
+            home_dir: Some("/home/wcsuser".into()),
         };
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains("\"reachable\":true"));
@@ -592,6 +605,9 @@ mod tests {
         assert!(json.contains("\"existingDataset\":{\"datasetId\":\"ds-nova\""));
         assert!(json.contains("\"generation\":12"));
         assert!(json.contains("\"signed\":true"));
+        assert!(json.contains("\"checkedDir\":\"/\""));
+        assert!(json.contains("\"resolvedPath\":\"/test/nova\""));
+        assert!(json.contains("\"homeDir\":\"/home/wcsuser\""));
     }
 
     #[test]

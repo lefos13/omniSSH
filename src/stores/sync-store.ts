@@ -137,6 +137,16 @@ function withoutHistory(
   return next;
 }
 
+/* The save report ends with "press Push now" / "press Pull now"; once the
+ * dataset it names has pushed or pulled, that guidance is done and a report
+ * still saying nothing is published would contradict the row below it. */
+function retireSaveOutcome(
+  outcome: SyncSaveOutcome | null,
+  datasetId: string,
+): SyncSaveOutcome | null {
+  return outcome?.dataset.id === datasetId ? null : outcome;
+}
+
 interface SyncState {
   endpoint: SyncEndpointDraft;
   testing: boolean;
@@ -481,6 +491,7 @@ export const useSyncStore = create<SyncState>((set, get) => ({
         pushing: null,
         pushResult: outcome,
         history: withoutHistory(state.history, datasetId),
+        saveOutcome: retireSaveOutcome(state.saveOutcome, datasetId),
       }));
       return outcome;
     } catch (error) {
@@ -548,6 +559,7 @@ export const useSyncStore = create<SyncState>((set, get) => ({
         pulling: null,
         pullResult: outcome,
         history: withoutHistory(state.history, datasetId),
+        saveOutcome: retireSaveOutcome(state.saveOutcome, datasetId),
       }));
       /* The remote generation moved, so re-read the row instead of patching it;
        * then the conflict log, then the entity stores. The reloads are
