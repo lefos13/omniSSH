@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.7.0] - 2026-10-06
+
+### 🚀 Highlights & New Features
+
+#### 1. Clearer Dataset Sync Connection Test
+* **Full Path Shown**: Test connection now shows the absolute path the dataset lives at (or will be created at) on the server.
+* **Checked Folder Named**: When the path does not exist yet, the result names the nearest existing folder the write check ran in, so a "cannot write" answer explains itself.
+* **Home Folder Hint**: Paths starting with "/" begin at the server's root, not your home folder. When such a path is not writable and lies outside your home, OmniSSH suggests the home-relative path you most likely meant — in the test result and in the Owner role warning.
+
+### 🐛 Fixes
+* **No Stale Sync Notice**: The "No dataset is published at this path yet" notice now disappears once the dataset has been pushed or pulled.
+
 ## [1.6.9] - 2026-10-03
 
 ### 🚀 Highlights & New Features
