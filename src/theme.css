@@ -897,6 +897,18 @@ input, textarea, [contenteditable="true"], .xterm {
   container-type: inline-size;
 }
 
+/*
+ * Large directories render every row. `content-visibility: auto` lets the
+ * engine skip layout and paint for rows outside the scrollport while keeping
+ * them in the accessibility tree and in find-in-page. The intrinsic size
+ * matches the row's padding + line-height so the scrollbar length is stable
+ * before a row is first painted; `auto` remembers the measured height after.
+ */
+.explorer-entry-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 37px;
+}
+
 /* Narrow panes (< 460px), e.g. 720px window with 50/50 dual pane (~332px each) or linked sidebar:
    Hide Modified and Permissions/Class to prioritize Filename and Size without horizontal overflow */
 @container (max-width: 459px) {

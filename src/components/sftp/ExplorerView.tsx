@@ -982,10 +982,10 @@ export function ExplorerView({
       {session.error && (
         <div
           data-testid="explorer-error"
-          className="flex items-center gap-2.5 px-4 py-2.5 bg-status-error/10 border-b border-status-error/20 text-status-error"
+          className="flex items-start gap-2.5 px-4 py-2.5 bg-status-error/10 border-b border-status-error/20 text-status-error"
         >
-          <AlertCircle size={15} strokeWidth={2} aria-hidden="true" className="shrink-0" />
-          <p className="text-[length:var(--text-sm)]">{session.error}</p>
+          <AlertCircle size={15} strokeWidth={2} aria-hidden="true" className="shrink-0 mt-0.5" />
+          <p className="min-w-0 text-[length:var(--text-sm)] break-words">{session.error}</p>
         </div>
       )}
 

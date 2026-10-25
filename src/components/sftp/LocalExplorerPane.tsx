@@ -308,10 +308,10 @@ export function LocalExplorerPane({
       {error && (
         <div
           data-testid="local-explorer-error"
-          className="flex items-center gap-2.5 px-4 py-2.5 bg-status-error/10 border-b border-status-error/20 text-status-error shrink-0"
+          className="flex items-start gap-2.5 px-4 py-2.5 bg-status-error/10 border-b border-status-error/20 text-status-error shrink-0"
         >
-          <AlertCircle size={15} strokeWidth={2} aria-hidden="true" className="shrink-0" />
-          <p className="text-[length:var(--text-sm)]">{error}</p>
+          <AlertCircle size={15} strokeWidth={2} aria-hidden="true" className="shrink-0 mt-0.5" />
+          <p className="min-w-0 text-[length:var(--text-sm)] break-words">{error}</p>
         </div>
       )}
 

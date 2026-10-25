@@ -1426,7 +1426,7 @@ export function ExplorerFileTable({
                       : undefined
                   }
                   className={[
-                    "flex items-center gap-2 px-3 py-2 cursor-default",
+                    "flex items-center gap-2 px-3 py-2 cursor-default explorer-entry-row",
                     "transition-colors duration-[var(--duration-fast)]",
                     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                     "group",
@@ -1445,7 +1445,11 @@ export function ExplorerFileTable({
                   </span>
 
                   {/* Name — possibly in rename mode */}
-                  <span className="flex-1 min-w-0 text-[length:var(--text-sm)] text-text-primary truncate">
+                  <span
+                    className="flex-1 min-w-0 text-[length:var(--text-sm)] text-text-primary truncate"
+                    title={entry.name}
+                    dir="auto"
+                  >
                     {caps.canRename && renamingId === entry.id && onRename ? (
                       <RenameRow
                         entry={entry}

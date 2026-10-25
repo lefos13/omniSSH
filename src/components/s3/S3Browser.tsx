@@ -425,7 +425,7 @@ export function S3Browser({ sessionId, isActive = true }: S3BrowserProps) {
 
         <div className="flex-1 overflow-y-auto">
           {session.error && (
-            <div className="px-4 py-3 bg-status-error/10 border-b border-status-error/20 text-status-error text-[length:var(--text-sm)]">
+            <div className="px-4 py-3 bg-status-error/10 border-b border-status-error/20 text-status-error text-[length:var(--text-sm)] break-words">
               {session.error}
             </div>
           )}
@@ -433,10 +433,16 @@ export function S3Browser({ sessionId, isActive = true }: S3BrowserProps) {
             <button
               key={bucket.name}
               onClick={() => void selectBucket(bucket.name)}
+              title={bucket.name}
               className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-bg-subtle transition-colors duration-[var(--duration-fast)] text-left"
             >
               <Folder size={16} strokeWidth={1.8} className="text-accent shrink-0" />
-              <span className="text-[length:var(--text-sm)] text-text-primary font-mono">{bucket.name}</span>
+              <span
+                className="min-w-0 flex-1 truncate text-[length:var(--text-sm)] text-text-primary font-mono"
+                dir="auto"
+              >
+                {bucket.name}
+              </span>
             </button>
           ))}
           {!session.loading && session.buckets.length === 0 && !session.error && (
@@ -469,9 +475,9 @@ export function S3Browser({ sessionId, isActive = true }: S3BrowserProps) {
       />
       {/* Error banner */}
       {session.error && (
-        <div className="flex items-center gap-2.5 px-4 py-2.5 bg-status-error/10 border-b border-status-error/20 text-status-error">
-          <AlertCircle size={15} strokeWidth={2} aria-hidden="true" className="shrink-0" />
-          <p className="text-[length:var(--text-sm)]">{session.error}</p>
+        <div className="flex items-start gap-2.5 px-4 py-2.5 bg-status-error/10 border-b border-status-error/20 text-status-error">
+          <AlertCircle size={15} strokeWidth={2} aria-hidden="true" className="shrink-0 mt-0.5" />
+          <p className="min-w-0 text-[length:var(--text-sm)] break-words">{session.error}</p>
         </div>
       )}
 
