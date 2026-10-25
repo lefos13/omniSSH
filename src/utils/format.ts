@@ -33,6 +33,33 @@ export function formatEta(secs: number | null): string {
 
 import type { TransferStatusValue } from "../types";
 
+/*
+ * First visible grapheme of a display name for avatar initials. `charAt(0)`
+ * splits surrogate pairs (emoji labels rendered a replacement character), so
+ * use Intl.Segmenter where available and fall back to code points.
+ */
+type GraphemeSegmenter = new (
+  locales?: string | string[],
+  options?: { granularity: "grapheme" },
+) => { segment(input: string): Iterable<{ segment: string }> };
+
+export function hostInitial(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) return "?";
+  // Intl.Segmenter ships in every supported webview but is missing from the
+  // ES2020 lib this project targets; the runtime shape is the standard one.
+  const intl = Intl as unknown as { Segmenter?: GraphemeSegmenter };
+  const Segmenter = intl.Segmenter;
+  if (Segmenter) {
+    const first = new Segmenter(undefined, { granularity: "grapheme" })
+      .segment(trimmed)
+      [Symbol.iterator]()
+      .next().value?.segment;
+    if (first) return first.toLocaleUpperCase();
+  }
+  return (Array.from(trimmed)[0] ?? "?").toLocaleUpperCase();
+}
+
 /**
  * Coerce a TransferStatusValue (which may be a tagged union object) into a
  * plain string for display or comparison purposes.

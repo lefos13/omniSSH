@@ -3,6 +3,7 @@ import { Activity, Pencil, TerminalSquare, Copy, Trash2, FolderOpen, Waypoints, 
 import type { SavedHost } from "../../types";
 import { CardActionButton, CardActionStrip } from "./CardActionButton";
 import { relativeTime } from "../../utils/time";
+import { hostInitial } from "../../utils/format";
 import { ContextMenu } from "../shared/ContextMenu";
 import { ConfirmDangerDialog } from "../shared/ConfirmDangerDialog";
 import { useHealthStore, IDLE_HEALTH, type HealthStatus } from "../../stores/health-store";
@@ -122,7 +123,7 @@ export function isEnvironmentValue(val: string): val is EnvironmentValue {
 export function HostCard({ host, onConnect, onExplore, onEdit, onDelete, onDuplicate, onSplit }: HostCardProps) {
   const displayName = host.label || host.host;
   const avatarColor = host.color || getHostColor(host.host);
-  const initial = displayName.charAt(0).toUpperCase();
+  const initial = hostInitial(displayName);
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -306,16 +307,25 @@ export function HostCard({ host, onConnect, onExplore, onEdit, onDelete, onDupli
 
         {/* Host info */}
         <div className="min-w-0">
-          <p className="text-[length:var(--text-sm)] font-medium text-text-primary truncate leading-tight pr-24">
+          <p
+            className="text-[length:var(--text-sm)] font-medium text-text-primary truncate leading-tight pr-24"
+            dir="auto"
+          >
             {displayName}
           </p>
           {host.label && (
-            <p className="text-[length:var(--text-xs)] text-text-muted font-mono truncate mt-0.5">
+            <p
+              className="text-[length:var(--text-xs)] text-text-muted font-mono truncate mt-0.5"
+              dir="auto"
+            >
               {host.host}{host.port && host.port !== 22 ? `:${host.port}` : ""}
             </p>
           )}
           <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-            <p className="text-[length:var(--text-xs)] text-text-muted font-mono truncate">
+            <p
+              className="min-w-0 text-[length:var(--text-xs)] text-text-muted font-mono truncate"
+              dir="auto"
+            >
               {subtitle}
             </p>
             {env && (
