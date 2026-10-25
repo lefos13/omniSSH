@@ -177,7 +177,7 @@ export function S3Page() {
                 "flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium uppercase tracking-wide",
                 "bg-bg-surface border border-border text-text-secondary",
                 "hover:border-border-focus hover:text-text-primary hover:bg-bg-overlay",
-                "transition-all duration-[var(--duration-fast)]",
+                "transition-[color,background-color,border-color,opacity] duration-[var(--duration-fast)]",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               ].join(" ")}
             >
@@ -230,7 +230,7 @@ export function S3Page() {
                         "flex flex-col gap-2 px-4 py-3 rounded-lg text-left",
                         "bg-bg-surface border border-border",
                         "hover:bg-bg-overlay/50 hover:border-border-focus",
-                        "transition-all duration-[var(--duration-fast)]",
+                        "transition-[color,background-color,border-color,opacity] duration-[var(--duration-fast)]",
                         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                       ].join(" ")}
                     >
@@ -379,7 +379,7 @@ function S3ConnectionCard({
         "flex flex-col gap-2 px-4 py-3 rounded-lg text-left",
         "bg-bg-surface border border-border",
         "hover:bg-bg-overlay/50 hover:border-border-focus",
-        "transition-all duration-[var(--duration-fast)]",
+        "transition-[color,background-color,border-color,opacity] duration-[var(--duration-fast)]",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
       ].join(" ")}
     >

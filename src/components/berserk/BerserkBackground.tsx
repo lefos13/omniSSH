@@ -647,7 +647,7 @@ export function BerserkBackground() {
                   type="button"
                   data-testid="berserk-control-play-pause"
                   onClick={toggleRunning}
-                  className={`px-2 py-1 rounded-md flex items-center gap-1 font-mono text-[11px] transition-all border ${
+                  className={`px-2 py-1 rounded-md flex items-center gap-1 font-mono text-[11px] transition-[color,background-color,border-color,opacity] border ${
                     isRunning
                       ? "bg-accent/15 text-accent border-accent/30 hover:bg-accent/25"
                       : "bg-bg-subtle text-text-muted border-border hover:bg-bg-muted hover:text-text-primary"
@@ -662,7 +662,7 @@ export function BerserkBackground() {
                   type="button"
                   data-testid="berserk-control-visibility"
                   onClick={toggleVisibility}
-                  className={`p-1 rounded-md transition-all border ${
+                  className={`p-1 rounded-md transition-[color,background-color,border-color,opacity] border ${
                     isVisible
                       ? "bg-bg-subtle text-text-secondary border-border hover:text-text-primary"
                       : "bg-status-error/20 text-status-error border-status-error/30"
@@ -876,7 +876,7 @@ export function BerserkBackground() {
           type="button"
           data-testid="berserk-controls-toggle"
           onClick={() => setControlsOpen((prev) => !prev)}
-          className="group inline-flex items-center gap-2 px-2.5 py-1.5 rounded-full bg-bg-surface/90 hover:bg-bg-overlay border border-accent/40 hover:border-accent shadow-lg shadow-black/60 backdrop-blur-md transition-all text-xs font-mono text-text-secondary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="group inline-flex items-center gap-2 px-2.5 py-1.5 rounded-full bg-bg-surface/90 hover:bg-bg-overlay border border-accent/40 hover:border-accent shadow-lg shadow-black/60 backdrop-blur-md transition-[color,background-color,border-color,opacity] text-xs font-mono text-text-secondary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           aria-expanded={controlsOpen}
           aria-label="Toggle Berserk effect options"
         >

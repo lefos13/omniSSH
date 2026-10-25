@@ -165,7 +165,7 @@ export function GroupModal({ open, onClose, onSave, initial }: GroupModalProps) 
                   aria-pressed={isSelected}
                   className={[
                     "flex items-center justify-center w-8 h-8 rounded-lg",
-                    "transition-all duration-[var(--duration-fast)]",
+                    "transition-[color,background-color,border-color,opacity] duration-[var(--duration-fast)]",
                     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                     isSelected
                       ? "bg-accent/15 ring-1 ring-accent"

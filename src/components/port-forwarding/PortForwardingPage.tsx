@@ -154,7 +154,7 @@ export function PortForwardingPage() {
                 "flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium uppercase tracking-wide",
                 "bg-bg-surface border border-border text-text-secondary",
                 "hover:border-border-focus hover:text-text-primary hover:bg-bg-overlay",
-                "transition-all duration-[var(--duration-fast)]",
+                "transition-[color,background-color,border-color,opacity] duration-[var(--duration-fast)]",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               ].join(" ")}
               title="New Rule"
@@ -261,7 +261,7 @@ export function PortForwardingPage() {
                               }}
                               title="Copy localhost address"
                               aria-label="Copy localhost address"
-                              className="p-0.5 rounded text-text-muted/0 group-hover:text-text-muted hover:!text-text-primary transition-all duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                              className="p-0.5 rounded text-text-muted/0 group-hover:text-text-muted hover:!text-text-primary transition-[color,background-color,border-color,opacity] duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                             >
                               <Copy size={11} strokeWidth={2} />
                             </button>
@@ -537,7 +537,7 @@ function RuleDialog({
                     "px-2 py-1 rounded-md text-[length:var(--text-2xs)] font-medium",
                     "bg-bg-base border border-border text-text-muted",
                     "hover:border-border-focus hover:text-text-secondary hover:bg-bg-subtle",
-                    "transition-all duration-[var(--duration-fast)]",
+                    "transition-[color,background-color,border-color,opacity] duration-[var(--duration-fast)]",
                     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                   ].join(" ")}
                 >

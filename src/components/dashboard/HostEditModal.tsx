@@ -1200,7 +1200,7 @@ export function HostEditModal() {
                             "px-3 py-2 rounded-lg text-[length:var(--text-sm)] font-medium shrink-0",
                             "bg-bg-base border border-border text-text-secondary",
                             "hover:border-border-focus hover:text-text-primary hover:bg-bg-overlay",
-                            "transition-all duration-[var(--duration-fast)]",
+                            "transition-[color,background-color,border-color,opacity] duration-[var(--duration-fast)]",
                             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                             "disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-border disabled:hover:text-text-secondary disabled:hover:bg-bg-base",
                           ].join(" ")}

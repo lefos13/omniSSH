@@ -52,7 +52,7 @@ export function SnippetFolderCard({
         aria-pressed={isSelected}
         className={[
           "group relative flex flex-col gap-2.5 p-3.5 rounded-xl text-left",
-          "bg-bg-surface border transition-all duration-[var(--duration-fast)]",
+          "bg-bg-surface border transition-[color,background-color,border-color,opacity] duration-[var(--duration-fast)]",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
           isSelected
             ? "border-accent ring-2 ring-accent/30 bg-accent-muted"

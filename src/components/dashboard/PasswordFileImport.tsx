@@ -201,7 +201,7 @@ export function PasswordFileImport({
             data-testid="password-file-import-browse"
             disabled={disabled || passwordPreviewLoading}
             onClick={() => void handleBrowsePasswords()}
-            className="px-3 py-1.5 text-[length:var(--text-xs)] font-medium text-text-muted border border-border rounded-lg hover:text-text-primary hover:bg-bg-overlay transition-all duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring shrink-0"
+            className="px-3 py-1.5 text-[length:var(--text-xs)] font-medium text-text-muted border border-border rounded-lg hover:text-text-primary hover:bg-bg-overlay transition-[color,background-color,border-color,opacity] duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring shrink-0"
           >
             Browse
           </button>

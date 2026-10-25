@@ -53,7 +53,7 @@ export function RecentConnections({
                 "flex items-center shrink-0 rounded-lg",
                 "bg-bg-surface border border-border",
                 "hover:border-border-focus hover:bg-bg-overlay",
-                "transition-all duration-[var(--duration-fast)]",
+                "transition-[color,background-color,border-color,opacity] duration-[var(--duration-fast)]",
               ].join(" ")}
             >
               <button

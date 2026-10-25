@@ -57,7 +57,7 @@ const BTN_ACTION_SECONDARY = [
   "inline-flex items-center justify-center gap-2 px-3.5 py-1.5 rounded-lg shrink-0",
   "text-[length:var(--text-sm)] font-medium text-text-secondary hover:text-text-primary",
   "bg-bg-subtle hover:bg-bg-muted border border-border disabled:opacity-50",
-  "transition-all duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+  "transition-[color,background-color,border-color,opacity] duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
   "whitespace-nowrap cursor-pointer",
 ].join(" ");
 

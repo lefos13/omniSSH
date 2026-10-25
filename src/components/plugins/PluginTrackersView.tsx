@@ -33,7 +33,7 @@ const bodyClass = "px-4 pb-3";
 const monoClass = "font-mono text-[length:var(--text-xs)]";
 const mutedClass = "text-[length:var(--text-xs)] text-text-muted";
 const errorClass = "text-[length:var(--text-xs)] text-status-error";
-const actionBtnClass = "px-2.5 py-1 rounded-md text-[length:var(--text-xs)] font-medium bg-bg-base border border-border text-text-secondary hover:text-text-primary hover:border-border-focus transition-all duration-[var(--duration-fast)]";
+const actionBtnClass = "px-2.5 py-1 rounded-md text-[length:var(--text-xs)] font-medium bg-bg-base border border-border text-text-secondary hover:text-text-primary hover:border-border-focus transition-[color,background-color,border-color,opacity] duration-[var(--duration-fast)]";
 const refreshBtnClass = "inline-flex items-center justify-center w-6 h-6 rounded text-text-muted hover:text-text-primary hover:bg-bg-muted transition-colors";
 
 function Card({ icon: Icon, title, testId, onRefresh, refreshing, children }: {

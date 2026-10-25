@@ -59,7 +59,7 @@ function PillButton({
         aria-expanded={ariaExpanded}
         className={[
           "relative flex items-center rounded-lg",
-          "transition-all duration-[var(--duration-fast)]",
+          "transition-[width,padding,color,background-color,border-color] duration-[var(--duration-fast)]",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
           expanded ? "w-full gap-2.5 px-3 h-9" : "justify-center w-9 h-9",
           isActive

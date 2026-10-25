@@ -84,7 +84,7 @@ export function SftpTabs() {
                   "ml-auto p-1 -mr-1 rounded shrink-0",
                   "text-text-muted hover:text-text-primary hover:bg-bg-muted",
                   isActive ? "opacity-50 group-hover:opacity-100" : "opacity-0 group-hover:opacity-100",
-                  "transition-all duration-[var(--duration-fast)]",
+                  "transition-[color,background-color,border-color,opacity] duration-[var(--duration-fast)]",
                   "focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 ].join(" ")}
                 aria-label={`Close ${session.label}`}

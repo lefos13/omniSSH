@@ -95,7 +95,7 @@ export function SnippetCard({ snippet, onEdit, onDelete, onDuplicate }: SnippetC
           "group flex flex-col gap-2 p-4 rounded-xl",
           "bg-bg-surface border border-border",
           "hover:border-border-focus hover:bg-bg-overlay",
-          "transition-all duration-[var(--duration-fast)]",
+          "transition-[color,background-color,border-color,opacity] duration-[var(--duration-fast)]",
         ].join(" ")}
       >
         {/* Top row: name + actions */}
@@ -125,7 +125,7 @@ export function SnippetCard({ snippet, onEdit, onDelete, onDuplicate }: SnippetC
               "shrink-0 flex items-center justify-center w-7 h-7 rounded-md",
               "text-text-muted hover:text-text-secondary hover:bg-bg-subtle",
               "opacity-0 group-hover:opacity-100",
-              "transition-all duration-[var(--duration-fast)]",
+              "transition-[color,background-color,border-color,opacity] duration-[var(--duration-fast)]",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:opacity-100",
             ].join(" ")}
           >

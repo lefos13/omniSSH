@@ -347,7 +347,7 @@ export function HistoryPage() {
                     "text-[length:var(--text-xs)] font-medium text-text-muted",
                     "bg-bg-surface border border-border",
                     "hover:border-border-focus hover:text-text-secondary hover:bg-bg-overlay",
-                    "transition-all duration-[var(--duration-fast)]",
+                    "transition-[color,background-color,border-color,opacity] duration-[var(--duration-fast)]",
                     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                     "disabled:opacity-50",
                   ].join(" ")}

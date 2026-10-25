@@ -192,7 +192,7 @@ export function HostPluginsPanel({ hostId }: { hostId: string | null }) {
                     data-testid={`host-plugin-save-${t.id}`}
                     disabled={saving === t.id}
                     onClick={() => void saveConfig(t.id)}
-                    className="px-3 py-1.5 rounded-lg text-[length:var(--text-sm)] font-medium bg-bg-base border border-border text-text-secondary hover:text-text-primary hover:border-border-focus disabled:opacity-50 transition-all duration-[var(--duration-fast)]"
+                    className="px-3 py-1.5 rounded-lg text-[length:var(--text-sm)] font-medium bg-bg-base border border-border text-text-secondary hover:text-text-primary hover:border-border-focus disabled:opacity-50 transition-[color,background-color,border-color,opacity] duration-[var(--duration-fast)]"
                   >
                     {saving === t.id ? "Saving…" : "Save"}
                   </button>

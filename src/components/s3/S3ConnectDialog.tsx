@@ -335,7 +335,7 @@ export function S3ConnectDialog({ onClose, editConnection }: S3ConnectDialogProp
                     type="button"
                     onClick={() => setColor(color === c ? null : c)}
                     className={[
-                      "w-6 h-6 rounded-full border-2 transition-all duration-[var(--duration-fast)]",
+                      "w-6 h-6 rounded-full border-2 transition-[border-color,scale] duration-[var(--duration-fast)]",
                       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                       color === c ? "border-text-primary scale-110" : "border-transparent hover:scale-110",
                     ].join(" ")}

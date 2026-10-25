@@ -43,7 +43,7 @@ const BTN_SECONDARY = [
   "bg-bg-base border border-border text-text-secondary",
   "hover:text-text-primary hover:border-border-focus",
   "disabled:opacity-50 disabled:pointer-events-none",
-  "transition-all duration-[var(--duration-fast)]",
+  "transition-[color,background-color,border-color,opacity] duration-[var(--duration-fast)]",
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
 ].join(" ");
 
@@ -3316,7 +3316,7 @@ function AboutCard() {
             "text-[length:var(--text-sm)] font-medium",
             "bg-bg-base border border-border text-text-secondary",
             "hover:text-text-primary hover:border-border-focus",
-            "transition-all duration-[var(--duration-fast)]",
+            "transition-[color,background-color,border-color,opacity] duration-[var(--duration-fast)]",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
           ].join(" ")}
         >
@@ -3338,7 +3338,7 @@ function AboutCard() {
             "text-[length:var(--text-sm)] font-medium",
             "bg-bg-base border border-border text-text-secondary",
             "hover:text-text-primary hover:border-border-focus",
-            "transition-all duration-[var(--duration-fast)]",
+            "transition-[color,background-color,border-color,opacity] duration-[var(--duration-fast)]",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
           ].join(" ")}
         >
@@ -3367,7 +3367,7 @@ function SupportCard() {
     "text-[length:var(--text-sm)] font-medium",
     "bg-bg-base border border-border text-text-secondary",
     "hover:text-text-primary hover:border-border-focus",
-    "transition-all duration-[var(--duration-fast)]",
+    "transition-[color,background-color,border-color,opacity] duration-[var(--duration-fast)]",
     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
   ].join(" ");
 
@@ -3532,7 +3532,7 @@ function UpdateChecker() {
                 "text-[length:var(--text-sm)] font-medium",
                 "bg-bg-base border border-border text-text-secondary",
                 "hover:text-text-primary hover:border-border-focus",
-                "transition-all duration-[var(--duration-fast)]",
+                "transition-[color,background-color,border-color,opacity] duration-[var(--duration-fast)]",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               ].join(" ")}
             >
@@ -3565,7 +3565,7 @@ function UpdateChecker() {
                 "text-[length:var(--text-sm)] font-medium",
                 "bg-status-connected text-text-inverse",
                 "hover:opacity-90",
-                "transition-all duration-[var(--duration-fast)]",
+                "transition-[color,background-color,border-color,opacity] duration-[var(--duration-fast)]",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               ].join(" ")}
             >
