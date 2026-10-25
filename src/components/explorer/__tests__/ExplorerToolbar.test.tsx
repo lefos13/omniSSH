@@ -194,4 +194,40 @@ describe("ExplorerToolbar — search/filter input", () => {
     expect(onSearchChange).toHaveBeenCalledWith("");
     expect(document.activeElement).not.toBe(input);
   });
+
+  it("scrolls a long breadcrumb to reveal the current folder", () => {
+    const previousScrollWidth = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "scrollWidth",
+    );
+    Object.defineProperty(HTMLElement.prototype, "scrollWidth", {
+      configurable: true,
+      get: () => 480,
+    });
+
+    try {
+      renderToolbar({
+        currentPath: "/srv/app/releases/2026-10-25",
+        segments: [
+          { label: "/", path: "/" },
+          { label: "srv", path: "/srv" },
+          { label: "app", path: "/srv/app" },
+          { label: "releases", path: "/srv/app/releases" },
+          { label: "2026-10-25", path: "/srv/app/releases/2026-10-25" },
+        ],
+      });
+
+      expect(pathBar().scrollLeft).toBe(480);
+    } finally {
+      if (previousScrollWidth) {
+        Object.defineProperty(
+          HTMLElement.prototype,
+          "scrollWidth",
+          previousScrollWidth,
+        );
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, "scrollWidth");
+      }
+    }
+  });
 });
