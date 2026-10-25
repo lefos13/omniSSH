@@ -128,6 +128,7 @@ export const ExplorerToolbar = memo(function ExplorerToolbar({
   const [isEditing, setIsEditing] = useState(false);
   const [draftPath, setDraftPath] = useState(currentPath);
   const inputRef = useRef<HTMLInputElement>(null);
+  const breadcrumbRef = useRef<HTMLDivElement>(null);
 
   // Focus + select only when editing begins — re-running on a currentPath
   // change mid-edit would stomp the user's cursor/selection
@@ -137,6 +138,14 @@ export const ExplorerToolbar = memo(function ExplorerToolbar({
       inputRef.current?.select();
     }
   }, [isEditing]);
+
+  // Keep the deepest segment visible: a long path scrolls its own bar, and
+  // without this the bar stays pinned to "/" so the current folder is hidden.
+  useEffect(() => {
+    if (isEditing) return;
+    const el = breadcrumbRef.current;
+    if (el) el.scrollLeft = el.scrollWidth;
+  }, [currentPath, isEditing]);
 
   // Keep the draft in sync with the real path while not editing
   useEffect(() => {
@@ -218,6 +227,7 @@ export const ExplorerToolbar = memo(function ExplorerToolbar({
         />
       ) : (
         <div
+          ref={breadcrumbRef}
           onClick={beginEdit}
           // Keyboard path to edit mode: the bar itself is focusable and Enter
           // begins editing (segment buttons keep their own click behavior).
