@@ -55,10 +55,14 @@ make e2e-logs
 
 Read `tests/e2e/README.md` before changing or debugging E2E coverage. Avoid `make e2e-clean` unless a genuinely clean Docker/cache rebuild is needed.
 
+The marketing site is the `omnissh-web` submodule. Initialize it with `git submodule update --init omnissh-web`; it has its own `package.json`, lockfile, and `AGENTS.md`, so install and build from that directory. Never commit a superproject gitlink that points at a local-only submodule commit — push the submodule commit first or leave the pointer unchanged.
+
 ## Change guidelines
 
 - Preserve the frontend/backend separation. Do not move privileged protocol, credential, database, or native filesystem logic into React.
 - Never persist credentials in SQLite, expose saved secrets back to frontend state, or include secrets, host contents, paths, or commands in logs or telemetry. Use the Rust vault/keychain APIs.
+- SSH host keys are verified in `src-tauri/src/ssh/handler.rs` against `~/.ssh/known_hosts` (trust-on-first-use for an unknown host, reject on change). Never restore unconditional acceptance; health probes must verify without writing a first-use entry.
+- `src-tauri/tauri.conf.json` sets both `csp` and `devCsp`. A new external script, font, image, or socket origin must be added to both, or the production webview blocks it.
 - Treat Tauri command names, argument keys, serialized result shapes, and event payloads as contracts. When one changes, update Rust, TypeScript, registration in `src-tauri/src/lib.rs`, and relevant tests together.
 - Keep long-running or blocking work off async executor threads. Follow existing `tokio::task::spawn_blocking`, manager, cancellation, and transfer-queue patterns.
 - Keep SFTP and SCP command surfaces mirrored where they intentionally provide the same explorer behavior. Route transport differences through `src/lib/explorer-transport.ts` rather than branching throughout the UI.
