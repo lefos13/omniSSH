@@ -20,7 +20,7 @@ passing with a pre-existing 1.4 MB chunk warning.
 | # | Severity | Area | Finding | Action |
 | --- | --- | --- | --- | --- |
 | 1 | Critical | SSH security | `check_server_key` returned `Ok(true)` for every key, so every SSH transport (terminal, SFTP/SCP, port forward, sync) could be intercepted by any network attacker. | Fixed in `cbd3fd8`: verify against `~/.ssh/known_hosts`, learn unknown hosts, reject changes, keep health probes read-only. |
-| 2 | High | Webview security | `tauri.conf.json` had `"csp": null`; injected markup had unrestricted access to the IPC bridge. | Fixed in `1b78d05`: production and dev CSP with only app origin, Tauri IPC, and Vite HMR. |
+| 2 | High | Webview security | `tauri.conf.json` had `"csp": null`; injected markup had unrestricted access to the IPC bridge. | Fixed in `1b78d05`: production and dev CSP with only app origin, Tauri IPC, and Vite HMR. Follow-up `ee93e6b` allows the default 1420 HMR socket. |
 | 3 | High | Explorer performance | The file table renders every entry; a directory with thousands of files creates thousands of rows and pays layout/paint for all of them. | Mitigated in `c11a00d` with `content-visibility: auto` + intrinsic row height. Full virtualization is deferred. |
 | 4 | Medium | Explorer usability | A deep path's breadcrumb is clipped from the left, so the current folder (the last segment) is off-screen. | Fixed in `0c4a65d`, covered by `4b0ce1e`. |
 | 5 | Medium | Explorer readability | A truncated filename had no `title`; long names were unreadable with no fallback. Non-Latin names also lacked bidi direction. | Fixed in `c11a00d`. |
@@ -42,6 +42,7 @@ passing with a pre-existing 1.4 MB chunk warning.
 | --- | --- |
 | `cbd3fd8` | SSH host-key verification in `src-tauri/src/ssh/handler.rs`, handler wiring in `manager.rs` and `commands.rs`, actionable `ssh-keygen -R` error text. |
 | `1b78d05` | CSP + dev CSP in `src-tauri/tauri.conf.json`. |
+| `ee93e6b` | Allow the default Vite HMR socket (`ws://localhost:1420`) in the dev CSP. |
 | `c11a00d` | Explorer row containment, filename tooltip + `dir="auto"`, S3 bucket truncation, wrapping error banners. |
 | `0c4a65d` | Breadcrumb auto-scroll to the current folder. |
 | `4b0ce1e` | Regression test for breadcrumb reveal. |
