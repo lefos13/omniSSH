@@ -635,21 +635,34 @@ impl SshManager {
                  * network an IPv4 literal is unreachable directly yet fine
                  * through the translated prefix. */
                 let addr = format!("{}:{}", config.host, config.port);
-                let direct = client::connect(russh_config.clone(), &addr, SshClientHandler).await;
+                let direct = client::connect(
+                    russh_config.clone(),
+                    &addr,
+                    SshClientHandler::connect(&config.host, config.port),
+                )
+                .await;
                 let mut handle = match direct {
                     Ok(handle) => handle,
                     Err(e) => {
                         let message = e.to_string();
                         if !crate::ssh::resolve::is_family_unavailable(&message) {
-                            return Err(SshError::ConnectionFailed(message));
+                            return Err(SshError::ConnectionFailed(describe_handshake_error(
+                                &config.host,
+                                config.port,
+                                message,
+                            )));
                         }
                         let targets =
                             crate::ssh::resolve::resolve_targets(&config.host, config.port).await?;
                         let mut last_error = message;
                         let mut connected = None;
                         for target in crate::ssh::resolve::nat64_fallbacks(&targets).await {
-                            match client::connect(russh_config.clone(), target, SshClientHandler)
-                                .await
+                            match client::connect(
+                                russh_config.clone(),
+                                target,
+                                SshClientHandler::connect(&config.host, config.port),
+                            )
+                            .await
                             {
                                 Ok(handle) => {
                                     connected = Some(handle);
@@ -658,7 +671,11 @@ impl SshManager {
                                 Err(e) => last_error = e.to_string(),
                             }
                         }
-                        connected.ok_or(SshError::ConnectionFailed(last_error))?
+                        connected.ok_or(SshError::ConnectionFailed(describe_handshake_error(
+                            &config.host,
+                            config.port,
+                            last_error,
+                        )))?
                     }
                 };
                 Self::authenticate_handle(&mut handle, config).await?;
@@ -697,10 +714,19 @@ impl SshManager {
                 })?;
 
             // 3. Run the target SSH session over the tunnelled channel.
-            let mut handle =
-                client::connect_stream(russh_config, channel.into_stream(), SshClientHandler)
-                    .await
-                    .map_err(|e| SshError::ConnectionFailed(e.to_string()))?;
+            let mut handle = client::connect_stream(
+                russh_config,
+                channel.into_stream(),
+                SshClientHandler::connect(&config.host, config.port),
+            )
+            .await
+            .map_err(|e| {
+                SshError::ConnectionFailed(describe_handshake_error(
+                    &config.host,
+                    config.port,
+                    e.to_string(),
+                ))
+            })?;
             Self::authenticate_handle(&mut handle, config).await?;
 
             // Keep this hop's handle and everything beneath it alive under the
@@ -930,6 +956,28 @@ impl SshManager {
             .await;
         info!(session_id = %session_id, "SSH disconnected (background, no PTY)");
         Ok(())
+    }
+}
+
+/*
+ * Make a host-key mismatch actionable. russh reports the failure as a bare
+ * "Key changed, line N"; users need the host and the exact recovery command.
+ * Every other handshake error passes through unchanged.
+ */
+fn describe_handshake_error(host: &str, port: u16, message: String) -> String {
+    if message.contains("Key changed") || message.contains("Unknown server key") {
+        let host_key = if port == 22 {
+            host.to_string()
+        } else {
+            format!("[{host}]:{port}")
+        };
+        format!(
+            "Host key verification failed for {host}:{port}: {message}. If this change is \
+             expected, remove the stale known_hosts entry with `ssh-keygen -R {host_key}` \
+             and reconnect."
+        )
+    } else {
+        message
     }
 }
 

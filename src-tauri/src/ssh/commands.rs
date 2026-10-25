@@ -449,7 +449,7 @@ async fn probe_direct(host: &str, port: u16) -> HostHealthCheckResult {
     // open a second connection to the host. The handshake bound is the outer
     // `timeout`, so no `inactivity_timeout` is needed on the throwaway config.
     let russh_config = Arc::new(SshManager::default_client_config());
-    let handler = super::handler::SshClientHandler;
+    let handler = super::handler::SshClientHandler::probe(host, port);
     match timeout(
         HEALTH_CHECK_TIMEOUT,
         client::connect_stream(russh_config, stream, handler),
@@ -571,7 +571,7 @@ async fn probe_via_jump(target: &HostConfig, jump: &HostConfig) -> HostHealthChe
         client::connect_stream(
             russh_config,
             channel.into_stream(),
-            super::handler::SshClientHandler,
+            super::handler::SshClientHandler::probe(&target.host, target.port),
         ),
     )
     .await
