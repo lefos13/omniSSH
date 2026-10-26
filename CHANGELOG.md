@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.7.1] - 2026-10-26
+
+### 🔒 Security
+* **Host Key Verification**: SSH connections now check the server's host key against your OpenSSH `~/.ssh/known_hosts`. A host seen for the first time is trusted and recorded there; a changed key blocks the connection and shows the `ssh-keygen -R` command to clear the old entry.
+* **Content Security Policy**: The app window now enforces a Content Security Policy.
+
+### 🐛 Fixes
+* **Long Names in the Explorer**: Long file names show their full text on hover, long S3 bucket names stay inside their row, and error banners wrap instead of overflowing.
+* **Breadcrumb Follows the Current Folder**: In deep paths the breadcrumb scrolls so the folder you are in stays visible.
+* **Host Initials**: Hosts labelled with emoji or non-Latin text get the correct avatar initial.
+* **Large Folders**: Rows outside the visible area no longer cost layout and paint work, so big listings stay responsive.
+* **Lighter Animations**: Controls animate only the properties that actually change.
+
+---
+
 ## [1.7.0] - 2026-10-06
 
 ### 🚀 Highlights & New Features
