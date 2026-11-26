@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import type { SavedHost } from "../../types";
 import { HostEditModal } from "./HostEditModal";
 import { useUiStore } from "../../stores/ui-store";
@@ -105,5 +105,38 @@ describe("HostEditModal — missing credential notice", () => {
       expect(invoke).toHaveBeenCalledWith("vault_has_credential", { hostId: "host-1" })
     );
     expect(await screen.findByTestId("host-modal-missing-credential")).toBeInTheDocument();
+  });
+
+  /* The backend refuses a local-vault marker on any non-password host, so a
+   * password host stored in the App Vault must drop the marker when it is
+   * switched to a private key; otherwise the save fails outright. */
+  it("drops the vault marker and saved-credential badge when a vault host switches to a private key", async () => {
+    respondWith(host(), true);
+    const base = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (command: string, args?: unknown) => {
+      if (command === "save_host") return null;
+      return base(command, args);
+    });
+
+    render(<HostEditModal />);
+
+    fireEvent.click(await screen.findByTestId("host-modal-auth"));
+    fireEvent.click(await screen.findByRole("option", { name: "Private Key" }));
+
+    /* The saved secret is the old password, not a passphrase, so the key
+     * form must not claim a credential is already stored for it. */
+    expect(screen.queryByText(/Credential saved in/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId("host-modal-clear-password")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("host-modal-save"));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "save_host",
+        expect.objectContaining({
+          host: expect.objectContaining({ auth_type: "privateKey", credential_storage: "keychain" }),
+        }),
+      )
+    );
   });
 });

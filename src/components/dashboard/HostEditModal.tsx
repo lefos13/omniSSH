@@ -368,6 +368,12 @@ export function HostEditModal() {
   /** True when the user has explicitly clicked "Clear" on the saved credential. */
   const [credCleared, setCredCleared] = useState(false);
   const [credentialStorage, setCredentialStorage] = useState<CredentialStorage>("keychain");
+  /* The stored credential belongs to the auth type the host was saved with:
+   * a password host's secret is a password, a key host's is a passphrase.
+   * Once the user switches auth type in the form, that secret no longer
+   * describes the field on screen, so the editor treats the field as empty. */
+  const showSavedCred = hasSavedCred && !credCleared && originalHost !== null &&
+    savedHostToForm(originalHost).authType === form.authType;
   const { checkVault, renderVaultDialogs } = useVaultGuard();
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [revealDialogOpen, setRevealDialogOpen] = useState(false);
@@ -593,6 +599,13 @@ export function HostEditModal() {
       port: parseInt(form.port, 10),
       username: form.username.trim(),
       auth_type: form.authType,
+      /* The App Vault only holds passwords. A key host's passphrase always
+       * lives in Keychain, and the backend refuses a vault marker on any
+       * non-password host, so switching away from a password drops it (the
+       * backend then deletes the orphaned vault ciphertext). */
+      credential_storage: form.authType === "password"
+        ? base.credential_storage
+        : "keychain",
       group_id: form.groupId === "" ? null : form.groupId,
       updated_at: new Date().toISOString(),
       key_path: form.authType === "privateKey" && form.keyPath.trim()
@@ -1079,7 +1092,7 @@ export function HostEditModal() {
                         value={form.password}
                         onChange={(e) => setField("password", e.target.value)}
                         placeholder={
-                          hasSavedCred && !credCleared && !form.password
+                          showSavedCred && !form.password
                             ? "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
                             : "Enter password to connect"
                         }
@@ -1099,14 +1112,14 @@ export function HostEditModal() {
                       )}
                     </div>
                     <CredentialStatus
-                      visible={hasSavedCred && !credCleared && !form.password}
+                      visible={showSavedCred && !form.password}
                       busy={isBusy}
                       storage={credentialStorage}
                       onClear={() => setCredCleared(true)}
                       onReveal={() => setRevealDialogOpen(true)}
                     />
                     <MissingCredentialNotice
-                      visible={!loadingHost && !isNewHost && (!hasSavedCred || credCleared) && !form.password}
+                      visible={!loadingHost && !isNewHost && !showSavedCred && !form.password}
                     />
                     <div className="mt-3">
                       <label htmlFor="hem-password-storage" className={labelClass}>
@@ -1225,7 +1238,7 @@ export function HostEditModal() {
                         value={form.passphrase}
                         onChange={(e) => setField("passphrase", e.target.value)}
                         placeholder={
-                          hasSavedCred && !credCleared && !form.passphrase
+                          showSavedCred && !form.passphrase
                             ? "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
                             : "Leave empty if none"
                         }
@@ -1233,7 +1246,7 @@ export function HostEditModal() {
                         className={inputClass}
                       />
                       <CredentialStatus
-                        visible={hasSavedCred && !credCleared && !form.passphrase}
+                        visible={showSavedCred && !form.passphrase}
                         busy={isBusy}
                         onClear={() => setCredCleared(true)}
                       />
