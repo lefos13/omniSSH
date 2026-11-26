@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.7.2] - 2026-11-26
+
+### 🐛 Fixes
+* **Switching a Host to an SSH Key**: A host whose password was stored in the Encrypted App Vault can now be switched to private-key authentication. Saving used to fail with "Only password authentication can use the local vault"; the old vault password is now removed and the key's passphrase is kept in the System Keychain.
+* **Accurate Saved-Credential Badge**: After changing a host's auth type, the editor no longer claims a credential is already saved for the new type when the stored secret belongs to the old one.
+
+---
+
 ## [1.7.1] - 2026-10-26
 
 ### 🔒 Security
